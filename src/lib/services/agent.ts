@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
 import { agents, businesses, callMessages, calls } from "@/db/schema";
@@ -67,14 +67,22 @@ function parseAgentConfig(agent: typeof agents.$inferSelect): AgentConfig {
 }
 
 async function loadCallHistory(callId: string): Promise<ChatMessage[]> {
+  // History decontamination (§2): ONLY the conversation (CUSTOMER/AGENT)
+  // reaches the LLM. TOOL rows (JSON outcome blobs) and SYSTEM rows
+  // (operational markers) must never be fed as fake "user" turns — they
+  // corrupt behavior, waste the context window, and evict real conversation
+  // from the 30-message cap. Within a turn, live tool results still flow via
+  // the in-memory `tool` messages below; across turns, the agent's own words
+  // carry the gist forward. Display/audit reads keep every role — this
+  // filter applies to LLM context only.
   const rows = await db
     .select()
     .from(callMessages)
-    .where(eq(callMessages.callId, callId))
+    .where(and(eq(callMessages.callId, callId), inArray(callMessages.role, ["CUSTOMER", "AGENT"])))
     .orderBy(desc(callMessages.timestamp))
     .limit(MAX_HISTORY_MESSAGES);
   return rows.reverse().map((r) => ({
-    role: r.role === "CUSTOMER" ? "user" : r.role === "AGENT" ? "assistant" : "user",
+    role: r.role === "CUSTOMER" ? "user" : "assistant",
     content: r.content,
   }));
 }
