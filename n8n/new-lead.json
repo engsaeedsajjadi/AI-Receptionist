@@ -1,96 +1,123 @@
 {
-  "name": "AI-Receptionist / new-lead",
-  "nodes": [
-    {
-      "parameters": {
-        "path": "ai-receptionist/new-lead",
-        "httpMethod": "POST",
-        "responseMode": "responseNode",
-        "options": {}
-      },
-      "id": "wh-new-lead",
-      "name": "Lead Webhook",
-      "type": "n8n-nodes-base.webhook",
-      "typeVersion": 2,
-      "position": [240, 300],
-      "webhookId": "a1b2c3d4-new-lead-0001"
-    },
-    {
-      "parameters": {
-        "jsCode": "const crypto = require('crypto');\nconst secret = $env.N8N_WEBHOOK_SECRET;\nif (!secret) throw new Error('N8N_WEBHOOK_SECRET env is not set');\nconst item = $input.first();\nconst headers = item.json.headers ?? {};\nconst signature = headers['x-webhook-signature'] ?? headers['X-Webhook-Signature'];\nconst idempotencyKey = headers['x-idempotency-key'] ?? headers['X-Idempotency-Key'];\nif (!signature || !idempotencyKey) throw new Error('Missing webhook signature or idempotency key');\nconst rawBody = JSON.stringify(item.json.body ?? item.json);\nconst expected = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');\nif (signature !== expected) throw new Error('Invalid webhook signature');\nconst payload = item.json.body?.payload ?? item.json.payload ?? {};\nif (!payload.leadId || !payload.businessId) throw new Error('Invalid new-lead payload');\nreturn [{ json: { ...payload, _idempotencyKey: idempotencyKey } }];"
-      },
-      "id": "verify-new-lead",
-      "name": "Verify Signature",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [460, 300]
-    },
-    {
-      "parameters": {
-        "jsCode": "const data = $getWorkflowStaticData('global');\ndata.seen = data.seen || {};\nconst now = Date.now();\nfor (const k of Object.keys(data.seen)) { if (data.seen[k] < now - 86400000) delete data.seen[k]; }\nconst item = $input.first().json;\nif (data.seen[item._idempotencyKey]) { return [{ json: { ...item, _duplicate: true } }]; }\ndata.seen[item._idempotencyKey] = now;\nreturn [{ json: { ...item, _duplicate: false } }];"
-      },
-      "id": "dedupe-new-lead",
-      "name": "Deduplicate",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [680, 300]
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
-          "conditions": [
-            { "id": "is-dup", "leftValue": "={{ $json._duplicate }}", "rightValue": true, "operator": { "type": "boolean", "operation": "equals" } }
-          ],
-          "combinator": "and"
-        },
-        "options": {}
-      },
-      "id": "if-dup-lead",
-      "name": "Is Duplicate?",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2.2,
-      "position": [900, 300]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={ \"chat_id\": \"{{ $env.TELEGRAM_SALES_CHAT_ID }}\", \"text\": \"سرنخ جدید\\nشماره: {{ $json.phone }}\\nوضعیت: {{ $json.status }}\\nشناسه: {{ $json.leadId }}\" }",
-        "options": { "timeout": 10000 }
-      },
-      "id": "notify-lead",
-      "name": "Notify Sales Chat",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [1120, 220]
-    },
-    {
-      "parameters": {
-        "respondWith": "json",
-        "responseBody": "={ \"ok\": true, \"duplicate\": {{ $json._duplicate ?? false }} }"
-      },
-      "id": "respond-lead",
-      "name": "Respond",
-      "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1.4,
-      "position": [1340, 300]
+ "name": "AI-Receptionist / new-lead",
+ "nodes": [
+  {
+   "parameters": {
+    "path": "ai-receptionist/new-lead",
+    "httpMethod": "POST",
+    "responseMode": "responseNode",
+    "authentication": "headerAuth",
+    "options": {}
+   },
+   "id": "wh-new-lead",
+   "name": "Lead Webhook",
+   "type": "n8n-nodes-base.webhook",
+   "typeVersion": 2,
+   "position": [
+    240,
+    300
+   ],
+   "webhookId": "a1b2c3d4-new-lead-0001",
+   "credentials": {
+    "httpHeaderAuth": {
+     "id": null,
+     "name": "AI Receptionist Automation Token"
     }
-  ],
-  "connections": {
-    "Lead Webhook": { "main": [[{ "node": "Verify Signature", "type": "main", "index": 0 }]] },
-    "Verify Signature": { "main": [[{ "node": "Deduplicate", "type": "main", "index": 0 }]] },
-    "Deduplicate": { "main": [[{ "node": "Is Duplicate?", "type": "main", "index": 0 }]] },
-    "Is Duplicate?": {
-      "main": [
-        [{ "node": "Respond", "type": "main", "index": 0 }],
-        [{ "node": "Notify Sales Chat", "type": "main", "index": 0 }]
-      ]
-    },
-    "Notify Sales Chat": { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] }
+   }
   },
-  "settings": { "executionOrder": "v1" },
-  "staticData": {}
+  {
+   "parameters": {
+    "jsCode": "const input = $input.first().json;\nconst body = input.body ?? input;\nconst payload = body.payload ?? {};\nconst idempotencyKey = body.idempotency_key ?? input.headers?.['x-idempotency-key'];\nif (!idempotencyKey) throw new Error('Missing idempotency key');\nif (!payload.leadId || !payload.businessId) throw new Error('Invalid new-lead payload');\nconst text = `سرنخ جدید\\nشماره: ${payload.phone ?? '—'}\\nوضعیت: ${payload.status ?? '—'}\\nشناسه: ${payload.leadId}`;\nreturn [{ json: {\n  businessId: payload.businessId,\n  event: 'new-lead',\n  channel: 'telegram',\n  recipient: $env.TELEGRAM_SALES_CHAT_ID,\n  title: 'سرنخ جدید',\n  message: text,\n  idempotencyKey,\n} }];"
+   },
+   "id": "prepare-new_lead",
+   "name": "Prepare Dispatch",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    520,
+    300
+   ]
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "={{ $env.APP_BASE_URL }}/api/v1/automation/dispatch",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Authorization",
+       "value": "=Bearer {{ $env.N8N_API_KEY }}"
+      }
+     ]
+    },
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify($json) }}",
+    "options": {
+     "timeout": 10000
+    }
+   },
+   "id": "dispatch-new_lead",
+   "name": "Dispatch via App",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    800,
+    300
+   ]
+  },
+  {
+   "parameters": {
+    "respondWith": "json",
+    "responseBody": "={ \"ok\": true, \"duplicate\": {{ $json.duplicate }}, \"delivered\": {{ $json.delivered }} }"
+   },
+   "id": "respond-lead",
+   "name": "Respond",
+   "type": "n8n-nodes-base.respondToWebhook",
+   "typeVersion": 1.4,
+   "position": [
+    1060,
+    300
+   ]
+  }
+ ],
+ "connections": {
+  "Lead Webhook": {
+   "main": [
+    [
+     {
+      "node": "Prepare Dispatch",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Prepare Dispatch": {
+   "main": [
+    [
+     {
+      "node": "Dispatch via App",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Dispatch via App": {
+   "main": [
+    [
+     {
+      "node": "Respond",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  }
+ },
+ "settings": {
+  "executionOrder": "v1"
+ }
 }

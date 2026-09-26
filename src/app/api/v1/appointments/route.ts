@@ -61,14 +61,18 @@ export async function POST(req: NextRequest) {
       action: "created",
       requestId: rid,
     });
-    await emitAutomationEvent("appointment", {
-      id: created.id,
-      businessId: auth.businessId,
-      appointmentId: created.id,
-      action: "created",
-      scheduledAt: created.scheduledAt?.toISOString(),
-      leadId: created.leadId,
-    });
+    await emitAutomationEvent(
+      "appointment",
+      {
+        id: created.id,
+        businessId: auth.businessId,
+        appointmentId: created.id,
+        action: "created",
+        scheduledAt: created.scheduledAt?.toISOString(),
+        leadId: created.leadId,
+      },
+      { idempotencyKey: `appointment:${created.id}:created` },
+    );
 
     return ok(created, 201);
   });

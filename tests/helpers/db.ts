@@ -16,6 +16,7 @@ const TABLES = [
   "audit_logs",
   "webhook_events",
   "usage_records",
+  "automation_dispatches",
   "notifications",
   "appointments",
   "call_messages",

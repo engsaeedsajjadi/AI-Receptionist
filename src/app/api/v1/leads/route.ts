@@ -120,15 +120,19 @@ export async function POST(req: NextRequest) {
         assignedUserId: finalLead.assignedUserId,
         requestId: rid,
       });
-      await emitAutomationEvent("new-lead", {
-        id: finalLead.id,
-        businessId: auth.businessId,
-        leadId: finalLead.id,
-        customerId: customer.id,
-        phone: customer.phone,
-        status: finalLead.status,
-        outcome,
-      });
+      await emitAutomationEvent(
+        "new-lead",
+        {
+          id: finalLead.id,
+          businessId: auth.businessId,
+          leadId: finalLead.id,
+          customerId: customer.id,
+          phone: customer.phone,
+          status: finalLead.status,
+          outcome,
+        },
+        { idempotencyKey: `new-lead:${finalLead.id}:${outcome}` },
+      );
     }
 
     return ok({ ...finalLead, outcome }, 201);

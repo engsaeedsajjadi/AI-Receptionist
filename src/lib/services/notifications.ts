@@ -1,6 +1,7 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, lt } from "drizzle-orm";
 import { db } from "@/db";
-import { notifications } from "@/db/schema";
+import { automationDispatches, businesses, notifications } from "@/db/schema";
+import { AppError } from "@/lib/errors";
 import {
   getNotificationProvider,
   type NotificationChannel,
@@ -109,6 +110,45 @@ export async function notify(input: NotifyInput): Promise<NotifyResult> {
     return { id: rowId, delivered: true, duplicate: false };
   }
 
+  let result: { ok: boolean; error?: string };
+  try {
+    result = await attemptDelivery(rowId, input, channel);
+  } catch (err) {
+    // The provider threw instead of returning a result: record the outcome
+    // as FAILED (never a stuck PENDING, never a throw to the caller).
+    result = { ok: false, error: err instanceof Error ? err.message : "delivery_error" };
+    await db
+      .update(notifications)
+      .set({ status: "FAILED", errorMessage: result.error })
+      .where(eq(notifications.id, rowId));
+    logWarn("Notification provider threw; recorded as FAILED", {
+      requestId: input.requestId,
+      businessId: input.businessId,
+      operation: `notify.${channel}`,
+      status: "error",
+      errorCode: result.error,
+    });
+  }
+
+  await recordUsage({
+    businessId: input.businessId,
+    type: "notifications",
+    quantity: 1,
+    unit: "count",
+    provider: channel,
+    idempotencyKey: input.idempotencyKey ? `notify:${input.idempotencyKey}` : undefined,
+    metadata: { notificationId: rowId, channel, delivered: result.ok },
+  });
+
+  return { id: rowId, delivered: result.ok, duplicate: false };
+}
+
+/** One delivery attempt: provider send → SENT/FAILED row update. */
+async function attemptDelivery(
+  rowId: string,
+  input: { businessId: string; recipient?: string; title: string; message: string; requestId?: string },
+  channel: NotificationChannel,
+): Promise<{ ok: boolean; error?: string }> {
   const provider = getNotificationProvider(channel);
   const result = await provider.send({
     to: input.recipient ?? "",
@@ -136,18 +176,86 @@ export async function notify(input: NotifyInput): Promise<NotifyResult> {
       errorCode: result.error,
     });
   }
+  return result;
+}
 
-  await recordUsage({
-    businessId: input.businessId,
-    type: "notifications",
-    quantity: 1,
-    unit: "count",
-    provider: channel,
-    idempotencyKey: input.idempotencyKey ? `notify:${input.idempotencyKey}` : undefined,
-    metadata: { notificationId: rowId, channel, delivered: result.ok },
-  });
+/**
+ * Operator retry of a FAILED notification: FAILED → PENDING → SENT/FAILED.
+ * Only FAILED rows are retryable (409 otherwise); the PENDING claim is
+ * conditional so concurrent retries collapse to a single attempt.
+ */
+export async function retryNotification(
+  businessId: string,
+  notificationId: string,
+  opts?: { requestId?: string },
+): Promise<NotifyResult> {
+  const [claimed] = await db
+    .update(notifications)
+    .set({ status: "PENDING", errorMessage: null })
+    .where(
+      and(
+        eq(notifications.id, notificationId),
+        eq(notifications.businessId, businessId),
+        eq(notifications.status, "FAILED"),
+      ),
+    )
+    .returning();
+  if (!claimed) {
+    throw new AppError(409, "CONFLICT", "Only FAILED notifications can be retried");
+  }
+  if (claimed.channel === "internal") {
+    await db
+      .update(notifications)
+      .set({ status: "SENT", sentAt: new Date() })
+      .where(eq(notifications.id, notificationId));
+    return { id: notificationId, delivered: true, duplicate: false };
+  }
+  const result = await attemptDelivery(
+    notificationId,
+    {
+      businessId,
+      recipient: claimed.recipient ?? undefined,
+      title: claimed.title,
+      message: claimed.message,
+      requestId: opts?.requestId,
+    },
+    claimed.channel as NotificationChannel,
+  );
+  return { id: notificationId, delivered: result.ok, duplicate: false };
+}
 
-  return { id: rowId, delivered: result.ok, duplicate: false };
+/**
+ * Reap notifications stuck PENDING (crash between insert and delivery):
+ * they move to FAILED/auto-unconfirmed so dashboards stop showing phantom
+ * in-flight rows. Operators retry explicitly via retryNotification.
+ */
+export async function reapStaleNotifications(
+  staleAfterSeconds = 600,
+  opts?: { requestId?: string; limit?: number },
+): Promise<{ reaped: number }> {
+  const cutoff = new Date(Date.now() - staleAfterSeconds * 1000);
+  const stuck = await db
+    .select({ id: notifications.id, businessId: notifications.businessId })
+    .from(notifications)
+    .where(and(eq(notifications.status, "PENDING"), lt(notifications.createdAt, cutoff)))
+    .limit(opts?.limit ?? 100);
+  let reaped = 0;
+  for (const row of stuck) {
+    const [won] = await db
+      .update(notifications)
+      .set({ status: "FAILED", errorMessage: "delivery_unconfirmed" })
+      .where(and(eq(notifications.id, row.id), eq(notifications.status, "PENDING")))
+      .returning({ id: notifications.id });
+    if (!won) continue;
+    reaped++;
+    logWarn("Reaped stale PENDING notification", {
+      requestId: opts?.requestId,
+      businessId: row.businessId,
+      operation: "notify.reap",
+      status: "FAILED",
+    });
+  }
+  return { reaped };
 }
 
 // ---------------------------------------------------------------------------
@@ -249,4 +357,103 @@ export async function notifyCallbackRequested(input: {
     requestId: input.requestId,
     metadata: { leadId: input.leadId },
   });
+}
+
+/**
+ * Automation fan-out entrypoint (called by n8n workflows, served by
+ * POST /api/v1/automation/dispatch).
+ *
+ * This table is the CRITICAL dedup store for workflow side effects:
+ * INSERT … ON CONFLICT DO NOTHING on (businessId, idempotencyKey) means
+ * redeliveries (emit retries, n8n replays) collapse to one notification.
+ * Delivery itself reuses notify(), so PENDING/SENT/FAILED lifecycle,
+ * fail-closed guards and usage recording all apply.
+ */
+export interface DispatchAutomationInput {
+  businessId: string;
+  event: string;
+  channel: "email" | "sms" | "telegram";
+  recipient: string;
+  title?: string;
+  message: string;
+  idempotencyKey: string;
+  requestId?: string;
+}
+
+export interface DispatchAutomationResult {
+  id: string;
+  duplicate: boolean;
+  delivered: boolean;
+  status: "PENDING" | "SENT" | "FAILED";
+}
+
+export async function dispatchAutomationEvent(
+  input: DispatchAutomationInput,
+): Promise<DispatchAutomationResult> {
+  const [business] = await db
+    .select({ id: businesses.id })
+    .from(businesses)
+    .where(eq(businesses.id, input.businessId))
+    .limit(1);
+  if (!business) throw new AppError(404, "BUSINESS_NOT_FOUND", "Business not found");
+
+  const [inserted] = await db
+    .insert(automationDispatches)
+    .values({
+      businessId: input.businessId,
+      event: input.event,
+      idempotencyKey: input.idempotencyKey,
+      channel: input.channel,
+      recipient: input.recipient,
+      title: input.title ?? input.event,
+      message: input.message,
+    })
+    .onConflictDoNothing({
+      target: [automationDispatches.businessId, automationDispatches.idempotencyKey],
+    })
+    .returning();
+
+  if (!inserted) {
+    const [existing] = await db
+      .select()
+      .from(automationDispatches)
+      .where(
+        and(
+          eq(automationDispatches.businessId, input.businessId),
+          eq(automationDispatches.idempotencyKey, input.idempotencyKey),
+        ),
+      )
+      .limit(1);
+    return {
+      id: existing.id,
+      duplicate: true,
+      delivered: existing.status === "SENT",
+      status: existing.status,
+    };
+  }
+
+  const outcome = await notify({
+    businessId: input.businessId,
+    type: `automation:${input.event}`,
+    title: input.title ?? input.event,
+    message: input.message,
+    channel: input.channel,
+    recipient: input.recipient,
+    idempotencyKey: `dispatch:${input.idempotencyKey}`,
+    requestId: input.requestId,
+  });
+
+  const status = outcome.delivered ? "SENT" : "FAILED";
+  await db
+    .update(automationDispatches)
+    .set({
+      status,
+      attempts: 1,
+      notificationId: outcome.id,
+      errorMessage: outcome.delivered ? null : "delivery_failed",
+      sentAt: outcome.delivered ? new Date() : null,
+    })
+    .where(eq(automationDispatches.id, inserted.id));
+
+  return { id: inserted.id, duplicate: false, delivered: outcome.delivered, status };
 }

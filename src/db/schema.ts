@@ -388,6 +388,44 @@ export const notifications = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Automation dispatches (n8n fan-out dedup — the app-side critical store)
+// ---------------------------------------------------------------------------
+
+export const automationDispatches = pgTable(
+  "automation_dispatches",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => businesses.id, { onDelete: "cascade" }),
+    event: varchar("event", { length: 50 }).notNull(),
+    idempotencyKey: varchar("idempotency_key", { length: 255 }).notNull(),
+    channel: varchar("channel", { length: 20 }).notNull(),
+    recipient: varchar("recipient", { length: 255 }).notNull(),
+    title: varchar("title", { length: 255 }).notNull().default(""),
+    message: text("message").notNull(),
+    status: notificationStatusEnum("status").notNull().default("PENDING"),
+    attempts: integer("attempts").notNull().default(0),
+    errorMessage: text("error_message"),
+    notificationId: uuid("notification_id").references(() => notifications.id, {
+      onDelete: "set null",
+    }),
+    sentAt: timestamp("sent_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    businessCreatedIdx: index("automation_dispatches_business_created_idx").on(
+      table.businessId,
+      table.createdAt,
+    ),
+    businessIdemIdx: uniqueIndex("automation_dispatches_business_idem_idx").on(
+      table.businessId,
+      table.idempotencyKey,
+    ),
+  }),
+);
+
+// ---------------------------------------------------------------------------
 // Usage / cost tracking
 // ---------------------------------------------------------------------------
 

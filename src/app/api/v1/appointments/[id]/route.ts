@@ -38,13 +38,17 @@ export async function PUT(req: NextRequest, ctx: Ctx) {
       action: "changed",
       requestId: rid,
     });
-    await emitAutomationEvent("appointment", {
-      id: created.id,
-      businessId: auth.businessId,
-      appointmentId: created.id,
-      action: "rescheduled",
-      scheduledAt: created.scheduledAt?.toISOString(),
-    });
+    await emitAutomationEvent(
+      "appointment",
+      {
+        id: created.id,
+        businessId: auth.businessId,
+        appointmentId: created.id,
+        action: "rescheduled",
+        scheduledAt: created.scheduledAt?.toISOString(),
+      },
+      { idempotencyKey: `appointment:${created.id}:rescheduled:${created.scheduledAt?.toISOString()}` },
+    );
     return ok(created);
   });
 }
@@ -62,12 +66,16 @@ export async function DELETE(req: NextRequest, ctx: Ctx) {
       action: "cancelled",
       requestId: rid,
     });
-    await emitAutomationEvent("appointment", {
-      id: cancelled.id,
-      businessId: auth.businessId,
-      appointmentId: cancelled.id,
-      action: "cancelled",
-    });
+    await emitAutomationEvent(
+      "appointment",
+      {
+        id: cancelled.id,
+        businessId: auth.businessId,
+        appointmentId: cancelled.id,
+        action: "cancelled",
+      },
+      { idempotencyKey: `appointment:${cancelled.id}:cancelled` },
+    );
     return ok(cancelled);
   });
 }

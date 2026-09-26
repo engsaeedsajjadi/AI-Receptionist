@@ -1,129 +1,123 @@
 {
-  "name": "AI-Receptionist / notification fan-out",
-  "nodes": [
-    {
-      "parameters": {
-        "path": "ai-receptionist/notification",
-        "httpMethod": "POST",
-        "responseMode": "responseNode",
-        "options": {}
-      },
-      "id": "wh-notif",
-      "name": "Notification Webhook",
-      "type": "n8n-nodes-base.webhook",
-      "typeVersion": 2,
-      "position": [240, 300],
-      "webhookId": "a1b2c3d4-notif-0005"
-    },
-    {
-      "parameters": {
-        "jsCode": "const crypto = require('crypto');\nconst secret = $env.N8N_WEBHOOK_SECRET;\nif (!secret) throw new Error('N8N_WEBHOOK_SECRET env is not set');\nconst item = $input.first();\nconst headers = item.json.headers ?? {};\nconst signature = headers['x-webhook-signature'] ?? headers['X-Webhook-Signature'];\nconst idempotencyKey = headers['x-idempotency-key'] ?? headers['X-Idempotency-Key'];\nif (!signature || !idempotencyKey) throw new Error('Missing webhook signature or idempotency key');\nconst rawBody = JSON.stringify(item.json.body ?? item.json);\nconst expected = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');\nif (signature !== expected) throw new Error('Invalid webhook signature');\nconst payload = item.json.body?.payload ?? item.json.payload ?? {};\nif (!payload.title || !payload.message) throw new Error('Invalid notification payload');\nreturn [{ json: { ...payload, _idempotencyKey: idempotencyKey } }];"
-      },
-      "id": "verify-notif",
-      "name": "Verify Signature",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [460, 300]
-    },
-    {
-      "parameters": {
-        "jsCode": "const data = $getWorkflowStaticData('global');\ndata.seen = data.seen || {};\nconst now = Date.now();\nfor (const k of Object.keys(data.seen)) { if (data.seen[k] < now - 86400000) delete data.seen[k]; }\nconst item = $input.first().json;\nif (data.seen[item._idempotencyKey]) { return [{ json: { ...item, _duplicate: true } }]; }\ndata.seen[item._idempotencyKey] = now;\nconst channel = ['telegram', 'sms', 'email'].includes(item.channel) ? item.channel : 'telegram';\nreturn [{ json: { ...item, _duplicate: false, _channel: channel } }];"
-      },
-      "id": "dedupe-notif",
-      "name": "Deduplicate",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [680, 300]
-    },
-    {
-      "parameters": {
-        "rules": {
-          "values": [
-            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [{ "id": "ch-tg", "leftValue": "={{ $json._channel }}", "rightValue": "telegram", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "telegram" },
-            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [{ "id": "ch-sms", "leftValue": "={{ $json._channel }}", "rightValue": "sms", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "sms" },
-            { "conditions": { "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" }, "conditions": [{ "id": "ch-em", "leftValue": "={{ $json._channel }}", "rightValue": "email", "operator": { "type": "string", "operation": "equals" } }], "combinator": "and" }, "renameOutput": true, "outputKey": "email" }
-          ]
-        },
-        "options": { "fallbackOutput": "extra" }
-      },
-      "id": "switch-notif",
-      "name": "Route by Channel",
-      "type": "n8n-nodes-base.switch",
-      "typeVersion": 3.2,
-      "position": [900, 300]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={ \"chat_id\": \"{{ $env.TELEGRAM_OPS_CHAT_ID }}\", \"text\": \"{{ $json.title }}\\n{{ $json.message }}\" }",
-        "options": { "timeout": 10000 }
-      },
-      "id": "send-tg",
-      "name": "Send Telegram",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [1140, 140]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "={{ $env.SMS_WEBHOOK_URL }}",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={ \"to\": \"{{ $json.recipient }}\", \"text\": \"{{ $json.title }}: {{ $json.message }}\" }",
-        "sendHeaders": true,
-        "headerParameters": { "parameters": [{ "name": "Authorization", "value": "=Bearer {{ $env.SMS_API_KEY }}" }] },
-        "options": { "timeout": 10000 }
-      },
-      "id": "send-sms",
-      "name": "Send SMS",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [1140, 300]
-    },
-    {
-      "parameters": {
-        "sendTo": "={{ $json.recipient }}",
-        "subject": "={{ $json.title }}",
-        "text": "={{ $json.message }}",
-        "options": {}
-      },
-      "id": "send-email",
-      "name": "Send Email",
-      "type": "n8n-nodes-base.emailSend",
-      "typeVersion": 2.1,
-      "position": [1140, 460]
-    },
-    {
-      "parameters": {
-        "respondWith": "json",
-        "responseBody": "={ \"ok\": true, \"channel\": \"{{ $json._channel }}\" }"
-      },
-      "id": "respond-notif",
-      "name": "Respond",
-      "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1.4,
-      "position": [1380, 300]
+ "name": "AI-Receptionist / notification fan-out",
+ "nodes": [
+  {
+   "parameters": {
+    "path": "ai-receptionist/notification",
+    "httpMethod": "POST",
+    "responseMode": "responseNode",
+    "authentication": "headerAuth",
+    "options": {}
+   },
+   "id": "wh-notif",
+   "name": "Notification Webhook",
+   "type": "n8n-nodes-base.webhook",
+   "typeVersion": 2,
+   "position": [
+    240,
+    300
+   ],
+   "webhookId": "a1b2c3d4-notif-0005",
+   "credentials": {
+    "httpHeaderAuth": {
+     "id": null,
+     "name": "AI Receptionist Automation Token"
     }
-  ],
-  "connections": {
-    "Notification Webhook": { "main": [[{ "node": "Verify Signature", "type": "main", "index": 0 }]] },
-    "Verify Signature": { "main": [[{ "node": "Deduplicate", "type": "main", "index": 0 }]] },
-    "Deduplicate": { "main": [[{ "node": "Route by Channel", "type": "main", "index": 0 }]] },
-    "Route by Channel": {
-      "main": [
-        [{ "node": "Send Telegram", "type": "main", "index": 0 }],
-        [{ "node": "Send SMS", "type": "main", "index": 0 }],
-        [{ "node": "Send Email", "type": "main", "index": 0 }]
-      ]
-    },
-    "Send Telegram": { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] },
-    "Send SMS": { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] },
-    "Send Email": { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] }
+   }
   },
-  "settings": { "executionOrder": "v1" },
-  "staticData": {}
+  {
+   "parameters": {
+    "jsCode": "const input = $input.first().json;\nconst body = input.body ?? input;\nconst payload = body.payload ?? {};\nconst idempotencyKey = body.idempotency_key ?? input.headers?.['x-idempotency-key'];\nif (!idempotencyKey) throw new Error('Missing idempotency key');\nif (!payload.businessId || !payload.title || !payload.message || !payload.recipient) {\n  throw new Error('Invalid notification payload (businessId, title, message, recipient required)');\n}\nconst channel = ['telegram', 'sms', 'email'].includes(payload.channel) ? payload.channel : 'telegram';\nreturn [{ json: {\n  businessId: payload.businessId,\n  event: 'notification',\n  channel,\n  recipient: payload.recipient,\n  title: payload.title,\n  message: payload.message,\n  idempotencyKey,\n} }];"
+   },
+   "id": "prepare-notification",
+   "name": "Prepare Dispatch",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    520,
+    300
+   ]
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "={{ $env.APP_BASE_URL }}/api/v1/automation/dispatch",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Authorization",
+       "value": "=Bearer {{ $env.N8N_API_KEY }}"
+      }
+     ]
+    },
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify($json) }}",
+    "options": {
+     "timeout": 10000
+    }
+   },
+   "id": "dispatch-notification",
+   "name": "Dispatch via App",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    800,
+    300
+   ]
+  },
+  {
+   "parameters": {
+    "respondWith": "json",
+    "responseBody": "={ \"ok\": true, \"duplicate\": {{ $json.duplicate }}, \"delivered\": {{ $json.delivered }} }"
+   },
+   "id": "respond-notif",
+   "name": "Respond",
+   "type": "n8n-nodes-base.respondToWebhook",
+   "typeVersion": 1.4,
+   "position": [
+    1060,
+    300
+   ]
+  }
+ ],
+ "connections": {
+  "Notification Webhook": {
+   "main": [
+    [
+     {
+      "node": "Prepare Dispatch",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Prepare Dispatch": {
+   "main": [
+    [
+     {
+      "node": "Dispatch via App",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Dispatch via App": {
+   "main": [
+    [
+     {
+      "node": "Respond",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  }
+ },
+ "settings": {
+  "executionOrder": "v1"
+ }
 }

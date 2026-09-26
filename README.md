@@ -73,7 +73,7 @@ Environment is validated at boot and the app **fails fast** on invalid config
 | `DATABASE_URL` | yes | Postgres 16 connection string (pgvector + pg_trgm enabled by migrate) |
 | `REDIS_URL` | yes (prod) | Redis URL; unset ⇒ in-memory fallbacks, dev/test only |
 | `JWT_SECRET` / `JWT_REFRESH_SECRET` | yes (prod) | ≥32 chars in production (fail-fast) |
-| `VOICE_WEBHOOK_SECRET` / `N8N_WEBHOOK_SECRET` | yes (prod) | HMAC secrets for voice-provider / n8n webhooks |
+| `VOICE_WEBHOOK_SECRET` / `N8N_WEBHOOK_SECRET` | yes (prod) | HMAC secret for voice webhooks / bearer token n8n validates via Header Auth |
 | `LLM_PROVIDER` | no | `openai` / `compatible` / `dev` (default `dev`; `dev` rejected in prod) |
 | `OPENAI_API_KEY` | for openai | Required when any `*_PROVIDER=openai` (LLM, STT, TTS, embeddings) |
 | `COMPATIBLE_LLM_*` | for compatible | Base URL (+key/model) for OpenAI-compatible gateways |
@@ -84,6 +84,8 @@ Environment is validated at boot and the app **fails fast** on invalid config
 | `STORAGE_PROVIDER` | no | `local` (default, `./storage`) / `s3` (needs `S3_ENDPOINT` + keys in prod) |
 | `NOTIFICATION_DEFAULT_CHANNEL` | no | `internal` (default, dashboard inbox) / `email` (needs `SMTP_*`) |
 | `N8N_ENABLED` / `N8N_URL` | no | Automation events; off by default |
+| `N8N_API_KEY` | for n8n | Bearer key n8n presents to `POST /api/v1/automation/dispatch` (required in prod when `N8N_ENABLED=true`) |
+| `N8N_MAX_RETRIES` | no | Emit retries on network/429/5xx (default 2); all attempts share one idempotency key |
 | `TRUST_PROXY` | via proxy | `true` when behind nginx (prod compose sets it); else `X-Forwarded-For` ignored |
 
 See `.env.example` for the full list with defaults.
@@ -112,13 +114,20 @@ With `dev` providers (or missing keys) every hop fails honestly with
 
 ## n8n workflows
 
-Import from `n8n/` (or sync automatically when `N8N_API_URL`/`N8N_API_KEY` are set):
+Import the JSON files from `n8n/` manually (there is no automatic sync).
+Each workflow is `Webhook (Header Auth) → Prepare Dispatch → Dispatch via App
+→ Respond`: n8n validates the `x-automation-token`, builds the message, and
+POSTs it back to `POST /api/v1/automation/dispatch`, where the app dedups on
+`(businessId, idempotencyKey)` in Postgres and performs the provider send.
+Critical dedup state lives only in the app database — never in n8n static data.
 
-- `call-completed.json` — transcript → summary → knowledge/CRM sync
-- `new-lead.json` — instant lead notification to the business
-- `appointment.json` — scheduled reminder sender
-- `human-handoff.json` — live handoff escalation
-- `notification.json` — generic notification fan-out
+- `new-lead.json` — new-lead alerts to the sales Telegram chat
+- `call-completed.json` — call summary to the ops chat
+- `appointment.json` — created/rescheduled/cancelled notices to the ops chat
+- `human-handoff.json` — transfer/failure escalation (failures → urgent chat)
+- `notification.json` — generic fan-out template (no app emitter yet)
+
+Setup details (credentials, env vars, delivery semantics): `n8n/README.md`.
 
 ## Backups
 

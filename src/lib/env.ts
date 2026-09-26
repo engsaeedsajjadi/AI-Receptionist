@@ -109,6 +109,7 @@ const envSchema = z.object({
   N8N_URL: z.string().default("http://localhost:5678"),
   N8N_API_KEY: z.string().default(""),
   N8N_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
+  N8N_MAX_RETRIES: z.coerce.number().int().min(0).max(10).default(2),
 
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
   SENTRY_DSN: z.string().default(""),
@@ -137,6 +138,8 @@ function loadEnv(): AppEnv {
       fail("JWT_REFRESH_SECRET must be at least 32 characters in production");
     if (!e.VOICE_WEBHOOK_SECRET) fail("VOICE_WEBHOOK_SECRET is required in production");
     if (!e.N8N_WEBHOOK_SECRET) fail("N8N_WEBHOOK_SECRET is required in production");
+    if (e.N8N_ENABLED && !e.N8N_API_KEY)
+      fail("N8N_API_KEY is required in production when N8N_ENABLED=true (automation dispatch auth)");
     if (["openai"].includes(e.LLM_PROVIDER) && !e.OPENAI_API_KEY)
       fail("OPENAI_API_KEY is required when LLM_PROVIDER=openai");
     if (e.LLM_PROVIDER === "compatible" && !e.COMPATIBLE_LLM_BASE_URL)
