@@ -62,6 +62,8 @@ const envSchema = z.object({
   /** Shared token authenticating gateways to the media sidecar. */
   VOICE_MEDIA_TOKEN: z.string().default(""),
   VOICE_MEDIA_PORT: z.coerce.number().int().positive().default(3001),
+  /** TTL (seconds) for per-call media tokens issued at call-started. */
+  VOICE_MEDIA_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(900),
   /** Max single WebSocket frame (bytes). Frames larger than this are dropped. */
   VOICE_MEDIA_MAX_FRAME_BYTES: z.coerce.number().int().positive().default(262_144),
   /** Comma-separated allowed WS Origin values; empty = same-gateway-token only (no origin check). */

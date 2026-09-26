@@ -6,7 +6,8 @@
  * src/lib/voice/media-server.ts: start → audio chunks → utterance-end →
  * agent-audio → … → stop.
  *
- * Usage: npm run media:server   (requires VOICE_MEDIA_TOKEN)
+ * Usage: npm run media:server   (requires VOICE_MEDIA_TOKEN — the HMAC key
+ * verifying per-call media tokens minted at call-started)
  * Health: GET /healthz → 200 { status, sessions, states }
  */
 import "dotenv/config";

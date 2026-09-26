@@ -8,6 +8,7 @@ import { AppError } from "@/lib/errors";
 import { env, getEnv } from "@/lib/env";
 import { logInfo, logWarn } from "@/lib/logger";
 import { getVoiceProvider } from "@/lib/providers/voice";
+import { issueMediaToken } from "@/lib/voice/media-tokens";
 import { resolveBusinessByCalledNumber } from "@/lib/services/phone-routing";
 import { normalizePersianText, normalizePhone } from "@/lib/normalization";
 import { enforceRateLimit } from "@/lib/rate-limit";
@@ -128,7 +129,9 @@ export async function POST(req: NextRequest) {
     // RECORD is the source of truth and is already persisted — but the
     // outcome is reported honestly in the response (never a silent fake).
     const media = await bootstrapMedia({
+      businessId: businessId,
       businessSettings: (business.settings as Record<string, unknown>) ?? {},
+      callId,
       externalCallId: body.external_call_id,
       requestId: rid,
       skip: !created,
@@ -160,7 +163,9 @@ export type MediaBootstrap = {
  * or when no telephony provider is configured.
  */
 export async function bootstrapMedia(input: {
+  businessId: string;
   businessSettings: Record<string, unknown>;
+  callId: string;
   externalCallId: string;
   requestId: string;
   skip: boolean;
@@ -193,11 +198,25 @@ export async function bootstrapMedia(input: {
   if (!e.VOICE_MEDIA_PUBLIC_URL) {
     return { attempted: true, answered: true, streaming: false, reason: "media_url_not_configured" };
   }
+  // Fail closed: without the signing secret there is no per-call credential
+  // the sidecar would accept, so never ask the gateway to stream. The token
+  // itself is passed to the gateway only — never logged, never returned.
+  if (!e.VOICE_MEDIA_TOKEN) {
+    return { attempted: true, answered: true, streaming: false, reason: "media_token_not_configured" };
+  }
+  const mediaToken = issueMediaToken({
+    businessId: input.businessId,
+    callId: input.callId,
+    externalCallId: input.externalCallId,
+    ttlSeconds: e.VOICE_MEDIA_TOKEN_TTL_SECONDS,
+    secret: e.VOICE_MEDIA_TOKEN,
+  });
   try {
-    await voice.startStream(
-      input.externalCallId,
-      { websocketUrl: e.VOICE_MEDIA_PUBLIC_URL, requestId: input.requestId },
-    );
+    await voice.startStream(input.externalCallId, {
+      websocketUrl: e.VOICE_MEDIA_PUBLIC_URL,
+      requestId: input.requestId,
+      mediaToken,
+    });
     return { attempted: true, answered: true, streaming: true };
   } catch (err) {
     logWarn("Voice stream start failed (call answered, no media)", {

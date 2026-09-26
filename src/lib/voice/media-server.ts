@@ -12,6 +12,7 @@ import {
   resolveBusinessByCalledNumber,
   type CalledNumberRoute,
 } from "@/lib/services/phone-routing";
+import { InvalidMediaToken, verifyMediaToken, type MediaTokenClaims } from "@/lib/voice/media-tokens";
 import { TurnStateMachine, type VoiceTurnState } from "@/lib/voice/turn-machine";
 import {
   deleteVoiceSession,
@@ -28,6 +29,10 @@ import { runVoiceTurn, type VoiceTurnInput, type VoiceTurnResult } from "@/lib/v
  * Gateway → server:
  *   { type: "start", token, businessId?, calledNumber?, callId?, externalCallId?,
  *     agentId?, language?, voice?, audioMimeType?, utteranceMode?, audio? }
+ *     token: the per-call mediaToken delivered via stream/start (preferred;
+ *            binds this socket to one call+tenant and wins over any asserted
+ *            callId/businessId) — or the legacy static VOICE_MEDIA_TOKEN.
+ *            A static token MUST NOT start with "v1." (reserved prefix).
  *     utteranceMode: "gateway" (default, gateway sends utterance-end) |
  *                    "server-vad" (server segments with VAD; requires audio
  *                    { encoding: pcm16|mulaw|alaw, sampleRate: 8000|16000 })
@@ -81,7 +86,11 @@ export type SessionHooks = {
 };
 
 export type MediaServerOptions = {
-  /** Shared secret gateways must present in `start`. Empty = refuse everything. */
+  /**
+   * VOICE_MEDIA_TOKEN: HMAC key verifying per-call media tokens (preferred)
+   * and the legacy static token accepted for zero-downtime gateway upgrades.
+   * Empty = refuse everything. Never sent to gateways by the app.
+   */
   token: string;
   turnRunner?: (input: VoiceTurnInput) => Promise<VoiceTurnResult>;
   resolveCall?: (
@@ -479,14 +488,32 @@ export class MediaSession {
       this.sendError("ALREADY_STARTED", "Session already started");
       return;
     }
-    if (!this.opts.token || !safeEqual(msg.token ?? "", this.opts.token)) {
+    // Auth: a "v1." token is a per-call credential minted at call-started
+    // and verified against this same secret; anything else must equal the
+    // legacy static token. Failures are fatal and never echo the token.
+    const presented = msg.token ?? "";
+    let callClaims: MediaTokenClaims | null = null;
+    if (presented.startsWith("v1.")) {
+      try {
+        callClaims = verifyMediaToken(presented, this.opts.token);
+      } catch (err) {
+        const reason = err instanceof InvalidMediaToken ? err.reason : "INVALID";
+        this.sendError("UNAUTHORIZED", `Invalid media token (${reason})`, true);
+        return;
+      }
+    } else if (!this.opts.token || !safeEqual(presented, this.opts.token)) {
       this.sendError("UNAUTHORIZED", "Invalid media token", true);
       return;
     }
-    // Tenant binding: deterministic called-number routing wins; an asserted
-    // businessId is accepted only when it agrees with the route (same rule
-    // as the call-started webhook — a call must never enter the wrong agent).
-    let businessId = msg.businessId ?? null;
+    // Tenant binding: a per-call token fixes the tenant; deterministic
+    // called-number routing wins next; an asserted businessId is accepted
+    // only when it agrees with both (same rule as the call-started webhook
+    // — a call must never enter the wrong agent).
+    let businessId = callClaims?.businessId ?? msg.businessId ?? null;
+    if (callClaims && msg.businessId && msg.businessId !== callClaims.businessId) {
+      this.sendError("TENANT_MISMATCH", "businessId disagrees with media token binding", true);
+      return;
+    }
     if (msg.calledNumber) {
       const route = await this.opts.routeCall(msg.calledNumber);
       if (!route.ok) {
@@ -503,7 +530,17 @@ export class MediaSession {
       this.sendError("INVALID_START", "start requires businessId or calledNumber", true);
       return;
     }
-    const resolution = await this.opts.resolveCall(businessId, msg.callId, msg.externalCallId);
+    // Call binding: the token fixes the call row. A gateway asserting a
+    // DIFFERENT callId is mixing calls — fail loudly, never coerce.
+    if (callClaims && msg.callId && msg.callId !== callClaims.callId) {
+      this.sendError("CALL_MISMATCH", "callId disagrees with media token binding", true);
+      return;
+    }
+    const resolution = await this.opts.resolveCall(
+      businessId,
+      callClaims?.callId ?? msg.callId,
+      callClaims?.externalCallId ?? msg.externalCallId,
+    );
     if (!resolution) {
       this.sendError("CALL_NOT_FOUND", "Call not found for this business", true);
       return;

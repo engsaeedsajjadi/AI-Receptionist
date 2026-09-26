@@ -19,7 +19,11 @@ import { NO_VOICE_CAPABILITIES, type VoiceCapabilities } from "@/lib/providers/c
  *   POST {base}/calls/{providerCallId}/hangup            { reason? }
  *   POST {base}/calls/{providerCallId}/play              { audioUrl?, text?, language? }
  *   POST {base}/calls/{providerCallId}/transfer          { destination, timeoutSeconds? }
- *   POST {base}/calls/{providerCallId}/stream/start      { websocketUrl, language? }
+ *   POST {base}/calls/{providerCallId}/stream/start      { websocketUrl, language?, mediaToken }
+ * The gateway MUST forward mediaToken verbatim as `token` in the media
+ * WebSocket `start` frame. It is a short-lived per-call credential issued
+ * at call-started (see src/lib/voice/media-tokens.ts) — never the static
+ * VOICE_MEDIA_TOKEN, which never leaves the app/sidecar pair.
  *   POST {base}/calls/{providerCallId}/stream/stop
  *   GET  {base}/calls/{providerCallId}                   → { status, ... }
  * Inbound events arrive at /api/v1/webhooks/voice/* (HMAC-signed).
@@ -62,7 +66,7 @@ export interface VoiceProvider {
   playAudio(providerCallId: string, audio: PlayAudioInput, opts?: { requestId?: string }): Promise<VoiceActionResult>;
   startStream(
     providerCallId: string,
-    opts: { websocketUrl: string; language?: string; requestId?: string },
+    opts: { websocketUrl: string; language?: string; requestId?: string; mediaToken: string },
   ): Promise<VoiceActionResult>;
   stopStream(providerCallId: string, opts?: { requestId?: string }): Promise<VoiceActionResult>;
   transferCall(
@@ -210,12 +214,19 @@ export class GenericVoiceProvider implements VoiceProvider {
 
   async startStream(
     providerCallId: string,
-    opts: { websocketUrl: string; language?: string; requestId?: string },
+    opts: { websocketUrl: string; language?: string; requestId?: string; mediaToken: string },
   ): Promise<VoiceActionResult> {
+    if (!opts.mediaToken) {
+      throw new AppError(500, "INTERNAL_ERROR", "startStream requires a per-call media token");
+    }
     const raw = await this.request<unknown>(
       "POST",
       `/calls/${encodeURIComponent(providerCallId)}/stream/start`,
-      { websocketUrl: opts.websocketUrl, language: opts.language ?? getEnv().VOICE_DEFAULT_LANGUAGE },
+      {
+        websocketUrl: opts.websocketUrl,
+        language: opts.language ?? getEnv().VOICE_DEFAULT_LANGUAGE,
+        mediaToken: opts.mediaToken,
+      },
       opts.requestId,
     );
     return { ok: true, providerCallId, provider: this.name, raw };

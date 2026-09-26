@@ -79,7 +79,7 @@ Environment is validated at boot and the app **fails fast** on invalid config
 | `COMPATIBLE_LLM_*` | for compatible | Base URL (+key/model) for OpenAI-compatible gateways |
 | `EMBEDDING_PROVIDER` / `EMBEDDING_MODEL` / `EMBEDDING_DIMENSIONS` | no | `openai` / `dev`; dims must match the pgvector column (1536) |
 | `VOICE_PROVIDER` + `VOICE_API_BASE_URL`/`VOICE_API_KEY` | for calls | `generic` / `dev`; generic requires base URL + key in prod |
-| `VOICE_MEDIA_PUBLIC_URL` / `VOICE_MEDIA_TOKEN` | for streaming | `wss://<host>/media` + gateway↔sidecar token; empty ⇒ no gateway audio |
+| `VOICE_MEDIA_PUBLIC_URL` / `VOICE_MEDIA_TOKEN` (+`_TTL_SECONDS`, default 900) | for streaming | `wss://<host>/media` + secret minting per-call media tokens at call-started; empty ⇒ answered but never streamed |
 | `STT_PROVIDER` / `TTS_PROVIDER` (+ models) | no | `openai` / `compatible` / `dev` (default `dev`) |
 | `STORAGE_PROVIDER` | no | `local` (default, `./storage`) / `s3` (needs `S3_ENDPOINT` + keys in prod) |
 | `NOTIFICATION_DEFAULT_CHANNEL` | no | `internal` (default, dashboard inbox) / `email` (needs `SMTP_*`) |
@@ -108,8 +108,9 @@ HMAC-signed webhooks, and exchange live audio with the media sidecar over WebSoc
   Gateway-side STT is supported via the transcript topology. Every turn reports a
   latency split (`stt/agent/llm/tools/tts/store/total`).
 - Media sidecar — `scripts/media-server.ts` (prod compose `media` service, nginx
-  `/media` → `media:3001`, `VOICE_MEDIA_PUBLIC_URL=wss://<host>/media`): token +
-  optional origin allowlist, session cap, per-frame caps, sequenced audio frames
+  `/media` → `media:3001`, `VOICE_MEDIA_PUBLIC_URL=wss://<host>/media`): per-call
+  media token (minted at call-started, binds one tenant+call; legacy static token
+  still accepted) + optional origin allowlist, session cap, per-frame caps, sequenced audio frames
   (reorder window + duplicate drop), server-VAD mode with auto barge-in, silence
   reprompts + giveup, Persian failure fallbacks. Protocol: `src/lib/voice/media-server.ts`.
 - Speech — `STT_PROVIDER`/`TTS_PROVIDER` (`openai`/`compatible`; Persian-first).

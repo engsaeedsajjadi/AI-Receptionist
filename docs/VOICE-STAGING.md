@@ -43,7 +43,7 @@ JSON everywhere, 15s timeout, 2 retries on network faults.
 | `POST /calls/{id}/hangup` `{reason?}` | Hang up |
 | `POST /calls/{id}/play` `{audioUrl?, text?, language?}` | Play reply audio (URL preferred; `text` = gateway-side TTS fallback, Persian) |
 | `POST /calls/{id}/transfer` `{destination, timeoutSeconds?}` | Transfer to human; response `{status}` (`completed` ⇒ TRANSFERRED, else INITIATED; HTTP error ⇒ TRANSFER_FAILED) |
-| `POST /calls/{id}/stream/start` `{websocketUrl, language?}` | Open media WS to the sidecar |
+| `POST /calls/{id}/stream/start` `{websocketUrl, language?, mediaToken}` | Open media WS to the sidecar; forward `mediaToken` verbatim as `token` in the `start` frame |
 | `POST /calls/{id}/stream/stop` | Close media streaming |
 | `GET /calls/{id}` → `{status, ...}` | Poll call status |
 
@@ -71,9 +71,15 @@ nginx `/media` → `media:3001`, buffering off, 1d timeouts): full frame
 reference in `src/lib/voice/media-server.ts` header. Essentials for the
 gateway implementer:
 
-- First frame MUST be `start` with `VOICE_MEDIA_TOKEN` + `businessId`
-  and/or `calledNumber` (+ `callId`/`externalCallId`): same routing rule
-  as `call-started` (mismatch ⇒ fatal `TENANT_MISMATCH`).
+- First frame MUST be `start` with `token` = the per-call `mediaToken`
+  from `stream/start` (HMAC-signed, single call+tenant, TTL
+  `VOICE_MEDIA_TOKEN_TTL_SECONDS`, default 900s; legacy static
+  `VOICE_MEDIA_TOKEN` still accepted during gateway upgrades — it MUST
+  NOT start with `v1.`). The token fixes tenant+call: asserted
+  `businessId`/`callId`/`calledNumber` are optional and MUST agree with
+  it (mismatch ⇒ fatal `TENANT_MISMATCH`/`CALL_MISMATCH`). The app never
+  sends `VOICE_MEDIA_TOKEN` itself anywhere — rotate it after upgrading
+  the gateway; never log or persist media tokens.
 - Gateway-VAD mode (default): binary audio chunks (opaque bytes for STT
   upload) or `{type:"audio", seq, payload}` sequenced frames, then
   `{type:"utterance-end", eventId}` per utterance. One turn at a time.
@@ -96,6 +102,8 @@ gateway implementer:
 - [ ] `VOICE_PROVIDER=generic`, `VOICE_API_BASE_URL`, `VOICE_API_KEY`
 - [ ] `VOICE_WEBHOOK_SECRET` (strong random; same value in the gateway)
 - [ ] `VOICE_MEDIA_PUBLIC_URL=wss://<staging-host>/media`, `VOICE_MEDIA_TOKEN`
+      (signing secret; per-call tokens minted from it, TTL
+      `VOICE_MEDIA_TOKEN_TTL_SECONDS`, default 900s)
 - [ ] `VOICE_MEDIA_ALLOWED_ORIGINS` (gateway origin, recommended)
 - [ ] `STT_PROVIDER=openai|compatible` + key/URL, `STT_MODEL`
 - [ ] `TTS_PROVIDER=openai|compatible` + key/URL, `TTS_MODEL`, `TTS_VOICE`

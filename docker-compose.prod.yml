@@ -65,6 +65,12 @@ services:
       VOICE_PROVIDER: ${VOICE_PROVIDER:-generic}
       VOICE_API_BASE_URL: ${VOICE_API_BASE_URL:-}
       VOICE_API_KEY: ${VOICE_API_KEY:-}
+      # call-started mints per-call media tokens from this secret and points
+      # the gateway at the sidecar; empty values mean answered-but-never-
+      # streamed (reported honestly, never faked).
+      VOICE_MEDIA_PUBLIC_URL: ${VOICE_MEDIA_PUBLIC_URL:-}
+      VOICE_MEDIA_TOKEN: ${VOICE_MEDIA_TOKEN:-}
+      VOICE_MEDIA_TOKEN_TTL_SECONDS: ${VOICE_MEDIA_TOKEN_TTL_SECONDS:-900}
       STT_PROVIDER: ${STT_PROVIDER:-openai}
       STT_MODEL: ${STT_MODEL:-whisper-1}
       TTS_PROVIDER: ${TTS_PROVIDER:-openai}
