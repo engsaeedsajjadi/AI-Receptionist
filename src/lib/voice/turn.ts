@@ -173,6 +173,7 @@ export async function runVoiceTurn(input: VoiceTurnInput): Promise<VoiceTurnResu
     businessId: input.businessId,
     agentId: input.agentId,
     callId: input.callId,
+    eventId: input.eventId,
     userMessage: transcript,
     requestId: input.requestId,
     actor: input.actor ?? "voice-turn",

@@ -265,10 +265,13 @@ export const callMessages = pgTable(
     role: callMessageRoleEnum("role").notNull(),
     content: text("content").notNull(),
     timestamp: timestamp("timestamp", { withTimezone: true }).notNull().defaultNow(),
-    // Provider-supplied segment identity for idempotent transcript ingestion.
-    // NULL for internally generated messages (agent turns); the unique index
-    // only constrains non-null provider event ids (Postgres treats NULLs as
-    // distinct in unique indexes).
+    // Canonical voice event identity (per call): provider eventId for caller
+    // segments, `{eventId}:reply` for the agent reply to that segment.
+    // Writers insert with onConflictDoNothing on (callId, eventId) so the
+    // gateway-STT path and the voice-turn path collapse to ONE row per
+    // utterance instead of duplicating it. NULL for non-voice messages
+    // (dashboard playground); the unique index only constrains non-null
+    // event ids (Postgres treats NULLs as distinct in unique indexes).
     eventId: varchar("event_id", { length: 255 }),
     seq: integer("seq"),
     metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),

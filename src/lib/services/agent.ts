@@ -77,6 +77,14 @@ export type AgentTurnInput = {
   businessId: string;
   agentId?: string;
   callId?: string;
+  /**
+   * Canonical voice event identity for this utterance (provider eventId).
+   * The CUSTOMER row is keyed by it so a gateway-STT transcript that already
+   * persisted this segment collapses instead of duplicating (single CUSTOMER
+   * writer); the AGENT row uses `{eventId}:reply` so crash-retries collapse
+   * too. Absent for non-voice turns (dashboard playground).
+   */
+  eventId?: string;
   /** Latest caller utterance (Persian). */
   userMessage: string;
   requestId: string;
@@ -245,10 +253,21 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
       .where(and(eq(calls.id, input.callId), eq(calls.businessId, input.businessId)))
       .limit(1);
     if (call) {
-      await db.insert(callMessages).values([
-        { callId: input.callId, role: "CUSTOMER", content: userMessage },
-        { callId: input.callId, role: "AGENT", content: reply },
-      ]);
+      // P0-5 single-writer collapse: when the caller utterance already
+      // exists (gateway-STT transcript webhook won the race with the same
+      // provider eventId), the CUSTOMER insert is a no-op instead of a
+      // duplicate row; `:reply` keys the AGENT row so crash-retries of the
+      // same turn collapse as well. NULL eventIds (playground/adhoc turns)
+      // never conflict — Postgres treats NULLs as distinct.
+      const customerEventId = input.eventId ?? null;
+      const agentEventId = input.eventId ? `${input.eventId}:reply`.slice(0, 255) : null;
+      await db
+        .insert(callMessages)
+        .values([
+          { callId: input.callId, role: "CUSTOMER", content: userMessage, eventId: customerEventId },
+          { callId: input.callId, role: "AGENT", content: reply, eventId: agentEventId },
+        ])
+        .onConflictDoNothing({ target: [callMessages.callId, callMessages.eventId] });
     }
   }
 
