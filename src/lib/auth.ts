@@ -201,6 +201,21 @@ export async function getAuthContext(req: NextRequest) {
   };
 }
 
+/**
+ * Assert a user exists AND belongs to the given business (IDOR guard for
+ * assignee/owner references). Throws 404 USER_NOT_FOUND otherwise — never
+ * leaks whether the id exists in another tenant.
+ */
+export async function assertUserInBusiness(businessId: string, userId: string) {
+  const [user] = await db
+    .select()
+    .from(users)
+    .where(and(eq(users.id, userId), eq(users.businessId, businessId)))
+    .limit(1);
+  if (!user) throw new AppError(404, "USER_NOT_FOUND", "User not found");
+  return user;
+}
+
 // ---------------------------------------------------------------------------
 // Login attempts / lockout
 // ---------------------------------------------------------------------------

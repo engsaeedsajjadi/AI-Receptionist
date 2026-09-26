@@ -1,7 +1,7 @@
 import { and, eq, gte, inArray, lt, ne } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
-import { appointments, businesses } from "@/db/schema";
+import { appointments, businesses, customers, leads, users } from "@/db/schema";
 import { AppError } from "@/lib/errors";
 import { acquireLock } from "@/lib/redis";
 import { normalizePersianText } from "@/lib/normalization";
@@ -282,12 +282,48 @@ export const CreateAppointmentSchema = z.object({
 
 export type CreateAppointmentInput = z.infer<typeof CreateAppointmentSchema>;
 
+/**
+ * Referenced entities must belong to the booking business: FK constraints
+ * only prove global existence, so without this check a caller could link
+ * an appointment to another tenant's lead, customer, or user.
+ */
+async function assertAppointmentRefsInBusiness(
+  businessId: string,
+  input: { leadId?: string; customerId?: string; assignedUserId?: string },
+): Promise<void> {
+  if (input.leadId) {
+    const [row] = await db
+      .select({ id: leads.id })
+      .from(leads)
+      .where(and(eq(leads.id, input.leadId), eq(leads.businessId, businessId)))
+      .limit(1);
+    if (!row) throw new AppError(404, "LEAD_NOT_FOUND", "Lead not found");
+  }
+  if (input.customerId) {
+    const [row] = await db
+      .select({ id: customers.id })
+      .from(customers)
+      .where(and(eq(customers.id, input.customerId), eq(customers.businessId, businessId)))
+      .limit(1);
+    if (!row) throw new AppError(404, "CUSTOMER_NOT_FOUND", "Customer not found");
+  }
+  if (input.assignedUserId) {
+    const [row] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(and(eq(users.id, input.assignedUserId), eq(users.businessId, businessId)))
+      .limit(1);
+    if (!row) throw new AppError(404, "USER_NOT_FOUND", "User not found");
+  }
+}
+
 export async function createAppointment(businessId: string, raw: unknown, opts?: { requestId?: string }) {
   void opts;
   const input = CreateAppointmentSchema.parse(raw);
   const start = new Date(input.scheduledAt);
   if (Number.isNaN(start.getTime())) throw new AppError(400, "VALIDATION_ERROR", "Invalid scheduledAt");
   if (start <= new Date()) throw new AppError(400, "VALIDATION_ERROR", "Appointment must be in the future");
+  await assertAppointmentRefsInBusiness(businessId, input);
   const end = new Date(start.getTime() + input.durationMinutes * 60_000);
 
   const { key } = await assertSlotWithinSchedule(businessId, start, input.durationMinutes);

@@ -48,6 +48,26 @@ const updateSchema = z.object({
   password: z.string().min(8).max(128).optional(),
 });
 
+/**
+ * Removing the last active ADMIN (demote, deactivate, delete) would lock the
+ * tenant out of user/business management. Refuse with 400 instead.
+ */
+async function assertNotLastAdmin(businessId: string, targetUserId: string): Promise<void> {
+  const [target] = await db
+    .select({ role: users.role, isActive: users.isActive })
+    .from(users)
+    .where(and(eq(users.id, targetUserId), eq(users.businessId, businessId)))
+    .limit(1);
+  if (!target || target.role !== "ADMIN" || !target.isActive) return;
+  const admins = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(and(eq(users.businessId, businessId), eq(users.role, "ADMIN"), eq(users.isActive, true)));
+  if (admins.length <= 1) {
+    throw new ApiError(400, "BAD_REQUEST", "Cannot remove the last active ADMIN");
+  }
+}
+
 export async function PUT(req: NextRequest, ctx: Ctx) {
   return withApiHandling(async () => {
     await checkGlobalPublicRateLimit(req);
@@ -58,6 +78,9 @@ export async function PUT(req: NextRequest, ctx: Ctx) {
 
     if (id === auth.userId && body.isActive === false) {
       throw new ApiError(400, "BAD_REQUEST", "You cannot deactivate your own account");
+    }
+    if ((body.role && body.role !== "ADMIN") || body.isActive === false) {
+      await assertNotLastAdmin(auth.businessId, id);
     }
     if (body.password) validatePasswordPolicy(body.password);
 
@@ -91,6 +114,7 @@ export async function DELETE(req: NextRequest, ctx: Ctx) {
     if (!hasRole(auth.role, "ADMIN")) throw new ApiError(403, "FORBIDDEN", "Insufficient permissions");
     const { id } = await ctx.params;
     if (id === auth.userId) throw new ApiError(400, "BAD_REQUEST", "You cannot delete your own account");
+    await assertNotLastAdmin(auth.businessId, id);
     // Soft-delete: deactivate + revoke sessions (preserves FK history).
     const [updated] = await db
       .update(users)

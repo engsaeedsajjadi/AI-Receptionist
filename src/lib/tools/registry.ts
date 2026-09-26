@@ -278,9 +278,16 @@ const sendNotificationTool: ToolDefinition = {
     userId: z.string().uuid().optional(),
   }),
   handler: async (args, ctx) => {
+    const targetUserId = (args.userId as string | undefined) ?? null;
+    if (targetUserId) {
+      // The LLM supplies userIds: prove same-tenant membership (404 →
+      // tool NOT_FOUND) instead of trusting the model / FK existence.
+      const { assertUserInBusiness } = await import("@/lib/auth");
+      await assertUserInBusiness(ctx.businessId, targetUserId);
+    }
     const result = await notify({
       businessId: ctx.businessId,
-      userId: (args.userId as string | undefined) ?? null,
+      userId: targetUserId,
       type: "agent_note",
       channel: "internal",
       title: normalizePersianText(String(args.title)),

@@ -127,6 +127,65 @@ describe.skipIf(!runIntegration)("tenant isolation (real database)", () => {
     expect(b.businessId).toBe(businessB.id);
   });
 
+  itDb("agent turn rejects a foreign callId before touching history", async () => {
+    const { runAgentTurn } = await import("@/lib/services/agent");
+    const { db } = await import("@/db");
+    const { calls, callMessages } = await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+    const [callA] = await db.select().from(calls).where(eq(calls.businessId, businessA.id)).limit(1);
+    await expect(
+      runAgentTurn({
+        businessId: businessB.id,
+        callId: callA.id,
+        userMessage: "سلام",
+        requestId: "h1-test",
+      }),
+    ).rejects.toMatchObject({ code: "CALL_NOT_FOUND" });
+    // Nothing was read into a prompt and nothing was written.
+    const rows = await db.select().from(callMessages).where(eq(callMessages.callId, callA.id));
+    expect(rows).toHaveLength(0);
+  });
+
+  itDb("appointments cannot link another tenant's lead/customer/user", async () => {
+    const { createAppointment } = await import("@/lib/services/appointments");
+    const { db } = await import("@/db");
+    const { leads, customers, users } = await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+    const [leadA] = await db.select().from(leads).where(eq(leads.businessId, businessA.id)).limit(1);
+    const [customerA] = await db
+      .select()
+      .from(customers)
+      .where(eq(customers.businessId, businessA.id))
+      .limit(1);
+    const [userA] = await db.select().from(users).where(eq(users.businessId, businessA.id)).limit(1);
+    const future = new Date(Date.now() + 7 * 86400_000).toISOString();
+    await expect(
+      createAppointment(businessB.id, { scheduledAt: future, leadId: leadA.id }),
+    ).rejects.toMatchObject({ code: "LEAD_NOT_FOUND" });
+    await expect(
+      createAppointment(businessB.id, { scheduledAt: future, customerId: customerA.id }),
+    ).rejects.toMatchObject({ code: "CUSTOMER_NOT_FOUND" });
+    await expect(
+      createAppointment(businessB.id, { scheduledAt: future, assignedUserId: userA.id }),
+    ).rejects.toMatchObject({ code: "USER_NOT_FOUND" });
+  });
+
+  itDb("send_notification tool rejects a foreign userId", async () => {
+    const { executeToolCall } = await import("@/lib/tools/registry");
+    const { db } = await import("@/db");
+    const { users } = await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+    const [userA] = await db.select().from(users).where(eq(users.businessId, businessA.id)).limit(1);
+    const result = await executeToolCall({
+      businessId: businessB.id,
+      tool: "send_notification",
+      args: { title: "Follow up", message: "Call the customer back", userId: userA.id },
+      requestId: "h10-test",
+      actor: "test",
+    });
+    expect(result.status).toBe("NOT_FOUND");
+  });
+
   itDb("same phone reuses the customer within a tenant (dedup)", async () => {
     const { findOrCreateCustomer } = await import("@/lib/services/customers");
     const first = await findOrCreateCustomer({ businessId: businessA.id, phone: "09111111111" });

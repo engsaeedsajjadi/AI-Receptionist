@@ -1,9 +1,10 @@
 import { and, eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
+import { z } from "zod";
 import { db } from "@/db";
 import { leads } from "@/db/schema";
 import { ApiError, ok, parseJson } from "@/lib/api";
-import { getAuthContext } from "@/lib/auth";
+import { assertUserInBusiness, getAuthContext } from "@/lib/auth";
 import { normalizeNumberInput, normalizePersianText } from "@/lib/normalization";
 import { hasRole } from "@/lib/permissions";
 import { checkGlobalPublicRateLimit, withApiHandling } from "@/lib/server-core";
@@ -47,6 +48,18 @@ export async function PUT(req: NextRequest, ctx: Ctx) {
         assignedUserId: string;
       }>
     >(req);
+
+    if (body.assignedUserId !== undefined) {
+      // Same rule as the assign route: assignment is MANAGER+, and the
+      // assignee must exist in this business (garbage UUIDs 400, foreign
+      // users 404 — never a 500 from the uuid column).
+      if (!hasRole(auth.role, "MANAGER")) {
+        throw new ApiError(403, "FORBIDDEN", "Only MANAGER can assign leads");
+      }
+      const parsed = z.string().uuid().safeParse(body.assignedUserId);
+      if (!parsed.success) throw new ApiError(400, "VALIDATION_ERROR", "Invalid assignedUserId");
+      await assertUserInBusiness(auth.businessId, parsed.data);
+    }
 
     const [updated] = await db
       .update(leads)

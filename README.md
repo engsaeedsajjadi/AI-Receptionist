@@ -29,7 +29,7 @@ Redis · n8n · Docker**. Persan-first RTL dashboard (English + Persian UI).
 - **Call lifecycle** — provider webhooks (HMAC-signed, timestamp replay window, Redis
   idempotency dedupe), call records, transcripts, human handoff (`transfer_call`).
 - **Auth & RBAC** — JWT access + rotating refresh tokens (reuse detection), bcrypt,
-  account lockout, `ADMIN/MANAGER/AGENT/VIEWER` roles with per-resource enforcement,
+  account lockout, `ADMIN/MANAGER/AGENT` roles with per-resource enforcement,
   hard tenant scoping on every query.
 - **Notifications & usage** — SMS/email/console adapters, per-business usage events with
   token→USD cost tracking, daily rollups.
@@ -166,15 +166,35 @@ WebSocket assertions, always torn down).
 
 ## API surface
 
-Base path `/api/v1` (auth: Bearer JWT; errors: `{ error: { code, message, requestId } }`):
+Base path `/api/v1` (auth: Bearer JWT unless noted; errors:
+`{ success: false, error: { code, message, requestId } }`):
 
-- `POST /auth/{register,login,refresh,logout}`, `GET /auth/me`
-- `GET/POST /calls`, `POST /calls/webhook` (HMAC), `POST /calls/:id/{transfer,hangup}`
-- `GET/POST /leads`, `PATCH /leads/:id`, call-upsert + dedup
-- `GET /availability`, `POST /appointments`, `POST /appointments/:id/{reschedule,cancel}`
-- `GET/POST /properties`, `GET/POST /customers`, `POST /knowledge/upload`, `GET /knowledge/search`
-- `GET /agents`, `GET /notifications`, `GET /usage`, `GET /reports/*`, `GET /dashboard/*`
-- `GET /health`, `GET /ready`
+- `POST /auth/{register,login,refresh,logout,logout-all}`, `GET /auth/me`
+- `GET /calls`, `GET /calls/:id`, `GET /calls/:id/{summary,transcript}`, `GET/POST /calls/:id/transfer`
+- `GET/POST /leads`, `GET/PUT/DELETE /leads/:id`, `GET/POST /leads/:id/notes`, `POST /leads/:id/assign`
+- `GET/POST /appointments`, `GET/PUT/DELETE /appointments/:id` (PUT = reschedule, DELETE = cancel)
+- `GET/POST /properties`, `GET/PUT/DELETE /properties/:id`, `POST /tools/properties/search`
+- `GET/POST /customers`, `GET/PUT /customers/:id`, `GET /customers/:id/history`
+- `GET/POST /knowledge`, `GET/PUT/DELETE /knowledge/:id`, `POST /knowledge/{search,upload,reindex}`
+- `GET/POST /agents`, `GET/PUT/DELETE /agents/:id`, `POST /agents/:id/{activate,deactivate}`
+- `GET/PUT /business`, `GET/PUT /business/settings`, `GET/POST /users`, `GET/PUT/DELETE /users/:id`
+- `POST /agent/chat`, `GET /notifications`, `GET /usage`, `GET /files/[...key]` (signed URL)
+- `POST /webhooks/voice/{call-started,audio,transcript,tool-call,call-ended}` (HMAC)
+- `POST /automation/dispatch` (`N8N_API_KEY` Bearer; n8n fan-out)
+- `GET /api/health`, `GET /api/health/{live,ready}` (no `/v1` prefix; live is the only unthrottled probe)
+
+Role gates (`ADMIN` > `MANAGER` > `AGENT`; every tenant read/write is additionally
+business-scoped, and role/business come from the DB user, not the JWT):
+
+| Operation | Minimum role |
+|---|---|
+| Business update/settings, agents write (create/update/delete/activate), user update/delete | `ADMIN` |
+| User list/read, create `AGENT`, knowledge write, properties write, lead assign/delete | `MANAGER` |
+| Lead assignment via create/update payloads | `MANAGER` (AGENT gets 403, same as `/assign`) |
+| Everything else (calls, leads, appointments, customers, chat, lists) | any authenticated role |
+
+Safety rails: the last active `ADMIN` cannot be demoted/deactivated/deleted;
+assignee and appointment references must exist in the same business (else 404).
 
 ## Security notes
 

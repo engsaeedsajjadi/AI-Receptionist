@@ -105,6 +105,17 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
   const userMessage = normalizePersianText(input.userMessage).trim().slice(0, 4000);
   if (!userMessage) throw new AppError(400, "INVALID_PAYLOAD", "Message must not be empty");
 
+  if (input.callId) {
+    // Tenant check FIRST: callIds arrive from callers (dashboard playground,
+    // voice loop), so a foreign id must 404 before any history is loaded,
+    // written, or billed — never leak another tenant's transcript.
+    const [call] = await db
+      .select({ id: calls.id })
+      .from(calls)
+      .where(and(eq(calls.id, input.callId), eq(calls.businessId, input.businessId)))
+      .limit(1);
+    if (!call) throw new AppError(404, "CALL_NOT_FOUND", "Call not found");
+  }
   const [agent, business] = await Promise.all([
     loadAgent(input.businessId, input.agentId),
     db.select().from(businesses).where(eq(businesses.id, input.businessId)).limit(1).then((r) => r[0] ?? null),

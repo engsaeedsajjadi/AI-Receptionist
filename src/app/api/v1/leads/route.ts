@@ -3,8 +3,9 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/db";
 import { leads } from "@/db/schema";
-import { ok, paginated, parseJsonWith, parsePagination } from "@/lib/api";
-import { getAuthContext } from "@/lib/auth";
+import { ApiError, ok, paginated, parseJsonWith, parsePagination } from "@/lib/api";
+import { assertUserInBusiness, getAuthContext } from "@/lib/auth";
+import { hasRole } from "@/lib/permissions";
 import { findOrCreateCustomer } from "@/lib/services/customers";
 import { normalizePersianText } from "@/lib/normalization";
 import { createOrUpdateLead, normalizeLeadExtraction } from "@/lib/services/leads";
@@ -70,6 +71,14 @@ export async function POST(req: NextRequest) {
     await checkGlobalPublicRateLimit(req);
     const auth = await getAuthContext(req);
     const body = await parseJsonWith(req, createSchema);
+    if (body.assignedUserId) {
+      // Assignment is a MANAGER+ decision (same rule as the assign route);
+      // AGENTs create unassigned leads instead of bypassing it here.
+      if (!hasRole(auth.role, "MANAGER")) {
+        throw new ApiError(403, "FORBIDDEN", "Only MANAGER can assign leads");
+      }
+      await assertUserInBusiness(auth.businessId, body.assignedUserId);
+    }
 
     const extraction = normalizeLeadExtraction({
       name: body.customerName,
