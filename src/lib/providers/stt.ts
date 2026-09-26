@@ -117,6 +117,7 @@ abstract class BaseSttProvider implements STTProvider {
         businessId: options.businessId,
         callId: options.callId,
         provider: this.name,
+        model: this.model,
         operation: "stt.transcribe",
         durationMs: Date.now() - start,
         status: "ok",

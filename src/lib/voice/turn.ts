@@ -57,7 +57,15 @@ export type VoiceTurnResult = {
     llmInputTokens: number;
     llmOutputTokens: number;
   };
-  latencyMs: { total: number; stt?: number; agent?: number; tts?: number; store?: number };
+  latencyMs: {
+    total: number;
+    stt?: number;
+    agent?: number;
+    llm?: number;
+    tools?: number;
+    tts?: number;
+    store?: number;
+  };
 };
 
 const MARKER_TTL_SECONDS = 24 * 60 * 60;
@@ -171,6 +179,8 @@ export async function runVoiceTurn(input: VoiceTurnInput): Promise<VoiceTurnResu
     llm: input.llm,
   });
   latency.agent = Date.now() - t1;
+  latency.llm = agentResult.latencyMs.llm;
+  latency.tools = agentResult.latencyMs.tools;
 
   // 3. Reply → speakable text → speech.
   const spokenText = toSpokenPersian(agentResult.reply) || agentResult.reply.trim().slice(0, 500);
@@ -232,6 +242,7 @@ export async function runVoiceTurn(input: VoiceTurnInput): Promise<VoiceTurnResu
     operation: "voice.turn",
     durationMs: latency.total,
     status: "ok",
+    stages: { stt: latency.stt, llm: latency.llm, tools: latency.tools, tts: latency.tts, store: latency.store },
   });
 
   return {

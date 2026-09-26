@@ -277,6 +277,14 @@ export class MediaSession {
     this.closed = true;
     this.clearTimers();
     this.releaseAudio();
+    logInfo("Media session closed", {
+      sessionId: this.sessionId,
+      businessId: this.resolution?.businessId,
+      callId: this.resolution?.callId,
+      operation: "voice.media.close",
+      status: "ok",
+      state: this.machine.state,
+    });
     // Best-effort end marker: the socket is already gone, never block on it.
     if (this.doc) {
       const doc = this.doc;
@@ -295,6 +303,7 @@ export class MediaSession {
           );
         } catch (err) {
           logError("Voice session end-save failed", {
+            sessionId: doc.sessionId,
             businessId: doc.businessId,
             callId: doc.callId,
             operation: "voice.media.end",
@@ -326,6 +335,7 @@ export class MediaSession {
       this.doc = null;
       void this.opts.sessionHooks.remove(doc.sessionId).catch((err: unknown) => {
         logWarn("Voice session doc removal failed", {
+          sessionId: doc.sessionId,
           businessId: doc.businessId,
           callId: doc.callId,
           operation: "voice.media.remove",
@@ -413,6 +423,7 @@ export class MediaSession {
       .catch((err: unknown) => {
         // Bookkeeping must never kill a call — but it must never be silent.
         logError("Voice session save failed", {
+          sessionId: doc.sessionId,
           businessId: doc.businessId,
           callId: doc.callId,
           operation: "voice.media.save",
@@ -532,6 +543,7 @@ export class MediaSession {
     this.setState("LISTENING");
     this.resetSilenceTimer();
     logInfo("Media session started", {
+      sessionId: this.sessionId,
       businessId: resolution.businessId,
       callId: resolution.callId,
       operation: "voice.media.start",
@@ -620,6 +632,7 @@ export class MediaSession {
     const expected = (this.maxDeliveredSeq ?? seqs[0] - 1) + 1;
     if (seqs[0] > expected) {
       logWarn("Media frame gap at utterance-end (skipped)", {
+        sessionId: this.sessionId,
         businessId: this.resolution?.businessId,
         callId: this.resolution?.callId,
         operation: "voice.media.gap",
@@ -714,6 +727,14 @@ export class MediaSession {
 
   /** VAD heard the caller: barge in when the agent holds the floor, else just listen. */
   private onVadSpeechStart(): void {
+    logInfo("VAD speech-start", {
+      sessionId: this.sessionId,
+      businessId: this.resolution?.businessId,
+      callId: this.resolution?.callId,
+      operation: "voice.media.vad",
+      status: "ok",
+      state: this.machine.state,
+    });
     if (this.machine.state === "SPEAKING" || this.machine.state === "PROCESSING") {
       this.handleBargeIn(true);
     }
@@ -734,6 +755,7 @@ export class MediaSession {
         // Barge-in speech while the superseded turn drains: hold ONE utterance.
         if (this.pendingVad) {
           logWarn("VAD pending overflow (oldest held utterance dropped)", {
+            sessionId: this.sessionId,
             businessId: this.resolution?.businessId,
             callId: this.resolution?.callId,
             operation: "voice.media.vad",
@@ -746,11 +768,16 @@ export class MediaSession {
       return;
     }
     this.vadUtterances += 1;
-    await this.runTurn({
-      audio: buildWav(pcm, 16000),
-      audioMimeType: "audio/wav",
-      eventId: `vad-${this.sessionId}-${this.vadUtterances}`,
+    const eventId = `vad-${this.sessionId}-${this.vadUtterances}`;
+    logInfo("VAD utterance finished", {
+      sessionId: this.sessionId,
+      businessId: this.resolution?.businessId,
+      callId: this.resolution?.callId,
+      operation: "voice.media.vad",
+      status: "ok",
+      eventId,
     });
+    await this.runTurn({ audio: buildWav(pcm, 16000), audioMimeType: "audio/wav", eventId });
   }
 
   private takeAudio(): Buffer {
@@ -818,9 +845,26 @@ export class MediaSession {
       }
       if (this.doc) this.updateDoc({ interruptions: this.doc.interruptions + 1 });
       this.send({ type: "barge-in-ack", turnSeq: this.turnSeq, ...(auto ? { auto: true } : {}) });
+      logInfo("Caller barge-in", {
+        sessionId: this.sessionId,
+        businessId: this.resolution?.businessId,
+        callId: this.resolution?.callId,
+        operation: "voice.media.barge-in",
+        status: "ok",
+        turnSeq: this.turnSeq,
+        auto,
+      });
       return;
     }
     this.send({ type: "barge-in-ack", turnSeq: this.turnSeq, ignored: true, state });
+    logInfo("Caller barge-in ignored", {
+      sessionId: this.sessionId,
+      businessId: this.resolution?.businessId,
+      callId: this.resolution?.callId,
+      operation: "voice.media.barge-in",
+      status: "ignored",
+      state,
+    });
   }
 
   private async runTurn(input: { audio?: Buffer; audioMimeType?: string; transcript?: string; eventId: string }): Promise<void> {
@@ -900,10 +944,13 @@ export class MediaSession {
     } catch (err) {
       // Technical detail stays server-side; the caller hears a safe fallback.
       logWarn("Media turn failed", {
+        requestId,
+        sessionId: this.sessionId,
         businessId: resolution.businessId,
         callId: resolution.callId,
         operation: "voice.media.turn",
         status: "error",
+        eventId: input.eventId,
         error: err instanceof Error ? err.message : String(err),
       });
       try {
@@ -940,6 +987,7 @@ export class MediaSession {
     } catch (err) {
       logWarn("Out-of-turn speech failed", {
         requestId,
+        sessionId: this.sessionId,
         businessId: resolution.businessId,
         callId: resolution.callId,
         operation: "voice.media.speak",
@@ -998,6 +1046,7 @@ export class MediaSession {
       this.sendSpokenAudio(eventId, speech, "reprompt");
       if (this.doc) this.updateDoc({ reprompts: this.doc.reprompts + 1 });
       logInfo("Voice silence reprompt spoken", {
+        sessionId: this.sessionId,
         businessId: this.resolution?.businessId,
         callId: this.resolution?.callId,
         operation: "voice.media.reprompt",
@@ -1022,6 +1071,7 @@ export class MediaSession {
       await this.opts.markSilenceGiveup(resolution.businessId, resolution.callId);
     } catch (err) {
       logWarn("Silence-giveup marker failed", {
+        sessionId: this.sessionId,
         businessId: resolution.businessId,
         callId: resolution.callId,
         operation: "voice.media.giveup",
@@ -1030,6 +1080,7 @@ export class MediaSession {
       });
     }
     logInfo("Voice session gave up on silence", {
+      sessionId: this.sessionId,
       businessId: resolution.businessId,
       callId: resolution.callId,
       operation: "voice.media.giveup",

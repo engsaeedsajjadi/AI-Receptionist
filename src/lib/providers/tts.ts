@@ -94,6 +94,7 @@ abstract class BaseTtsProvider implements TTSProvider {
         businessId: options.businessId,
         callId: options.callId,
         provider: this.name,
+        model: this.model,
         operation: "tts.synthesize",
         durationMs: Date.now() - start,
         status: "ok",

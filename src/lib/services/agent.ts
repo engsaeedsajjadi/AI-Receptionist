@@ -4,7 +4,7 @@ import { db } from "@/db";
 import { agents, businesses, callMessages, calls } from "@/db/schema";
 import { AppError } from "@/lib/errors";
 import { TOOL_FAILURE_MESSAGE_FA, UNKNOWN_INFO_MESSAGE_FA, buildSystemPrompt } from "@/lib/guardrails";
-import { logWarn } from "@/lib/logger";
+import { logInfo, logWarn } from "@/lib/logger";
 import { getLLMProvider, type ChatMessage, type LLMProvider } from "@/lib/providers/llm";
 import { normalizePersianText } from "@/lib/normalization";
 import { recordLlmUsage } from "@/lib/services/usage";
@@ -90,6 +90,8 @@ export type AgentTurnResult = {
   toolCalls: Array<{ tool: string; status: string }>;
   agentId: string;
   usage: { inputTokens: number; outputTokens: number };
+  /** Stage split for conversational latency tracking (§20). First-token / TTS-first-audio splits are only measurable with streaming providers. */
+  latencyMs: { llm: number; tools: number };
 };
 
 /**
@@ -121,6 +123,14 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
     db.select().from(businesses).where(eq(businesses.id, input.businessId)).limit(1).then((r) => r[0] ?? null),
   ]);
   if (!business) throw new AppError(404, "BUSINESS_NOT_FOUND", "Business not found");
+  logInfo("Agent turn started", {
+    requestId: input.requestId,
+    businessId: input.businessId,
+    callId: input.callId,
+    operation: "agent.turn",
+    status: "started",
+    agentId: agent.id,
+  });
   const config = parseAgentConfig(agent);
 
   const history: ChatMessage[] = input.callId ? await loadCallHistory(input.callId) : [];
@@ -154,11 +164,14 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
 
   let inputTokens = 0;
   let outputTokens = 0;
+  let llmMs = 0;
+  let toolMs = 0;
   const executed: Array<{ tool: string; status: string }> = [];
   let reply: string | null = null;
   let idempotencySeq = 0;
 
   for (let iteration = 0; iteration < config.maxToolIterations; iteration++) {
+    const llmStart = Date.now();
     const result = await llm.complete(messages, {
       tools,
       toolChoice: "auto",
@@ -167,6 +180,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
       businessId: input.businessId,
       callId: input.callId,
     });
+    llmMs += Date.now() - llmStart;
     inputTokens += result.usage.inputTokens ?? 0;
     outputTokens += result.usage.outputTokens ?? 0;
     await recordLlmUsage({
@@ -190,6 +204,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
     });
 
     for (const tc of result.toolCalls) {
+      const toolStart = Date.now();
       const toolResult = await executeToolCall({
         businessId: input.businessId,
         callId: input.callId,
@@ -198,6 +213,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
         requestId: input.requestId,
         actor: input.actor ?? "agent-runtime",
       });
+      toolMs += Date.now() - toolStart;
       executed.push({ tool: tc.name, status: toolResult.status });
       messages.push({
         role: "tool",
@@ -236,7 +252,13 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
     }
   }
 
-  return { reply, toolCalls: executed, agentId: agent.id, usage: { inputTokens, outputTokens } };
+  return {
+    reply,
+    toolCalls: executed,
+    agentId: agent.id,
+    usage: { inputTokens, outputTokens },
+    latencyMs: { llm: llmMs, tools: toolMs },
+  };
 }
 
 /** Safe fallback reply when the LLM call itself fails. */

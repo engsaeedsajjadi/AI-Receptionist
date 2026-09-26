@@ -195,6 +195,11 @@ describe.skipIf(!hasTestDatabase())("voice turn pipeline (real database, fake pr
     expect(result.heard).toBe(true);
     expect(result.transcript).toBe("سلام، یه آپارتمان دو خوابه می‌خوام");
     expect(result.reply).toContain("بودجه");
+    // Conversational latency split (§20): every stage is timed, none negative.
+    expect(result.latencyMs.total).toBeGreaterThanOrEqual(0);
+    for (const stage of ["stt", "agent", "llm", "tools", "tts", "store"] as const) {
+      expect(result.latencyMs[stage]).toBeGreaterThanOrEqual(0);
+    }
     expect(result.audio?.toString().startsWith("AUDIO:")).toBe(true);
     expect(result.audioUrl).toContain("/api/v1/files/");
     expect(result.audioStored).toBe(true);

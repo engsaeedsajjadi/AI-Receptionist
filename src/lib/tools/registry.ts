@@ -387,6 +387,15 @@ export async function executeToolCall(input: {
     };
   }
 
+  logInfo("Tool started", {
+    requestId: ctx.requestId,
+    businessId: ctx.businessId,
+    callId: ctx.callId,
+    operation: `tool.${tool.name}`,
+    status: "started",
+  });
+
+  const toolStart = Date.now();
   try {
     const result = await tool.handler(parsed.data as Record<string, unknown>, ctx);
     await auditToolCall(ctx, tool.name, result.status, result.status === "SUCCESS");
@@ -395,6 +404,7 @@ export async function executeToolCall(input: {
       businessId: ctx.businessId,
       callId: ctx.callId,
       operation: `tool.${tool.name}`,
+      durationMs: Date.now() - toolStart,
       status: result.status,
     });
     return result;
