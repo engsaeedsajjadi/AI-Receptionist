@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { it, describe, expect } from "vitest";
-import { claimWebhookIdempotency, computeHmacHex, verifyWebhookRequest } from "@/lib/security";
+import { computeHmacHex, verifyWebhookRequest } from "@/lib/security";
 
 const SECRET = "test-webhook-secret";
 
@@ -37,19 +37,11 @@ describe("webhook security", () => {
   it("verification alone never burns the idempotency key", async () => {
     const body = { n: 1 };
     const key = `k-${Date.now()}-verify-noclaim`;
-    // Verify twice with the same key: both succeed (no claim inside verify).
+    // Verify twice with the same key: both succeed. Claiming is the durable
+    // PG inbox's job (see webhook-inbox.test.ts); verify only authenticates.
     await verifyWebhookRequest(signed(body, key), { secret: SECRET, scope: "test" });
-    await verifyWebhookRequest(signed(body, key), { secret: SECRET, scope: "test" });
-    // First claim wins, second reports duplicate.
-    expect(await claimWebhookIdempotency("test", key)).toBe(true);
-    expect(await claimWebhookIdempotency("test", key)).toBe(false);
-  });
-
-  it("claims are scoped (same key, different scope)", async () => {
-    const key = `k-${Date.now()}-scoped`;
-    expect(await claimWebhookIdempotency("test:scope-a", key)).toBe(true);
-    expect(await claimWebhookIdempotency("test:scope-b", key)).toBe(true);
-    expect(await claimWebhookIdempotency("test:scope-a", key)).toBe(false);
+    const second = await verifyWebhookRequest(signed(body, key), { secret: SECRET, scope: "test" });
+    expect(second.idempotencyKey).toBe(key);
   });
 
   it("rejects invalid signatures", async () => {

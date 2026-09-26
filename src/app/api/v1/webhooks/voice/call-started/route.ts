@@ -4,7 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { businesses, calls, usageRecords } from "@/db/schema";
 import { ok, parseWith } from "@/lib/api";
-import { AppError } from "@/lib/errors";
+import { AppError, tooManyRequests } from "@/lib/errors";
 import { env, getEnv } from "@/lib/env";
 import { logInfo, logWarn } from "@/lib/logger";
 import { getVoiceProvider } from "@/lib/providers/voice";
@@ -12,8 +12,14 @@ import { issueMediaToken } from "@/lib/voice/media-tokens";
 import { resolveBusinessByCalledNumber } from "@/lib/services/phone-routing";
 import { normalizePersianText, normalizePhone } from "@/lib/normalization";
 import { enforceRateLimit } from "@/lib/rate-limit";
-import { claimWebhookIdempotency, verifyWebhookRequest } from "@/lib/security";
+import { verifyWebhookRequest } from "@/lib/security";
 import { withApiHandling } from "@/lib/server-core";
+import {
+  canonicalPayloadHash,
+  claimWebhookInbox,
+  completeWebhookInbox,
+  failWebhookInbox,
+} from "@/lib/webhook-inbox";
 
 const payloadSchema = z
   .object({
@@ -32,16 +38,13 @@ const payloadSchema = z
 export async function POST(req: NextRequest) {
   return withApiHandling(async (rid) => {
     await enforceRateLimit(req, "publicWebhook");
-    // 1. Authenticate → 2. validate → 3. claim idempotency (invalid payloads
-    // must never burn a key).
+    // 1. Authenticate → 2. validate → 3. resolve tenant → 4. claim inbox.
+    // Invalid payloads and unroutable tenants must never burn a key.
     const { payload, idempotencyKey } = await verifyWebhookRequest(req, {
       secret: env.webhookSecret,
       scope: "voice:call-started",
     });
     const body = parseWith(payloadSchema, payload);
-    if (!(await claimWebhookIdempotency("voice:call-started", idempotencyKey))) {
-      return ok({ ok: true, duplicate: true });
-    }
 
     // Tenant resolution: the HMAC authenticates the gateway, not the tenant.
     // Prefer deterministic called-number routing; a business_id asserted by
@@ -75,77 +78,103 @@ export async function POST(req: NextRequest) {
       .limit(1);
     if (!business) throw new AppError(404, "BUSINESS_NOT_FOUND", "Business not found");
 
-    const phoneNumber = normalizePhone(body.phone_number) ?? normalizePersianText(body.phone_number);
-
-    // Idempotent insert: concurrent duplicate deliveries (different header
-    // keys) collapse on the (businessId, externalCallId) unique constraint.
-    // Usage is recorded exactly once — only for the winning insert.
-    const [inserted] = await db
-      .insert(calls)
-      .values({
-        businessId: businessId,
-        externalCallId: body.external_call_id,
-        phoneNumber,
-        agentId: body.agent_id ?? null,
-        direction: body.direction ?? "INBOUND",
-        status: "RINGING",
-        startedAt: new Date(),
-        metadata: { ...(body.metadata ?? {}), idempotencyKey, routing },
-      })
-      .onConflictDoNothing({ target: [calls.businessId, calls.externalCallId] })
-      .returning({ id: calls.id });
-
-    let callId = inserted?.id ?? null;
-    const created = Boolean(inserted);
-    if (!inserted) {
-      const [existing] = await db
-        .select({ id: calls.id })
-        .from(calls)
-        .where(and(eq(calls.businessId, businessId), eq(calls.externalCallId, body.external_call_id)))
-        .limit(1);
-      callId = existing?.id ?? null;
+    // Durable inbox claim (PG, §1). The hash covers the VALIDATED body so
+    // retries that spell defaults differently still collapse.
+    const inbox = await claimWebhookInbox({
+      scope: "voice:call-started",
+      key: idempotencyKey,
+      payloadHash: canonicalPayloadHash(body),
+      businessId,
+    });
+    if (inbox.decision === "duplicate") return ok({ ok: true, duplicate: true });
+    if (inbox.decision === "conflict") {
+      throw new AppError(
+        409,
+        "WEBHOOK_PAYLOAD_CONFLICT",
+        "Idempotency key was already used with a different payload",
+      );
     }
-    if (!callId) {
-      // Conflicted on insert but the row vanished — should never happen.
-      throw new AppError(500, "INTERNAL_ERROR", "Call registration failed");
-    }
+    if (inbox.decision === "busy") throw tooManyRequests(inbox.retryAfterSeconds);
 
-    if (created) {
-      await db
-        .insert(usageRecords)
+    try {
+      const phoneNumber = normalizePhone(body.phone_number) ?? normalizePersianText(body.phone_number);
+
+      // Idempotent insert: concurrent duplicate deliveries (different header
+      // keys) collapse on the (businessId, externalCallId) unique constraint.
+      // Usage is recorded exactly once — only for the winning insert.
+      const [inserted] = await db
+        .insert(calls)
         .values({
           businessId: businessId,
-          type: "calls",
-          quantity: "1",
-          unit: "count",
-          idempotencyKey: `call-started:${callId}`,
-          metadata: { event: "call_started", callId, externalCallId: body.external_call_id },
+          externalCallId: body.external_call_id,
+          phoneNumber,
+          agentId: body.agent_id ?? null,
+          direction: body.direction ?? "INBOUND",
+          status: "RINGING",
+          startedAt: new Date(),
+          metadata: { ...(body.metadata ?? {}), idempotencyKey, routing },
         })
-        .onConflictDoNothing({ target: [usageRecords.businessId, usageRecords.idempotencyKey] });
+        .onConflictDoNothing({ target: [calls.businessId, calls.externalCallId] })
+        .returning({ id: calls.id });
+
+      let callId = inserted?.id ?? null;
+      const created = Boolean(inserted);
+      if (!inserted) {
+        const [existing] = await db
+          .select({ id: calls.id })
+          .from(calls)
+          .where(and(eq(calls.businessId, businessId), eq(calls.externalCallId, body.external_call_id)))
+          .limit(1);
+        callId = existing?.id ?? null;
+      }
+      if (!callId) {
+        // Conflicted on insert but the row vanished — should never happen.
+        throw new AppError(500, "INTERNAL_ERROR", "Call registration failed");
+      }
+
+      if (created) {
+        await db
+          .insert(usageRecords)
+          .values({
+            businessId: businessId,
+            type: "calls",
+            quantity: "1",
+            unit: "count",
+            idempotencyKey: `call-started:${callId}`,
+            metadata: { event: "call_started", callId, externalCallId: body.external_call_id },
+          })
+          .onConflictDoNothing({ target: [usageRecords.businessId, usageRecords.idempotencyKey] });
+      }
+
+      // Media bootstrap (winning insert only): answer the call and ask the
+      // gateway to stream audio to the media sidecar. Best-effort — the call
+      // RECORD is the source of truth and is already persisted — but the
+      // outcome is reported honestly in the response (never a silent fake).
+      const media = await bootstrapMedia({
+        businessId: businessId,
+        businessSettings: (business.settings as Record<string, unknown>) ?? {},
+        callId,
+        externalCallId: body.external_call_id,
+        requestId: rid,
+        skip: !created,
+      });
+
+      logInfo("Inbound call started", {
+        requestId: rid,
+        businessId: businessId,
+        callId,
+        operation: "voice.call-started",
+        status: created ? "ok" : "duplicate",
+      });
+
+      await completeWebhookInbox(inbox.eventId, inbox.leaseToken, { callId, duplicate: !created });
+      return ok({ ok: true, callId, duplicate: !created, media, routing });
+    } catch (err) {
+      // Record the failure so the NEXT redelivery re-processes (retryable)
+      // instead of collapsing as a false duplicate.
+      await failWebhookInbox(inbox.eventId, inbox.leaseToken, err);
+      throw err;
     }
-
-    // Media bootstrap (winning insert only): answer the call and ask the
-    // gateway to stream audio to the media sidecar. Best-effort — the call
-    // RECORD is the source of truth and is already persisted — but the
-    // outcome is reported honestly in the response (never a silent fake).
-    const media = await bootstrapMedia({
-      businessId: businessId,
-      businessSettings: (business.settings as Record<string, unknown>) ?? {},
-      callId,
-      externalCallId: body.external_call_id,
-      requestId: rid,
-      skip: !created,
-    });
-
-    logInfo("Inbound call started", {
-      requestId: rid,
-      businessId: businessId,
-      callId,
-      operation: "voice.call-started",
-      status: created ? "ok" : "duplicate",
-    });
-
-    return ok({ ok: true, callId, duplicate: !created, media, routing });
   });
 }
 

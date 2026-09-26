@@ -135,14 +135,32 @@ export async function redisDel(key: string): Promise<void> {
   fallbackStore.delete(key);
 }
 
+let lastDegradedWarnAt = 0;
+
 export async function redisIncr(key: string, ttlSeconds: number): Promise<number> {
   const redis = getRedis();
   if (redis) {
-    const count = await redis.incr(key);
-    if (count === 1) await redis.expire(key, ttlSeconds);
-    return count;
+    try {
+      const count = await redis.incr(key);
+      if (count === 1) await redis.expire(key, ttlSeconds);
+      return count;
+    } catch (err) {
+      // Redis is reachable for config but the command failed (server down,
+      // failover, ...). Rate limiting is a protective control, not a
+      // correctness control: degrade to per-process limiting instead of
+      // 500ing every request (webhooks MUST stay acceptable, §1). Loud, not
+      // silent: warn at most once a minute.
+      const now = Date.now();
+      if (now - lastDegradedWarnAt > 60_000) {
+        lastDegradedWarnAt = now;
+        logWarn("Redis command failed; using per-process rate-limit fallback", {
+          operation: "redis.degraded",
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
   }
-  if (isProduction) throw new Error("[redis] Redis unavailable in production");
+  if (isProduction && !redis) throw new Error("[redis] Redis unavailable in production");
   const current = Number(fallbackGet(key) ?? "0") + 1;
   fallbackSet(key, String(current), ttlSeconds);
   return current;

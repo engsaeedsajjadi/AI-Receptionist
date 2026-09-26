@@ -542,6 +542,24 @@ export const properties = pgTable(
 // Webhook idempotency ledger + audit log
 // ---------------------------------------------------------------------------
 
+/**
+ * Durable webhook inbox (§1). Every inbound voice webhook is received here
+ * BEFORE processing so a crash / Redis flush / redelivery can never lose or
+ * double-execute a delivery. Lifecycle:
+ *
+ *   RECEIVED → PROCESSING → COMPLETED
+ *                    ↘ FAILED (retryable: a redelivery re-claims it)
+ *
+ * - (scope, idempotencyKey) is globally unique: the claim identity. A
+ *   redelivery MUST hit the same row regardless of the asserted tenant.
+ * - payloadHash (sha256 over the canonical payload) fails closed: the same
+ *   key with DIFFERENT content is a 409 conflict, never a silent replay.
+ * - PROCESSING rows carry a lease (leaseToken + leaseExpiresAt). A worker
+ *   that dies mid-processing leaves its lease to expire; the next delivery
+ *   reclaims the row (crash recovery) instead of wedging forever.
+ * - complete/fail are fenced by leaseToken: only the lease holder may
+ *   transition the row; a stale worker's completion is ignored.
+ */
 export const webhookEvents = pgTable(
   "webhook_events",
   {
@@ -549,12 +567,21 @@ export const webhookEvents = pgTable(
     businessId: uuid("business_id").references(() => businesses.id, { onDelete: "cascade" }),
     scope: varchar("scope", { length: 100 }).notNull(),
     idempotencyKey: varchar("idempotency_key", { length: 255 }).notNull(),
-    status: varchar("status", { length: 20 }).notNull().default("processed"),
+    status: varchar("status", { length: 20 }).notNull().default("RECEIVED"),
     payloadHash: varchar("payload_hash", { length: 64 }),
+    attempts: integer("attempts").notNull().default(0),
+    leaseToken: varchar("lease_token", { length: 64 }),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    result: jsonb("result").$type<Record<string, unknown>>(),
+    errorMessage: text("error_message"),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
     scopeKeyIdx: uniqueIndex("webhook_events_scope_key_idx").on(table.scope, table.idempotencyKey),
+    statusLeaseIdx: index("webhook_events_status_lease_idx").on(table.status, table.leaseExpiresAt),
+    createdIdx: index("webhook_events_created_idx").on(table.createdAt),
   }),
 );
 

@@ -61,10 +61,22 @@ Webhook security (all events): byte-exact body, HMAC-SHA256 with
 `VOICE_WEBHOOK_SECRET`, header `x-webhook-signature` (also accepts
 `x-signature`, `x-hub-signature-256` with optional `sha256=` prefix, or
 Stripe-style `t=<ts>,v1=<hex>` signing `<ts>.<raw-bytes>`), required
-`x-idempotency-key` (24h Redis dedup window), optional
-`x-webhook-timestamp`/`x-timestamp` checked against a ±5 min window
-(`STALE_TIMESTAMP` outside it). Max body enforced; invalid payloads never
-burn idempotency keys.
+`x-idempotency-key`, optional `x-webhook-timestamp`/`x-timestamp` checked
+against a ±5 min window (`STALE_TIMESTAMP` outside it). Max body enforced;
+invalid payloads never burn idempotency keys.
+
+Deliveries are deduplicated by a DURABLE Postgres inbox (table
+`webhook_events`, NOT Redis — a Redis restart can never re-arm a key):
+`RECEIVED → PROCESSING → COMPLETED`, with `FAILED` retryable. Redeliveries
+of a completed key return `{ok:true, duplicate:true}`. Gateway retry rules:
+- Same key + same bytes ⇒ safe to retry indefinitely (collapses).
+- `409 WEBHOOK_PAYLOAD_CONFLICT` ⇒ the key was already used with DIFFERENT
+  bytes. Terminal: do NOT retry the same key; send a fresh key.
+- `429` on a redelivery ⇒ a previous attempt is still processing. Retry
+  after `Retry-After` (bounded wait already elapsed server-side).
+- `5xx` / timeout ⇒ the attempt is recorded `FAILED`; retry with the SAME
+  key + bytes to re-process exactly once (a crashed worker's lease expires
+  and the next delivery reclaims it — never wedged, never double-run).
 
 Media WebSocket (`VOICE_MEDIA_PUBLIC_URL`, e.g. `wss://<host>/media`,
 nginx `/media` → `media:3001`, buffering off, 1d timeouts): full frame

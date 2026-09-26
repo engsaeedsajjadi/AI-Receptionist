@@ -4,13 +4,19 @@ import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { callMessages, calls } from "@/db/schema";
 import { ok, parseWith } from "@/lib/api";
-import { AppError } from "@/lib/errors";
+import { AppError, tooManyRequests } from "@/lib/errors";
 import { env } from "@/lib/env";
 import { logInfo } from "@/lib/logger";
 import { enforceRateLimit } from "@/lib/rate-limit";
-import { claimWebhookIdempotency, verifyWebhookRequest } from "@/lib/security";
+import { verifyWebhookRequest } from "@/lib/security";
 import { withApiHandling } from "@/lib/server-core";
 import { deriveToolExecId, executeIdempotentToolCall, executeToolCall } from "@/lib/tools/registry";
+import {
+  canonicalPayloadHash,
+  claimWebhookInbox,
+  completeWebhookInbox,
+  failWebhookInbox,
+} from "@/lib/webhook-inbox";
 
 const payloadSchema = z.object({
   business_id: z.string().uuid(),
@@ -43,33 +49,80 @@ export async function POST(req: NextRequest) {
       scope: "voice:tool-call",
     });
     const body = parseWith(payloadSchema, payload);
-    if (!(await claimWebhookIdempotency("voice:tool-call", idempotencyKey))) {
-      return ok({ ok: true, duplicate: true });
+    // Durable inbox claim (PG, §1) — after validation so invalid payloads
+    // never burn a key. The hash covers the VALIDATED body so retries that
+    // spell defaults differently still collapse.
+    const inbox = await claimWebhookInbox({
+      scope: "voice:tool-call",
+      key: idempotencyKey,
+      payloadHash: canonicalPayloadHash(body),
+      businessId: body.business_id,
+    });
+    if (inbox.decision === "duplicate") return ok({ ok: true, duplicate: true });
+    if (inbox.decision === "conflict") {
+      throw new AppError(
+        409,
+        "WEBHOOK_PAYLOAD_CONFLICT",
+        "Idempotency key was already used with a different payload",
+      );
     }
+    if (inbox.decision === "busy") throw tooManyRequests(inbox.retryAfterSeconds);
 
-    const [call] = await db
-      .select()
-      .from(calls)
-      .where(and(eq(calls.businessId, body.business_id), eq(calls.externalCallId, body.external_call_id)))
-      .orderBy(desc(calls.createdAt))
-      .limit(1);
+    try {
+      const [call] = await db
+        .select()
+        .from(calls)
+        .where(and(eq(calls.businessId, body.business_id), eq(calls.externalCallId, body.external_call_id)))
+        .orderBy(desc(calls.createdAt))
+        .limit(1);
 
-    if (!call) throw new AppError(404, "CALL_NOT_FOUND", "Call not found");
+      if (!call) throw new AppError(404, "CALL_NOT_FOUND", "Call not found");
 
-    // Event-scoped execution: same (event_id, tool, args) → stored outcome,
-    // never a rerun. The derived id shares one namespace with the agent
-    // runtime loop (P0-3) via executeIdempotentToolCall, so the same
-    // operation delivered via both paths still collapses — while a reused
-    // provider event_id can never replay across different tools/args.
-    if (body.event_id) {
-      const outcome = await executeIdempotentToolCall({
+      // Event-scoped execution: same (event_id, tool, args) → stored outcome,
+      // never a rerun. The derived id shares one namespace with the agent
+      // runtime loop (P0-3) via executeIdempotentToolCall, so the same
+      // operation delivered via both paths still collapses — while a reused
+      // provider event_id can never replay across different tools/args.
+      if (body.event_id) {
+        const outcome = await executeIdempotentToolCall({
+          businessId: body.business_id,
+          callId: call.id,
+          toolExecId: deriveToolExecId(body.event_id, body.tool, body.arguments),
+          tool: body.tool,
+          args: body.arguments,
+          requestId: rid,
+          actor: "voice-webhook",
+        });
+
+        logInfo("Voice tool call executed", {
+          requestId: rid,
+          businessId: body.business_id,
+          callId: call.id,
+          operation: `tool.${body.tool}`,
+          status: outcome.result.status,
+        });
+        await completeWebhookInbox(inbox.eventId, inbox.leaseToken, {
+          status: outcome.result.status,
+          duplicate: outcome.duplicate,
+        });
+        return toResponse(outcome.result, outcome.duplicate);
+      }
+
+      // Legacy path (no provider event id): header-key dedup only.
+      const result = await executeToolCall({
         businessId: body.business_id,
         callId: call.id,
-        toolExecId: deriveToolExecId(body.event_id, body.tool, body.arguments),
         tool: body.tool,
         args: body.arguments,
         requestId: rid,
         actor: "voice-webhook",
+      });
+
+      await db.insert(callMessages).values({
+        callId: call.id,
+        role: "TOOL",
+        content: JSON.stringify({ tool: body.tool, status: result.status }),
+        metadata: { tool: body.tool, status: result.status, requestId: rid },
       });
 
       logInfo("Voice tool call executed", {
@@ -77,35 +130,15 @@ export async function POST(req: NextRequest) {
         businessId: body.business_id,
         callId: call.id,
         operation: `tool.${body.tool}`,
-        status: outcome.result.status,
+        status: result.status,
       });
-      return toResponse(outcome.result, outcome.duplicate);
+      await completeWebhookInbox(inbox.eventId, inbox.leaseToken, { status: result.status });
+      return toResponse(result, false);
+    } catch (err) {
+      // Record the failure so the NEXT redelivery re-processes (retryable)
+      // instead of collapsing as a false duplicate.
+      await failWebhookInbox(inbox.eventId, inbox.leaseToken, err);
+      throw err;
     }
-
-    // Legacy path (no provider event id): header-key dedup only.
-    const result = await executeToolCall({
-      businessId: body.business_id,
-      callId: call.id,
-      tool: body.tool,
-      args: body.arguments,
-      requestId: rid,
-      actor: "voice-webhook",
-    });
-
-    await db.insert(callMessages).values({
-      callId: call.id,
-      role: "TOOL",
-      content: JSON.stringify({ tool: body.tool, status: result.status }),
-      metadata: { tool: body.tool, status: result.status, requestId: rid },
-    });
-
-    logInfo("Voice tool call executed", {
-      requestId: rid,
-      businessId: body.business_id,
-      callId: call.id,
-      operation: `tool.${body.tool}`,
-      status: result.status,
-    });
-    return toResponse(result, false);
   });
 }

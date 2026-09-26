@@ -4,12 +4,18 @@ import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { callMessages, calls } from "@/db/schema";
 import { ok, parseWith } from "@/lib/api";
-import { AppError } from "@/lib/errors";
+import { AppError, tooManyRequests } from "@/lib/errors";
 import { env } from "@/lib/env";
 import { enforceRateLimit } from "@/lib/rate-limit";
-import { claimWebhookIdempotency, verifyWebhookRequest } from "@/lib/security";
+import { verifyWebhookRequest } from "@/lib/security";
 import { withApiHandling } from "@/lib/server-core";
 import { advisoryXactLock } from "@/lib/tx";
+import {
+  canonicalPayloadHash,
+  claimWebhookInbox,
+  completeWebhookInbox,
+  failWebhookInbox,
+} from "@/lib/webhook-inbox";
 
 const payloadSchema = z.object({
   business_id: z.string().uuid(),
@@ -31,98 +37,124 @@ export async function POST(req: NextRequest) {
       scope: "voice:transcript",
     });
     const body = parseWith(payloadSchema, payload);
-    if (!(await claimWebhookIdempotency("voice:transcript", idempotencyKey))) {
-      return ok({ ok: true, duplicate: true });
+    // Durable inbox claim (PG, §1) — after validation so invalid payloads
+    // never burn a key. The hash covers the VALIDATED body so retries that
+    // spell defaults differently still collapse.
+    const inbox = await claimWebhookInbox({
+      scope: "voice:transcript",
+      key: idempotencyKey,
+      payloadHash: canonicalPayloadHash(body),
+      businessId: body.business_id,
+    });
+    if (inbox.decision === "duplicate") return ok({ ok: true, duplicate: true });
+    if (inbox.decision === "conflict") {
+      throw new AppError(
+        409,
+        "WEBHOOK_PAYLOAD_CONFLICT",
+        "Idempotency key was already used with a different payload",
+      );
     }
+    if (inbox.decision === "busy") throw tooManyRequests(inbox.retryAfterSeconds);
 
-    const [call] = await db
-      .select()
-      .from(calls)
-      .where(and(eq(calls.businessId, body.business_id), eq(calls.externalCallId, body.external_call_id)))
-      .orderBy(desc(calls.createdAt))
-      .limit(1);
+    try {
+      const [call] = await db
+        .select()
+        .from(calls)
+        .where(and(eq(calls.businessId, body.business_id), eq(calls.externalCallId, body.external_call_id)))
+        .orderBy(desc(calls.createdAt))
+        .limit(1);
 
-    if (!call) throw new AppError(404, "CALL_NOT_FOUND", "Call not found");
+      if (!call) throw new AppError(404, "CALL_NOT_FOUND", "Call not found");
 
-    // Serialize writers per call: concurrent same-segment deliveries collapse
-    // deterministically instead of duplicating the transcript cache.
-    const outcome = await db.transaction(async (tx) => {
-      await advisoryXactLock(tx, `transcript:${call.id}`);
+      // Serialize writers per call: concurrent same-segment deliveries collapse
+      // deterministically instead of duplicating the transcript cache.
+      const outcome = await db.transaction(async (tx) => {
+        await advisoryXactLock(tx, `transcript:${call.id}`);
 
-      let existing: { id: string; metadata: Record<string, unknown> } | null = null;
-      if (body.event_id) {
-        const [row] = await tx
-          .select({ id: callMessages.id, metadata: callMessages.metadata })
-          .from(callMessages)
-          .where(and(eq(callMessages.callId, call.id), eq(callMessages.eventId, body.event_id)))
-          .limit(1);
-        existing = row ?? null;
-      }
-
-      const wasFinal = existing?.metadata?.isFinal === true;
-      // Final redelivery of an already-final segment: pure no-op.
-      if (existing && wasFinal && body.is_final) {
-        return { duplicate: true, messageId: existing.id };
-      }
-
-      const content = body.transcript.slice(0, 20000);
-      const metadata = { isFinal: body.is_final, eventId: body.event_id ?? null };
-      let messageId: string;
-      if (existing) {
-        // Partial → final progression (or partial refresh): update in place.
-        await tx
-          .update(callMessages)
-          .set({ content, seq: body.seq ?? null, timestamp: new Date(), metadata })
-          .where(eq(callMessages.id, existing.id));
-        messageId = existing.id;
-      } else if (body.event_id) {
-        const [row] = await tx
-          .insert(callMessages)
-          .values({ callId: call.id, role: body.role, content, eventId: body.event_id, seq: body.seq ?? null, metadata })
-          .onConflictDoNothing({ target: [callMessages.callId, callMessages.eventId] })
-          .returning({ id: callMessages.id });
-        if (!row) {
-          // Lost a race inside the lock window — re-read the winner.
-          const [winner] = await tx
-            .select({ id: callMessages.id })
+        let existing: { id: string; metadata: Record<string, unknown> } | null = null;
+        if (body.event_id) {
+          const [row] = await tx
+            .select({ id: callMessages.id, metadata: callMessages.metadata })
             .from(callMessages)
             .where(and(eq(callMessages.callId, call.id), eq(callMessages.eventId, body.event_id)))
             .limit(1);
-          if (!winner) throw new AppError(500, "INTERNAL_ERROR", "Transcript write failed");
-          return { duplicate: true, messageId: winner.id };
+          existing = row ?? null;
         }
-        messageId = row.id;
-      } else {
-        // Legacy path (no provider event id): header-key dedup only.
-        const [row] = await tx
-          .insert(callMessages)
-          .values({ callId: call.id, role: body.role, content, metadata })
-          .returning({ id: callMessages.id });
-        messageId = row.id;
-      }
 
-      // The calls.transcript cache only grows on NEW final segments or a
-      // partial → final transition — never on redeliveries.
-      const becameFinal = body.is_final && (!existing || !wasFinal);
-      if (becameFinal) {
-        // P0-4: `call` was read BEFORE the advisory lock (existence check)
-        // and is stale by the time we get here. Appending to it would lose
-        // concurrent segments (lost update: every writer starts from the
-        // same prefix, last commit wins). Re-read INSIDE the serialized
-        // section so each append builds on its predecessor.
-        const [fresh] = await tx
-          .select({ transcript: calls.transcript })
-          .from(calls)
-          .where(eq(calls.id, call.id))
-          .limit(1);
-        await tx
-          .update(calls)
-          .set({ transcript: `${fresh?.transcript ?? ""}\n${content}`.trim().slice(0, 100_000) })
-          .where(eq(calls.id, call.id));
-      }
-      return { duplicate: false, messageId };
-    });
+        const wasFinal = existing?.metadata?.isFinal === true;
+        // Final redelivery of an already-final segment: pure no-op.
+        if (existing && wasFinal && body.is_final) {
+          return { duplicate: true, messageId: existing.id };
+        }
 
-    return ok({ ok: true, ...outcome });
+        const content = body.transcript.slice(0, 20000);
+        const metadata = { isFinal: body.is_final, eventId: body.event_id ?? null };
+        let messageId: string;
+        if (existing) {
+          // Partial → final progression (or partial refresh): update in place.
+          await tx
+            .update(callMessages)
+            .set({ content, seq: body.seq ?? null, timestamp: new Date(), metadata })
+            .where(eq(callMessages.id, existing.id));
+          messageId = existing.id;
+        } else if (body.event_id) {
+          const [row] = await tx
+            .insert(callMessages)
+            .values({ callId: call.id, role: body.role, content, eventId: body.event_id, seq: body.seq ?? null, metadata })
+            .onConflictDoNothing({ target: [callMessages.callId, callMessages.eventId] })
+            .returning({ id: callMessages.id });
+          if (!row) {
+            // Lost a race inside the lock window — re-read the winner.
+            const [winner] = await tx
+              .select({ id: callMessages.id })
+              .from(callMessages)
+              .where(and(eq(callMessages.callId, call.id), eq(callMessages.eventId, body.event_id)))
+              .limit(1);
+            if (!winner) throw new AppError(500, "INTERNAL_ERROR", "Transcript write failed");
+            return { duplicate: true, messageId: winner.id };
+          }
+          messageId = row.id;
+        } else {
+          // Legacy path (no provider event id): header-key dedup only.
+          const [row] = await tx
+            .insert(callMessages)
+            .values({ callId: call.id, role: body.role, content, metadata })
+            .returning({ id: callMessages.id });
+          messageId = row.id;
+        }
+
+        // The calls.transcript cache only grows on NEW final segments or a
+        // partial → final transition — never on redeliveries.
+        const becameFinal = body.is_final && (!existing || !wasFinal);
+        if (becameFinal) {
+          // P0-4: `call` was read BEFORE the advisory lock (existence check)
+          // and is stale by the time we get here. Appending to it would lose
+          // concurrent segments (lost update: every writer starts from the
+          // same prefix, last commit wins). Re-read INSIDE the serialized
+          // section so each append builds on its predecessor.
+          const [fresh] = await tx
+            .select({ transcript: calls.transcript })
+            .from(calls)
+            .where(eq(calls.id, call.id))
+            .limit(1);
+          await tx
+            .update(calls)
+            .set({ transcript: `${fresh?.transcript ?? ""}\n${content}`.trim().slice(0, 100_000) })
+            .where(eq(calls.id, call.id));
+        }
+        return { duplicate: false, messageId };
+      });
+
+      await completeWebhookInbox(inbox.eventId, inbox.leaseToken, {
+        messageId: outcome.messageId,
+        duplicate: outcome.duplicate,
+      });
+      return ok({ ok: true, ...outcome });
+    } catch (err) {
+      // Record the failure so the NEXT redelivery re-processes (retryable)
+      // instead of collapsing as a false duplicate.
+      await failWebhookInbox(inbox.eventId, inbox.leaseToken, err);
+      throw err;
+    }
   });
 }

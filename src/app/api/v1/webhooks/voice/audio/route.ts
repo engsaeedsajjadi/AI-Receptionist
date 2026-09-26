@@ -1,17 +1,24 @@
+import { createHash } from "node:crypto";
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { calls } from "@/db/schema";
 import { ok, parseWith } from "@/lib/api";
-import { AppError } from "@/lib/errors";
+import { AppError, tooManyRequests } from "@/lib/errors";
 import { env, getEnv } from "@/lib/env";
 import { logInfo, logWarn } from "@/lib/logger";
 import { enforceRateLimit } from "@/lib/rate-limit";
-import { claimWebhookIdempotency, verifyWebhookRequest } from "@/lib/security";
+import { verifyWebhookRequest } from "@/lib/security";
 import { withApiHandling } from "@/lib/server-core";
 import { getVoiceProvider } from "@/lib/providers/voice";
 import { clearTurnMarker, runVoiceTurn } from "@/lib/voice/turn";
+import {
+  canonicalPayloadHash,
+  claimWebhookInbox,
+  completeWebhookInbox,
+  failWebhookInbox,
+} from "@/lib/webhook-inbox";
 
 const MAX_AUDIO_BYTES = 30 * 1024 * 1024; // matches nginx client_max_body_size
 
@@ -129,87 +136,134 @@ export async function POST(req: NextRequest) {
       isFinal = body.is_final;
     }
 
-    if (!(await claimWebhookIdempotency("voice:audio", idempotencyKey))) {
-      return ok({ ok: true, duplicate: true });
-    }
-
+    // Partials are side-effect-free acknowledgements: no turn runs, nothing
+    // is persisted, so there is nothing to deduplicate. They return BEFORE
+    // the inbox claim — claiming would wedge a same-key final delivery as a
+    // false duplicate.
     if (!isFinal) return ok({ ok: true, partial: true });
 
-    const [call] = await db
-      .select()
-      .from(calls)
-      .where(and(eq(calls.businessId, params.businessId), eq(calls.externalCallId, params.externalCallId)))
-      .orderBy(desc(calls.createdAt))
-      .limit(1);
-    if (!call) throw new AppError(404, "CALL_NOT_FOUND", "Call not found");
-
+    // Durable inbox claim (PG, §1) — after validation so invalid payloads
+    // never burn a key. The hash covers the SEMANTIC turn params (multipart
+    // boundaries are client-random per delivery, so raw bytes would false-
+    // conflict on every legitimate retry; audio bytes hash stably).
     const language = params.language ?? getEnv().VOICE_DEFAULT_LANGUAGE;
-    const turn = await runVoiceTurn({
+    const inbox = await claimWebhookInbox({
+      scope: "voice:audio",
+      key: idempotencyKey,
+      payloadHash: canonicalPayloadHash({
+        businessId: params.businessId,
+        externalCallId: params.externalCallId,
+        agentId: params.agentId ?? null,
+        eventId: params.eventId ?? null,
+        transcript: params.transcript ?? null,
+        audioSha256: params.audio ? createHash("sha256").update(params.audio).digest("hex") : null,
+        isFinal,
+        language,
+        voice: params.voice ?? null,
+      }),
       businessId: params.businessId,
-      agentId: params.agentId ?? call.agentId ?? undefined,
-      callId: call.id,
-      externalCallId: params.externalCallId,
-      audio: params.audio,
-      audioMimeType: params.audioMimeType,
-      transcript: params.transcript,
-      eventId: params.eventId,
-      language,
-      voice: params.voice,
-      requestId: rid,
-      actor: "voice-webhook",
     });
+    if (inbox.decision === "duplicate") return ok({ ok: true, duplicate: true });
+    if (inbox.decision === "conflict") {
+      throw new AppError(
+        409,
+        "WEBHOOK_PAYLOAD_CONFLICT",
+        "Idempotency key was already used with a different payload",
+      );
+    }
+    if (inbox.decision === "busy") throw tooManyRequests(inbox.retryAfterSeconds);
 
-    if (turn.duplicate) return ok({ ok: true, duplicate: true });
-    if (!turn.heard) return ok({ ok: true, heard: false, transcript: "" });
-
-    // Playback: prefer archived-audio URL; fall back to gateway-side TTS.
-    const voice = getVoiceProvider();
-    const mode = turn.audioUrl ? "audio-url" : "gateway-tts";
     try {
-      if (turn.audioUrl) {
-        await voice.playAudio(params.externalCallId, { audioUrl: turn.audioUrl, language }, { requestId: rid });
-      } else {
-        await voice.playAudio(params.externalCallId, { text: turn.spokenText, language }, { requestId: rid });
+      const [call] = await db
+        .select()
+        .from(calls)
+        .where(and(eq(calls.businessId, params.businessId), eq(calls.externalCallId, params.externalCallId)))
+        .orderBy(desc(calls.createdAt))
+        .limit(1);
+      if (!call) throw new AppError(404, "CALL_NOT_FOUND", "Call not found");
+
+      const turn = await runVoiceTurn({
+        businessId: params.businessId,
+        agentId: params.agentId ?? call.agentId ?? undefined,
+        callId: call.id,
+        externalCallId: params.externalCallId,
+        audio: params.audio,
+        audioMimeType: params.audioMimeType,
+        transcript: params.transcript,
+        eventId: params.eventId,
+        language,
+        voice: params.voice,
+        requestId: rid,
+        actor: "voice-webhook",
+      });
+
+      if (turn.duplicate) {
+        await completeWebhookInbox(inbox.eventId, inbox.leaseToken, { duplicate: true });
+        return ok({ ok: true, duplicate: true });
       }
-    } catch (err) {
-      // Playback failed: clear the completion marker so a retry recomputes
-      // (or the gateway plays turn.audioUrl itself from this response).
-      if (params.eventId) await clearTurnMarker(call.id, params.eventId);
-      logWarn("Voice playback failed", {
+      if (!turn.heard) {
+        await completeWebhookInbox(inbox.eventId, inbox.leaseToken, { heard: false });
+        return ok({ ok: true, heard: false, transcript: "" });
+      }
+
+      // Playback: prefer archived-audio URL; fall back to gateway-side TTS.
+      const voice = getVoiceProvider();
+      const mode = turn.audioUrl ? "audio-url" : "gateway-tts";
+      try {
+        if (turn.audioUrl) {
+          await voice.playAudio(params.externalCallId, { audioUrl: turn.audioUrl, language }, { requestId: rid });
+        } else {
+          await voice.playAudio(params.externalCallId, { text: turn.spokenText, language }, { requestId: rid });
+        }
+      } catch (err) {
+        // Playback failed: clear the completion marker so a retry recomputes
+        // (or the gateway plays turn.audioUrl itself from this response).
+        if (params.eventId) await clearTurnMarker(call.id, params.eventId);
+        logWarn("Voice playback failed", {
+          requestId: rid,
+          businessId: params.businessId,
+          callId: call.id,
+          operation: "voice.playback",
+          status: "error",
+          error: err instanceof Error ? err.message : String(err),
+        });
+        throw new AppError(502, "VOICE_ERROR", "Reply computed but playback failed", {
+          transcript: turn.transcript,
+          reply: turn.reply,
+          audioUrl: turn.audioUrl,
+          latencyMs: turn.latencyMs,
+        });
+      }
+
+      logInfo("Voice turn served", {
         requestId: rid,
         businessId: params.businessId,
         callId: call.id,
-        operation: "voice.playback",
-        status: "error",
-        error: err instanceof Error ? err.message : String(err),
+        operation: "voice.audio",
+        durationMs: turn.latencyMs.total,
+        status: "ok",
       });
-      throw new AppError(502, "VOICE_ERROR", "Reply computed but playback failed", {
+
+      await completeWebhookInbox(inbox.eventId, inbox.leaseToken, {
+        playback: mode,
+        audioStored: turn.audioStored,
+      });
+      return ok({
+        ok: true,
         transcript: turn.transcript,
         reply: turn.reply,
         audioUrl: turn.audioUrl,
+        audioStored: turn.audioStored,
+        playback: mode,
+        toolCalls: turn.toolCalls,
+        usage: turn.usage,
         latencyMs: turn.latencyMs,
       });
+    } catch (err) {
+      // Record the failure so the NEXT redelivery re-processes (retryable)
+      // instead of collapsing as a false duplicate.
+      await failWebhookInbox(inbox.eventId, inbox.leaseToken, err);
+      throw err;
     }
-
-    logInfo("Voice turn served", {
-      requestId: rid,
-      businessId: params.businessId,
-      callId: call.id,
-      operation: "voice.audio",
-      durationMs: turn.latencyMs.total,
-      status: "ok",
-    });
-
-    return ok({
-      ok: true,
-      transcript: turn.transcript,
-      reply: turn.reply,
-      audioUrl: turn.audioUrl,
-      audioStored: turn.audioStored,
-      playback: mode,
-      toolCalls: turn.toolCalls,
-      usage: turn.usage,
-      latencyMs: turn.latencyMs,
-    });
   });
 }

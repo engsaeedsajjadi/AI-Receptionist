@@ -1,7 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { NextRequest } from "next/server";
 import { AppError } from "@/lib/errors";
-import { setNx } from "@/lib/redis";
 
 const MAX_WEBHOOK_BODY_BYTES = 1024 * 1024; // 1 MB
 const TIMESTAMP_TOLERANCE_SECONDS = 5 * 60; // 5 minutes
@@ -46,9 +45,9 @@ function getHeader(req: NextRequest, names: string[]): string | null {
  * - timestamp freshness (replay protection) when a timestamp header is present
  *
  * This function does NOT claim idempotency. Callers must validate the payload
- * (zod) FIRST and then call `claimWebhookIdempotency`, so that invalid
- * payloads can never burn an idempotency key and mask the real error on
- * retry.
+ * (zod) FIRST and then claim the durable PG inbox (`claimWebhookInbox` in
+ * @/lib/webhook-inbox), so that invalid payloads can never burn an
+ * idempotency key and mask the real error on retry.
  *
  * Accepted headers:
  * - signature: x-webhook-signature | x-signature | stripe-style "t=...,v1=..."
@@ -122,16 +121,6 @@ export async function verifyWebhookRequest(
   }
 
   return { rawBody, payload, idempotencyKey };
-}
-
-/**
- * Claim distributed webhook idempotency (Redis-backed, 24h window).
- * Returns true for the first delivery (caller proceeds), false for a
- * redelivery (caller returns a deterministic duplicate response).
- * MUST be called only after the payload passed schema validation.
- */
-export async function claimWebhookIdempotency(scope: string, idempotencyKey: string): Promise<boolean> {
-  return setNx(`webhook:${scope}:${idempotencyKey}`, "1", 24 * 60 * 60);
 }
 
 /** Constant-time string comparison helper for API keys. */
