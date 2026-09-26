@@ -9,6 +9,7 @@ import { createBusiness } from "../helpers/fixtures";
 import { POST as callStarted } from "@/app/api/v1/webhooks/voice/call-started/route";
 import { POST as transcript } from "@/app/api/v1/webhooks/voice/transcript/route";
 import { POST as toolCall } from "@/app/api/v1/webhooks/voice/tool-call/route";
+import { deriveToolExecId } from "@/lib/tools/registry";
 
 // In tests VOICE_WEBHOOK_SECRET is unset → env.webhookSecret falls back here.
 const SECRET = "dev-webhook-secret";
@@ -226,10 +227,70 @@ describe.skipIf(!hasTestDatabase())("voice webhook routes: idempotency + concurr
     expect(j1).toMatchObject({ ok: true, status: "SUCCESS", duplicate: false });
     expect(j2).toMatchObject({ ok: true, status: "SUCCESS", duplicate: true });
 
+    // One TOOL row keyed by the DERIVED execution id (event + tool + args).
     const messages = await db
       .select()
       .from(callMessages)
-      .where(and(eq(callMessages.callId, call.id), eq(callMessages.eventId, payload.event_id)));
+      .where(and(eq(callMessages.callId, call.id), eq(callMessages.role, "TOOL")));
     expect(messages).toHaveLength(1);
+    expect(messages[0].eventId).toBe(
+      deriveToolExecId(payload.event_id, payload.tool, payload.arguments),
+    );
+  });
+
+  itDb("tool-call: same event_id across different tools/args executes each (no cross-tool replay)", async () => {
+    const business = await createBusiness("Webhook Biz G");
+    const call = await seedCall(business.id, `ext-${Date.now()}-g`);
+    const eventId = `tool-shared-${Date.now()}`;
+    const deliver = (tool: string, args: Record<string, unknown>) =>
+      toolCall(
+        post(
+          {
+            business_id: business.id,
+            external_call_id: call.externalCallId,
+            tool,
+            arguments: args,
+            event_id: eventId,
+          },
+          nextKey(),
+          "/api/v1/webhooks/voice/tool-call",
+        ),
+      );
+
+    // Same provider event_id, three DIFFERENT operations → all execute.
+    const r1 = await deliver("get_business_info", {});
+    const r2 = await deliver("send_notification", { title: "T1", message: "message A" });
+    const r3 = await deliver("send_notification", { title: "T1", message: "message B" });
+    for (const r of [r1, r2, r3]) expect(r.status).toBe(200);
+    const [j1, j2, j3] = (await Promise.all([r1.json(), r2.json(), r3.json()])) as Array<{
+      status: string;
+      duplicate: boolean;
+      result: unknown;
+    }>;
+    expect(j1).toMatchObject({ status: "SUCCESS", duplicate: false });
+    expect(j2).toMatchObject({ status: "SUCCESS", duplicate: false });
+    expect(j3).toMatchObject({ status: "SUCCESS", duplicate: false });
+    // Outcomes are per-operation: two distinct notifications, not the
+    // business profile (or each other) replayed across tools.
+    const n2 = (j2.result as { notificationId: string }).notificationId;
+    const n3 = (j3.result as { notificationId: string }).notificationId;
+    expect(n2).toBeTruthy();
+    expect(n3).toBeTruthy();
+    expect(n3).not.toBe(n2);
+
+    // True redelivery (same event_id + same tool + same args) still replays.
+    const r4 = await deliver("send_notification", { title: "T1", message: "message A" });
+    expect(r4.status).toBe(200);
+    const j4 = (await r4.json()) as { status: string; duplicate: boolean; result: unknown };
+    expect(j4).toMatchObject({ status: "SUCCESS", duplicate: true });
+    expect(j4.result).toEqual(j2.result);
+
+    // 3 TOOL rows with distinct derived execution ids.
+    const tools = await db
+      .select()
+      .from(callMessages)
+      .where(and(eq(callMessages.callId, call.id), eq(callMessages.role, "TOOL")));
+    expect(tools).toHaveLength(3);
+    expect(new Set(tools.map((m) => m.eventId)).size).toBe(3);
   });
 });

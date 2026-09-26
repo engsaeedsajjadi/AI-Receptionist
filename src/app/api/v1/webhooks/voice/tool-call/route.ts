@@ -10,7 +10,7 @@ import { logInfo } from "@/lib/logger";
 import { enforceRateLimit } from "@/lib/rate-limit";
 import { claimWebhookIdempotency, verifyWebhookRequest } from "@/lib/security";
 import { withApiHandling } from "@/lib/server-core";
-import { executeIdempotentToolCall, executeToolCall } from "@/lib/tools/registry";
+import { deriveToolExecId, executeIdempotentToolCall, executeToolCall } from "@/lib/tools/registry";
 
 const payloadSchema = z.object({
   business_id: z.string().uuid(),
@@ -19,6 +19,9 @@ const payloadSchema = z.object({
   arguments: z.record(z.string(), z.unknown()).default({}),
   // Provider execution identity. Retries MUST reuse the same event_id so a
   // redelivery returns the STORED outcome instead of re-executing the tool.
+  // The execution id is derived from event_id + tool + canonical args (same
+  // scheme as the agent runtime): a provider that reuses one event_id for
+  // different tools/args must NOT cause cross-tool outcome replay.
   event_id: z.string().min(1).max(255).optional(),
 });
 
@@ -53,13 +56,16 @@ export async function POST(req: NextRequest) {
 
     if (!call) throw new AppError(404, "CALL_NOT_FOUND", "Call not found");
 
-    // Event-scoped execution: same event_id → stored outcome, never a rerun.
-    // Shared with the agent runtime loop (P0-3) via executeIdempotentToolCall.
+    // Event-scoped execution: same (event_id, tool, args) → stored outcome,
+    // never a rerun. The derived id shares one namespace with the agent
+    // runtime loop (P0-3) via executeIdempotentToolCall, so the same
+    // operation delivered via both paths still collapses — while a reused
+    // provider event_id can never replay across different tools/args.
     if (body.event_id) {
       const outcome = await executeIdempotentToolCall({
         businessId: body.business_id,
         callId: call.id,
-        toolExecId: body.event_id,
+        toolExecId: deriveToolExecId(body.event_id, body.tool, body.arguments),
         tool: body.tool,
         args: body.arguments,
         requestId: rid,
