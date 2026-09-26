@@ -104,8 +104,11 @@ export function verifyLocalSignedUrl(key: string, expires: string, sig: string):
   const exp = Number(expires);
   if (!Number.isFinite(exp) || exp * 1000 < Date.now()) return false;
   const expected = createHmac("sha256", env.jwtSecret).update(`${key}:${expires}`).digest("hex");
-  return expected.length === sig.length && createHmac("sha256", "compare").update(expected).digest("hex") ===
-    createHmac("sha256", "compare").update(sig).digest("hex");
+  const a = Buffer.from(expected, "utf8");
+  const b = Buffer.from(sig, "utf8");
+  // Constant-time compare: length check first (sig length is not secret),
+  // then timingSafeEqual over the digest bytes.
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 // ---------------------------------------------------------------------------

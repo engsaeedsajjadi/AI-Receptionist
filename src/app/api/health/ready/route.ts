@@ -1,8 +1,9 @@
+import { NextRequest } from "next/server";
 import { checkDbHealth } from "@/db";
 import { ok } from "@/lib/api";
 import { getEnv, isProduction } from "@/lib/env";
 import { checkRedisHealth } from "@/lib/redis";
-import { withApiHandling } from "@/lib/server-core";
+import { checkGlobalPublicRateLimit, withApiHandling } from "@/lib/server-core";
 
 export const dynamic = "force-dynamic";
 
@@ -15,8 +16,11 @@ type Check = { name: string; ok: boolean; latencyMs?: number; error?: string; co
  * - Critical provider configuration must be present (configured ≠ healthy,
  *   so provider checks only report configuration status, not live API calls)
  */
-export async function GET() {
+export async function GET(req: NextRequest) {
   return withApiHandling(async () => {
+    // Readiness is scraped per-IP; orchestrator probes use /live (never
+    // limited) so throttling here cannot cause restarts.
+    await checkGlobalPublicRateLimit(req);
     const checks: Check[] = [];
 
     const db = await checkDbHealth();

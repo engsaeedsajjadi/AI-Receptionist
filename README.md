@@ -171,8 +171,23 @@ Base path `/api/v1` (auth: Bearer JWT; errors: `{ error: { code, message, reques
 
 - Tenant isolation enforced in every service/route; integration-tested cross-tenant denial.
 - LLM never touches the DB directly and never receives secrets (only tool results).
-- No secrets in logs; webhook HMAC + replay window; rate limits on auth/webhooks.
-- Production requires strong JWT secrets, `TRUST_PROXY` review, TLS (see `nginx/` + prod compose).
+- No secrets in logs: `src/lib/logger.ts` redacts secret keys (case-insensitive) +
+  bearer strings before pino, with pino `redact` paths as a second layer
+  (`tests/unit/redaction.test.ts` pins this, including real log output).
+- Webhook HMAC + replay window; every API route is authenticated (JWT context),
+  HMAC/signature verified (webhooks, signed file URLs, refresh-token possession),
+  or a rate-limited credential entry point (`auth/login`, `auth/register`).
+  Only `/api/health/*` are unauthenticated info endpoints, and every route except
+  `/api/health/live` is Redis-backed rate limited (60/min default; tighter presets
+  on login/AI/upload).
+- Signed capability URLs for local file downloads (`/api/v1/files/[...key]`);
+  storage keys are traversal-proof and tenant-scoped (`tests/unit/storage.test.ts`).
+- Baseline response headers (HSTS, nosniff, DENY framing, no-referrer,
+  restrictive permissions-policy) in `next.config.ts`. No CSP yet: the dashboard
+  ships framework-inline scripts — add one deliberately, not blindly.
+- Production requires strong JWT secrets, `TRUST_PROXY=true` behind nginx, TLS
+  (see `nginx/` + prod compose). Costs are recorded as estimates from a verified
+  pricing table (`src/lib/pricing.ts`, overridable via `PRICING_JSON`).
 
 ## Deployment
 

@@ -8,7 +8,7 @@ import {
   getCookieValue,
   revokeRefreshToken,
 } from "@/lib/auth";
-import { withApiHandling } from "@/lib/server-core";
+import { checkGlobalPublicRateLimit, withApiHandling } from "@/lib/server-core";
 
 const logoutSchema = z.object({
   refreshToken: z.string().min(10).max(4096).optional(),
@@ -16,6 +16,7 @@ const logoutSchema = z.object({
 
 export async function POST(req: NextRequest) {
   return withApiHandling(async () => {
+    await checkGlobalPublicRateLimit(req);
     const body = await parseJson<unknown>(req).catch(() => ({}));
     const parsed = logoutSchema.safeParse(body ?? {});
     const cookieToken = getCookieValue(req, REFRESH_COOKIE_NAME);
