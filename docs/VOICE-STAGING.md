@@ -39,13 +39,25 @@ JSON everywhere, 15s timeout, 2 retries on network faults.
 
 | App → gateway | Purpose |
 |---|---|
-| `POST /calls/{id}/answer` | Answer the ringing call |
+| `POST /calls/{id}/answer` `{idempotencyKey?}` | Answer the ringing call. Key is stable per call (`answer:{callId}`) — gateways SHOULD dedup retries |
 | `POST /calls/{id}/hangup` `{reason?}` | Hang up |
 | `POST /calls/{id}/play` `{audioUrl?, text?, language?}` | Play reply audio (URL preferred; `text` = gateway-side TTS fallback, Persian) |
 | `POST /calls/{id}/transfer` `{destination, timeoutSeconds?, idempotencyKey?}` | Transfer to human; response `{status}` (`completed` ⇒ TRANSFERRED, else INITIATED; HTTP error ⇒ TRANSFER_FAILED). Gateways SHOULD dedup retries carrying the same `idempotencyKey` (the app re-issues with a stable key when recovering a crashed transfer; gateways that ignore it keep at-least-once behavior across that window only) |
-| `POST /calls/{id}/stream/start` `{websocketUrl, language?, mediaToken}` | Open media WS to the sidecar; forward `mediaToken` verbatim as `token` in the `start` frame |
+| `POST /calls/{id}/stream/start` `{websocketUrl, language?, mediaToken, idempotencyKey?}` | Open media WS to the sidecar; forward `mediaToken` verbatim as `token` in the `start` frame. Key is stable per call (`stream:{callId}`) — gateways SHOULD dedup retries |
 | `POST /calls/{id}/stream/stop` | Close media streaming |
 | `GET /calls/{id}` → `{status, ...}` | Poll call status |
+
+Fail-closed media bootstrap (`call-started`, §3): the app validates the
+FULL media chain — provider credentials, auto-answer, `wss://` media URL,
+token secret — then mints + self-verifies the per-call token, and only
+then calls `answer` → `stream/start`. Missing/invalid config yields HTTP
+200 with `media.answered=false` and an honest reason
+(`voice_provider_not_configured`, `auto_answer_disabled`,
+`media_public_url_missing`, `media_token_missing`, `media_config_invalid`)
+and the gateway keeps ringing; transient `answer`/`stream/start` failures
+yield retryable HTTP 502 (inbox `FAILED`), and a redelivery reconciles —
+answered stages are skipped, pending stages re-run with the same stable
+keys. No path answers a call the app cannot stream media for.
 
 Gateway → app webhooks (`https://<host>/api/v1/webhooks/voice/*`):
 

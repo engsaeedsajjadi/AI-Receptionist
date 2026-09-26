@@ -15,13 +15,13 @@ import { NO_VOICE_CAPABILITIES, type VoiceCapabilities } from "@/lib/providers/c
  * shim) via VOICE_API_BASE_URL / VOICE_API_KEY.
  *
  * Required telephony-gateway contract (all JSON, Bearer auth):
- *   POST {base}/calls/{providerCallId}/answer
+ *   POST {base}/calls/{providerCallId}/answer               { idempotencyKey? }
  *   POST {base}/calls/{providerCallId}/hangup            { reason? }
  *   POST {base}/calls/{providerCallId}/play              { audioUrl?, text?, language? }
  *   POST {base}/calls/{providerCallId}/transfer          { destination, timeoutSeconds?, idempotencyKey? }
  *     (idempotencyKey: gateways SHOULD dedup retries carrying the same key —
  *     the app re-issues with a stable key when recovering a crashed transfer)
- *   POST {base}/calls/{providerCallId}/stream/start      { websocketUrl, language?, mediaToken }
+ *   POST {base}/calls/{providerCallId}/stream/start      { websocketUrl, language?, mediaToken, idempotencyKey? }
  * The gateway MUST forward mediaToken verbatim as `token` in the media
  * WebSocket `start` frame. It is a short-lived per-call credential issued
  * at call-started (see src/lib/voice/media-tokens.ts) — never the static
@@ -63,12 +63,15 @@ export interface VoiceProvider {
   readonly name: string;
   /** Explicit capability declaration — detect features, never assume them. */
   readonly capabilities: VoiceCapabilities;
-  answerCall(providerCallId: string, opts?: { requestId?: string }): Promise<VoiceActionResult>;
+  answerCall(
+    providerCallId: string,
+    opts?: { requestId?: string; idempotencyKey?: string },
+  ): Promise<VoiceActionResult>;
   hangupCall(providerCallId: string, opts?: { reason?: string; requestId?: string }): Promise<VoiceActionResult>;
   playAudio(providerCallId: string, audio: PlayAudioInput, opts?: { requestId?: string }): Promise<VoiceActionResult>;
   startStream(
     providerCallId: string,
-    opts: { websocketUrl: string; language?: string; requestId?: string; mediaToken: string },
+    opts: { websocketUrl: string; language?: string; requestId?: string; mediaToken: string; idempotencyKey?: string },
   ): Promise<VoiceActionResult>;
   stopStream(providerCallId: string, opts?: { requestId?: string }): Promise<VoiceActionResult>;
   transferCall(
@@ -178,8 +181,16 @@ export class GenericVoiceProvider implements VoiceProvider {
     throw lastError instanceof AppError ? lastError : new AppError(502, "VOICE_ERROR", "Voice gateway request failed");
   }
 
-  async answerCall(providerCallId: string, opts?: { requestId?: string }): Promise<VoiceActionResult> {
-    const raw = await this.request<unknown>("POST", `/calls/${encodeURIComponent(providerCallId)}/answer`, {}, opts?.requestId);
+  async answerCall(
+    providerCallId: string,
+    opts?: { requestId?: string; idempotencyKey?: string },
+  ): Promise<VoiceActionResult> {
+    const raw = await this.request<unknown>(
+      "POST",
+      `/calls/${encodeURIComponent(providerCallId)}/answer`,
+      { ...(opts?.idempotencyKey ? { idempotencyKey: opts.idempotencyKey } : {}) },
+      opts?.requestId,
+    );
     logInfo("Voice call answered", { requestId: opts?.requestId, provider: this.name, operation: "voice.answer" });
     return { ok: true, providerCallId, provider: this.name, raw };
   }
@@ -216,7 +227,7 @@ export class GenericVoiceProvider implements VoiceProvider {
 
   async startStream(
     providerCallId: string,
-    opts: { websocketUrl: string; language?: string; requestId?: string; mediaToken: string },
+    opts: { websocketUrl: string; language?: string; requestId?: string; mediaToken: string; idempotencyKey?: string },
   ): Promise<VoiceActionResult> {
     if (!opts.mediaToken) {
       throw new AppError(500, "INTERNAL_ERROR", "startStream requires a per-call media token");
@@ -228,6 +239,7 @@ export class GenericVoiceProvider implements VoiceProvider {
         websocketUrl: opts.websocketUrl,
         language: opts.language ?? getEnv().VOICE_DEFAULT_LANGUAGE,
         mediaToken: opts.mediaToken,
+        ...(opts?.idempotencyKey ? { idempotencyKey: opts.idempotencyKey } : {}),
       },
       opts.requestId,
     );

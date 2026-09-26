@@ -71,7 +71,7 @@ describe.skipIf(!hasTestDatabase())("voice webhook routes: idempotency + concurr
     expect(j1.callId).toBe(j2.callId);
     // Media bootstrap is reported honestly (no provider in tests → skipped).
     const winner = (j1.duplicate ? j2 : j1) as unknown as { media: { attempted: boolean; reason: string } };
-    expect(winner.media).toMatchObject({ attempted: false, reason: "provider_not_configured" });
+    expect(winner.media).toMatchObject({ attempted: false, reason: "voice_provider_not_configured" });
 
     const rows = await db
       .select()

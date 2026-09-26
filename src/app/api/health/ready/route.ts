@@ -4,6 +4,7 @@ import { ok } from "@/lib/api";
 import { getEnv, isProduction } from "@/lib/env";
 import { checkRedisHealth } from "@/lib/redis";
 import { checkGlobalPublicRateLimit, withApiHandling } from "@/lib/server-core";
+import { resolveMediaBootstrapConfig, validateMediaBootstrapConfig } from "@/lib/voice/media-bootstrap";
 
 export const dynamic = "force-dynamic";
 
@@ -47,6 +48,13 @@ export async function GET(req: NextRequest) {
       const voiceOk = e.VOICE_PROVIDER !== "generic" || Boolean(e.VOICE_API_BASE_URL && e.VOICE_API_KEY);
       checks.push({ name: "provider-config:openai", ok: openAiOk, configured: openAiOk });
       checks.push({ name: "provider-config:voice", ok: voiceOk, configured: voiceOk });
+      // Voice-media bootstrap prerequisites (§3 production detectability):
+      // REPORTED, never fatal. Webhook-topology deployments legitimately run
+      // without sidecar streaming, and per-business autoAnswer overrides mean
+      // global state alone cannot decide. Enforcement happens per call inside
+      // bootstrapMedia, fail-closed before answerCall.
+      const mediaValid = validateMediaBootstrapConfig(resolveMediaBootstrapConfig());
+      checks.push({ name: "provider-config:voice-media", ok: true, configured: mediaValid.ok });
       envOk = openAiOk && voiceOk;
     } catch (err) {
       envOk = false;

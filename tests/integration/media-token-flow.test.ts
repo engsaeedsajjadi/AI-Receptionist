@@ -165,9 +165,9 @@ describe("P0-1 media token propagation (call-started → gateway → media start
         ),
       );
       expect(res.status).toBe(200);
-      const json = (await res.json()) as { media: { streaming: boolean; reason?: string } };
-      // Fail closed: answered but no stream the sidecar would accept.
-      expect(json.media).toMatchObject({ streaming: false, reason: "media_token_not_configured" });
+      const json = (await res.json()) as { media: { attempted: boolean; answered: boolean; streaming: boolean; reason?: string } };
+      // Fail closed (§3): no secret → no answer at all (never answered-then-stranded).
+      expect(json.media).toMatchObject({ attempted: false, answered: false, streaming: false, reason: "media_token_missing" });
     } finally {
       process.env.VOICE_MEDIA_TOKEN = MEDIA_SECRET;
       resetEnvCache();

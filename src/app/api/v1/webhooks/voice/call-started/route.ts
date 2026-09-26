@@ -5,15 +5,14 @@ import { db } from "@/db";
 import { businesses, calls, usageRecords } from "@/db/schema";
 import { ok, parseWith } from "@/lib/api";
 import { AppError, tooManyRequests } from "@/lib/errors";
-import { env, getEnv } from "@/lib/env";
-import { logInfo, logWarn } from "@/lib/logger";
-import { getVoiceProvider } from "@/lib/providers/voice";
-import { issueMediaToken } from "@/lib/voice/media-tokens";
+import { env } from "@/lib/env";
+import { logInfo } from "@/lib/logger";
 import { resolveBusinessByCalledNumber } from "@/lib/services/phone-routing";
 import { normalizePersianText, normalizePhone } from "@/lib/normalization";
 import { enforceRateLimit } from "@/lib/rate-limit";
 import { verifyWebhookRequest } from "@/lib/security";
 import { withApiHandling } from "@/lib/server-core";
+import { bootstrapMedia, parseBootstrapState } from "@/lib/voice/media-bootstrap";
 import {
   canonicalPayloadHash,
   claimWebhookInbox,
@@ -102,6 +101,9 @@ export async function POST(req: NextRequest) {
       // Idempotent insert: concurrent duplicate deliveries (different header
       // keys) collapse on the (businessId, externalCallId) unique constraint.
       // Usage is recorded exactly once — only for the winning insert.
+      // The duplicate path ALSO reads metadata: the media bootstrap state
+      // (answered/streaming) drives retry reconciliation (§3) — a redelivery
+      // re-runs pending stages instead of skipping blindly or duplicating.
       const [inserted] = await db
         .insert(calls)
         .values({
@@ -119,13 +121,15 @@ export async function POST(req: NextRequest) {
 
       let callId = inserted?.id ?? null;
       const created = Boolean(inserted);
+      let bootstrapState = { answered: false, streaming: false };
       if (!inserted) {
         const [existing] = await db
-          .select({ id: calls.id })
+          .select({ id: calls.id, metadata: calls.metadata })
           .from(calls)
           .where(and(eq(calls.businessId, businessId), eq(calls.externalCallId, body.external_call_id)))
           .limit(1);
         callId = existing?.id ?? null;
+        bootstrapState = parseBootstrapState(existing?.metadata);
       }
       if (!callId) {
         // Conflicted on insert but the row vanished — should never happen.
@@ -146,17 +150,18 @@ export async function POST(req: NextRequest) {
           .onConflictDoNothing({ target: [usageRecords.businessId, usageRecords.idempotencyKey] });
       }
 
-      // Media bootstrap (winning insert only): answer the call and ask the
-      // gateway to stream audio to the media sidecar. Best-effort — the call
-      // RECORD is the source of truth and is already persisted — but the
-      // outcome is reported honestly in the response (never a silent fake).
+      // Fail-closed media bootstrap (§3): config problems yield an honest
+      // 200 report with answered:false (the gateway keeps ringing); transient
+      // provider failures THROW a retryable 502 (the inbox records FAILED so
+      // redelivery reconciles). The call RECORD is the source of truth and
+      // is already persisted either way.
       const media = await bootstrapMedia({
         businessId: businessId,
         businessSettings: (business.settings as Record<string, unknown>) ?? {},
         callId,
         externalCallId: body.external_call_id,
         requestId: rid,
-        skip: !created,
+        bootstrapState,
       });
 
       logInfo("Inbound call started", {
@@ -167,7 +172,7 @@ export async function POST(req: NextRequest) {
         status: created ? "ok" : "duplicate",
       });
 
-      await completeWebhookInbox(inbox.eventId, inbox.leaseToken, { callId, duplicate: !created });
+      await completeWebhookInbox(inbox.eventId, inbox.leaseToken, { callId, duplicate: !created, media });
       return ok({ ok: true, callId, duplicate: !created, media, routing });
     } catch (err) {
       // Record the failure so the NEXT redelivery re-processes (retryable)
@@ -176,84 +181,4 @@ export async function POST(req: NextRequest) {
       throw err;
     }
   });
-}
-
-export type MediaBootstrap = {
-  attempted: boolean;
-  answered: boolean;
-  streaming: boolean;
-  reason?: string;
-};
-
-/**
- * Answer + start media streaming for a newly recorded call.
- * Skipped (attempted:false) for duplicates, when auto-answer is disabled
- * (VOICE_AUTO_ANSWER=false or per-business settings.voice.autoAnswer=false),
- * or when no telephony provider is configured.
- */
-export async function bootstrapMedia(input: {
-  businessId: string;
-  businessSettings: Record<string, unknown>;
-  callId: string;
-  externalCallId: string;
-  requestId: string;
-  skip: boolean;
-}): Promise<MediaBootstrap> {
-  if (input.skip) return { attempted: false, answered: false, streaming: false, reason: "duplicate" };
-  const e = getEnv();
-  if (e.VOICE_PROVIDER !== "generic") {
-    return { attempted: false, answered: false, streaming: false, reason: "provider_not_configured" };
-  }
-  const voiceSettings = (input.businessSettings.voice as Record<string, unknown> | undefined) ?? {};
-  const autoAnswer =
-    typeof voiceSettings.autoAnswer === "boolean" ? voiceSettings.autoAnswer : e.VOICE_AUTO_ANSWER;
-  if (!autoAnswer) {
-    return { attempted: false, answered: false, streaming: false, reason: "auto_answer_disabled" };
-  }
-
-  const voice = getVoiceProvider();
-  try {
-    await voice.answerCall(input.externalCallId, { requestId: input.requestId });
-  } catch (err) {
-    logWarn("Voice answer failed (call record kept)", {
-      requestId: input.requestId,
-      operation: "voice.answer",
-      status: "error",
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return { attempted: true, answered: false, streaming: false, reason: "answer_failed" };
-  }
-
-  if (!e.VOICE_MEDIA_PUBLIC_URL) {
-    return { attempted: true, answered: true, streaming: false, reason: "media_url_not_configured" };
-  }
-  // Fail closed: without the signing secret there is no per-call credential
-  // the sidecar would accept, so never ask the gateway to stream. The token
-  // itself is passed to the gateway only — never logged, never returned.
-  if (!e.VOICE_MEDIA_TOKEN) {
-    return { attempted: true, answered: true, streaming: false, reason: "media_token_not_configured" };
-  }
-  const mediaToken = issueMediaToken({
-    businessId: input.businessId,
-    callId: input.callId,
-    externalCallId: input.externalCallId,
-    ttlSeconds: e.VOICE_MEDIA_TOKEN_TTL_SECONDS,
-    secret: e.VOICE_MEDIA_TOKEN,
-  });
-  try {
-    await voice.startStream(input.externalCallId, {
-      websocketUrl: e.VOICE_MEDIA_PUBLIC_URL,
-      requestId: input.requestId,
-      mediaToken,
-    });
-    return { attempted: true, answered: true, streaming: true };
-  } catch (err) {
-    logWarn("Voice stream start failed (call answered, no media)", {
-      requestId: input.requestId,
-      operation: "voice.stream.start",
-      status: "error",
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return { attempted: true, answered: true, streaming: false, reason: "stream_start_failed" };
-  }
 }
