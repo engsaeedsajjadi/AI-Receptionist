@@ -225,9 +225,16 @@ describe.skipIf(!runIntegration)("e2e: websocket media -> real turns -> real too
     expect(customerRows[0].name).toContain("سارا");
     expect(customerRows[0].phone).toBe("09120000000");
 
-    // 5. Transcript persisted (2 turns x CUSTOMER+AGENT), usage metered.
+    // 5. Transcript persisted (2 turns x CUSTOMER+AGENT, plus one TOOL outcome
+    // row per executed tool for P0-3 idempotent replay), usage metered.
     const transcript = await db.select().from(callMessages).where(eq(callMessages.callId, callId));
-    expect(transcript).toHaveLength(4);
+    expect(transcript.filter((m) => m.role === "CUSTOMER")).toHaveLength(2);
+    expect(transcript.filter((m) => m.role === "AGENT")).toHaveLength(2);
+    const toolRows = transcript.filter((m) => m.role === "TOOL");
+    expect(toolRows).toHaveLength(2);
+    for (const row of toolRows) {
+      expect((row.metadata as Record<string, unknown>).outcome).toMatchObject({ status: "SUCCESS" });
+    }
     const usage = await db.select().from(usageRecords).where(eq(usageRecords.businessId, businessId));
     const types = usage.map((u) => u.type);
     expect(types).toContain("stt_minutes");
