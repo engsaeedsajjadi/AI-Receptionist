@@ -1,0 +1,96 @@
+{
+  "name": "AI-Receptionist / human-handoff",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "ai-receptionist/human-handoff",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "wh-handoff",
+      "name": "Handoff Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "a1b2c3d4-handoff-0004"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.N8N_WEBHOOK_SECRET;\nif (!secret) throw new Error('N8N_WEBHOOK_SECRET env is not set');\nconst item = $input.first();\nconst headers = item.json.headers ?? {};\nconst signature = headers['x-webhook-signature'] ?? headers['X-Webhook-Signature'];\nconst idempotencyKey = headers['x-idempotency-key'] ?? headers['X-Idempotency-Key'];\nif (!signature || !idempotencyKey) throw new Error('Missing webhook signature or idempotency key');\nconst rawBody = JSON.stringify(item.json.body ?? item.json);\nconst expected = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');\nif (signature !== expected) throw new Error('Invalid webhook signature');\nconst payload = item.json.body?.payload ?? item.json.payload ?? {};\nif (!payload.callId || !payload.businessId || !payload.status) throw new Error('Invalid human-handoff payload');\nreturn [{ json: { ...payload, _idempotencyKey: idempotencyKey } }];"
+      },
+      "id": "verify-handoff",
+      "name": "Verify Signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $getWorkflowStaticData('global');\ndata.seen = data.seen || {};\nconst now = Date.now();\nfor (const k of Object.keys(data.seen)) { if (data.seen[k] < now - 86400000) delete data.seen[k]; }\nconst item = $input.first().json;\nif (data.seen[item._idempotencyKey]) { return [{ json: { ...item, _duplicate: true } }]; }\ndata.seen[item._idempotencyKey] = now;\nconst failed = item.status === 'failed';\nconst text = failed\n  ? `هشدار: انتقال تماس ناموفق بود\\nتماس: ${item.callId}\\nمقصد: ${item.destination ?? '—'}\\nلطفاً پیگیری کنید.`\n  : `انتقال تماس به انسان\\nتماس: ${item.callId}\\nمقصد: ${item.destination ?? '—'}`;\nreturn [{ json: { ...item, _duplicate: false, _urgent: failed, _message: text } }];"
+      },
+      "id": "dedupe-handoff",
+      "name": "Deduplicate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "id": "is-dup", "leftValue": "={{ $json._duplicate }}", "rightValue": true, "operator": { "type": "boolean", "operation": "equals" } }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-dup-handoff",
+      "name": "Is Duplicate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"chat_id\": \"={{ $json._urgent ? $env.TELEGRAM_URGENT_CHAT_ID : $env.TELEGRAM_OPS_CHAT_ID }}\", \"text\": \"{{ $json._message }}\" }",
+        "options": { "timeout": 10000 }
+      },
+      "id": "notify-handoff",
+      "name": "Notify Team",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 220]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"ok\": true, \"duplicate\": {{ $json._duplicate ?? false }} }"
+      },
+      "id": "respond-handoff",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [1340, 300]
+    }
+  ],
+  "connections": {
+    "Handoff Webhook": { "main": [[{ "node": "Verify Signature", "type": "main", "index": 0 }]] },
+    "Verify Signature": { "main": [[{ "node": "Deduplicate", "type": "main", "index": 0 }]] },
+    "Deduplicate": { "main": [[{ "node": "Is Duplicate?", "type": "main", "index": 0 }]] },
+    "Is Duplicate?": {
+      "main": [
+        [{ "node": "Respond", "type": "main", "index": 0 }],
+        [{ "node": "Notify Team", "type": "main", "index": 0 }]
+      ]
+    },
+    "Notify Team": { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "staticData": {}
+}

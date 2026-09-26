@@ -1,26 +1,32 @@
+import { buildSystemPrompt } from "@/lib/guardrails";
+
 type BuildPromptInput = {
   businessName: string;
   businessContext: string;
+  agentName?: string;
+  greeting?: string;
+  tone?: string;
+  language?: string;
 };
 
-export function buildAgentPrompt({ businessName, businessContext }: BuildPromptInput) {
-  return `شما منشی هوشمند مجموعه ${businessName} هستید.
-وظایف شما:
-1) پاسخ به سوالات مشتری
-2) جمع‌آوری اطلاعات لازم
-3) ایجاد یا به‌روزرسانی سرنخ فروش
-4) هماهنگی درخواست بازدید
-5) انتقال تماس به نیروی انسانی در صورت نیاز
-
-اطلاعات کسب‌وکار:
-${businessContext}
-
-قوانین:
-- فقط فارسی صحبت کنید.
-- قیمت، فایل یا زمان‌بندی را حدس نزنید.
-- اگر اطلاعات ندارید صریح بگویید.
-- بدون موفقیت ابزار، ادعای انجام عملیات نکنید.
-- هر بار ۱ یا ۲ سوال کوتاه بپرسید.
-- در صورت درخواست مشتری برای انسان، تماس را منتقل کنید.
-- از ارائه مشاوره حقوقی/مالی/پزشکی خودداری کنید.`;
+/**
+ * Backwards-compatible prompt builder. New code should call
+ * `buildSystemPrompt` from guardrails directly with separated layers.
+ */
+export function buildAgentPrompt({
+  businessName,
+  businessContext,
+  agentName,
+  greeting,
+  tone,
+  language = "fa",
+}: BuildPromptInput) {
+  return buildSystemPrompt({
+    language,
+    businessName,
+    agentName,
+    greeting,
+    tone,
+    businessContext,
+  });
 }
