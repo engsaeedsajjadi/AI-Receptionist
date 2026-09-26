@@ -62,6 +62,28 @@ const envSchema = z.object({
   /** Shared token authenticating gateways to the media sidecar. */
   VOICE_MEDIA_TOKEN: z.string().default(""),
   VOICE_MEDIA_PORT: z.coerce.number().int().positive().default(3001),
+  /** Max single WebSocket frame (bytes). Frames larger than this are dropped. */
+  VOICE_MEDIA_MAX_FRAME_BYTES: z.coerce.number().int().positive().default(262_144),
+  /** Comma-separated allowed WS Origin values; empty = same-gateway-token only (no origin check). */
+  VOICE_MEDIA_ALLOWED_ORIGINS: z.string().default(""),
+  /** Max concurrent media sessions per sidecar process (0 = unlimited). */
+  VOICE_MAX_CONCURRENT_SESSIONS: z.coerce.number().int().min(0).default(200),
+  /** Max buffered utterance audio per session (bytes). */
+  VOICE_MAX_AUDIO_BUFFER_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
+  /** Idle session lifetime (ms) before the sidecar closes it. */
+  VOICE_SESSION_TIMEOUT_MS: z.coerce.number().int().positive().default(10 * 60 * 1000),
+  /** Server-side VAD: trailing silence that ends an utterance (ms). */
+  VOICE_VAD_SILENCE_MS: z.coerce.number().int().positive().default(900),
+  /** Server-side VAD: minimum voiced audio to accept an utterance (ms). */
+  VOICE_VAD_MIN_SPEECH_MS: z.coerce.number().int().positive().default(250),
+  /** Server-side VAD: hard cap per utterance (ms); longer audio force-ends it. */
+  VOICE_VAD_MAX_UTTERANCE_MS: z.coerce.number().int().positive().default(30_000),
+  /** Server-side VAD: RMS energy below this counts as silence (PCM16 units). */
+  VOICE_VAD_SILENCE_RMS: z.coerce.number().int().min(0).default(400),
+  /** Max silence nudges before the session gives up (callback/hangup path). */
+  VOICE_SILENCE_MAX_REPROMPTS: z.coerce.number().int().min(0).default(2),
+  /** Pause after answer / last turn before a silence nudge (ms). */
+  VOICE_SILENCE_TIMEOUT_MS: z.coerce.number().int().positive().default(7000),
 
   STT_PROVIDER: providerEnum.default("dev"),
   STT_MODEL: z.string().default("whisper-1"),
