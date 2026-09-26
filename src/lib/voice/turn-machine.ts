@@ -9,6 +9,7 @@ import { AppError } from "@/lib/errors";
  *
  *   IDLE -> LISTENING -> PROCESSING -> SPEAKING -> LISTENING ...
  *                                  SPEAKING -> INTERRUPTED -> LISTENING (barge-in)
+ *                     PROCESSING -> INTERRUPTED (caller talks while the agent thinks)
  *   LISTENING|PROCESSING|SPEAKING -> TRANSFERRING -> TRANSFERRED | TRANSFER_FAILED
  *   TRANSFER_FAILED -> LISTENING (callback offer) | ENDING
  *   any -> ENDING -> ENDED
@@ -32,7 +33,8 @@ const TRANSITIONS: Record<VoiceTurnState, readonly VoiceTurnState[]> = {
   IDLE: ["LISTENING", "ENDING", "ERROR"],
   LISTENING: ["PROCESSING", "TRANSFERRING", "ENDING", "ERROR"],
   // PROCESSING -> LISTENING: heard-nothing / duplicate (no audio to speak).
-  PROCESSING: ["SPEAKING", "LISTENING", "TRANSFERRING", "ENDING", "ERROR"],
+  // PROCESSING -> INTERRUPTED: caller talks while the agent thinks.
+  PROCESSING: ["SPEAKING", "LISTENING", "INTERRUPTED", "TRANSFERRING", "ENDING", "ERROR"],
   SPEAKING: ["LISTENING", "INTERRUPTED", "TRANSFERRING", "ENDING", "ERROR"],
   INTERRUPTED: ["LISTENING", "PROCESSING", "ENDING", "ERROR"],
   TRANSFERRING: ["TRANSFERRED", "TRANSFER_FAILED", "ENDING", "ERROR"],

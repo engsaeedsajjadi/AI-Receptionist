@@ -61,7 +61,7 @@ function frameRms(pcm16: Buffer, start: number, samples: number): number {
 
 export class EnergyVad {
   private readonly frameSamples: number;
-  private carry = Buffer.alloc(0);
+  private carry: Buffer = Buffer.alloc(0);
   private state: VadState = "silence";
   private voicedMs = 0;
   private silentMs = 0;

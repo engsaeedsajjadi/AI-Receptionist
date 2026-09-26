@@ -19,6 +19,13 @@ describe("turn state machine", () => {
     expect(m.state).toBe("LISTENING");
   });
 
+  it("allows barge-in while PROCESSING (caller talks over the agent's thinking)", () => {
+    const m = new TurnStateMachine("PROCESSING");
+    m.transition("INTERRUPTED");
+    m.transition("PROCESSING");
+    expect(m.state).toBe("PROCESSING");
+  });
+
   it("walks transfer success and failure", () => {
     const ok = new TurnStateMachine("LISTENING");
     ok.transition("TRANSFERRING");
@@ -52,7 +59,7 @@ describe("turn state machine", () => {
     const cases: Array<[VoiceTurnState, VoiceTurnState]> = [
       ["IDLE", "SPEAKING"], // must listen first
       ["LISTENING", "SPEAKING"], // must process first
-      ["PROCESSING", "INTERRUPTED"], // only speaking can be interrupted
+      ["INTERRUPTED", "SPEAKING"], // must re-process before speaking again
       ["ENDED", "LISTENING"], // terminal
       ["TRANSFERRED", "LISTENING"], // call left the agent
       ["SPEAKING", "TRANSFERRED"], // must pass through TRANSFERRING

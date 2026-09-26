@@ -51,6 +51,7 @@ export type ErrorCode =
   | "STORAGE_ERROR"
   | "N8N_ERROR"
   | "DEPENDENCY_UNAVAILABLE"
+  | "SERVER_FULL"
   | "INTERNAL_ERROR";
 
 export class AppError extends Error {

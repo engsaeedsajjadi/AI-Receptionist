@@ -7,6 +7,9 @@ import {
 } from "@/lib/voice/media-server";
 import type { VoiceTurnInput, VoiceTurnResult } from "@/lib/voice/turn";
 import type { CalledNumberRoute } from "@/lib/services/phone-routing";
+import type { SessionHooks } from "@/lib/voice/media-server";
+import type { SpeakInput, SpeakResult } from "@/lib/voice/speak";
+import type { VadConfig } from "@/lib/audio/vad";
 
 const TOKEN = "media-secret";
 
@@ -57,6 +60,13 @@ function setup(opts?: {
   routeCall?: (calledNumber: string) => Promise<CalledNumberRoute>;
   idleTimeoutMs?: number;
   maxBufferBytes?: number;
+  maxFrameBytes?: number;
+  sessionHooks?: SessionHooks;
+  speakRunner?: (input: SpeakInput) => Promise<SpeakResult>;
+  silenceTimeoutMs?: number | null;
+  maxReprompts?: number;
+  vadConfig?: VadConfig;
+  markSilenceGiveup?: (businessId: string, callId: string) => Promise<void>;
 }) {
   const socket = new FakeSocket();
   const server = new MediaServer({
@@ -64,6 +74,13 @@ function setup(opts?: {
     turnRunner: opts?.turnRunner ?? (async () => cannedTurn()),
     resolveCall: opts?.resolveCall ?? (async () => RESOLUTION),
     routeCall: opts?.routeCall,
+    sessionHooks: opts?.sessionHooks,
+    speakRunner: opts?.speakRunner,
+    silenceTimeoutMs: opts?.silenceTimeoutMs,
+    maxReprompts: opts?.maxReprompts,
+    maxFrameBytes: opts?.maxFrameBytes,
+    vadConfig: opts?.vadConfig,
+    markSilenceGiveup: opts?.markSilenceGiveup,
     idleTimeoutMs: opts?.idleTimeoutMs,
     maxBufferBytes: opts?.maxBufferBytes,
   });
@@ -252,5 +269,243 @@ describe("media session tenant routing", () => {
     await session.handleMessage(JSON.stringify({ type: "start", token: TOKEN, callId: "c" }));
     expect(socket.last()).toMatchObject({ type: "error", code: "INVALID_START" });
     expect(socket.closed).not.toBeNull();
+  });
+});
+
+describe("media partial transcripts", () => {
+  it("acks partials without running the agent/tools", async () => {
+    let turns = 0;
+    const { socket, session, start } = setup({ turnRunner: async () => { turns++; return cannedTurn(); } });
+    await start();
+    await session.handleMessage(
+      JSON.stringify({ type: "text", transcript: "من دنبال یه آپارتمان دو خو", isFinal: false }),
+    );
+    expect(socket.last()).toMatchObject({ type: "partial-ack" });
+    expect(turns).toBe(0);
+    // The final still runs exactly once.
+    await session.handleMessage(
+      JSON.stringify({ type: "text", transcript: "من دنبال یه آپارتمان دو خوابه هستم", eventId: "pf1" }),
+    );
+    expect(turns).toBe(1);
+  });
+});
+
+describe("media sequenced audio frames", () => {
+  const frame = (seq: number, text: string) =>
+    JSON.stringify({ type: "audio", seq, payload: Buffer.from(text).toString("base64") });
+
+  it("reassembles out-of-order frames and drops duplicates", async () => {
+    const seen: VoiceTurnInput[] = [];
+    const { socket, session, start } = setup({
+      turnRunner: async (input) => { seen.push(input); return cannedTurn(); },
+    });
+    await start();
+    await session.handleMessage(frame(0, "AAA"));
+    await session.handleMessage(frame(2, "CCC")); // held
+    await session.handleMessage(frame(2, "CCC")); // duplicate... held twice? no: re-hold overwrites, still one copy
+    await session.handleMessage(frame(1, "BBB")); // drains 1,2
+    await session.handleMessage(JSON.stringify({ type: "utterance-end", eventId: "s1" }));
+    expect(seen).toHaveLength(1);
+    expect(seen[0].audio?.toString()).toBe("AAABBBCCC");
+    expect(socket.messages().some((m) => m.type === "agent-audio")).toBe(true);
+  });
+
+  it("drops late retransmits after delivery", async () => {
+    const seen: VoiceTurnInput[] = [];
+    const { socket, session, start } = setup({
+      turnRunner: async (input) => { seen.push(input); return cannedTurn(); },
+    });
+    await start();
+    await session.handleMessage(frame(0, "AAA"));
+    await session.handleMessage(frame(0, "AAA")); // late duplicate: dropped silently
+    await session.handleMessage(JSON.stringify({ type: "utterance-end", eventId: "s2" }));
+    expect(seen[0].audio?.toString()).toBe("AAA");
+    expect(socket.messages().filter((m) => m.type === "error")).toHaveLength(0);
+  });
+
+  it("skips gaps at utterance-end instead of waiting forever", async () => {
+    const seen: VoiceTurnInput[] = [];
+    const { session, start } = setup({
+      turnRunner: async (input) => { seen.push(input); return cannedTurn(); },
+    });
+    await start();
+    await session.handleMessage(frame(0, "AAA"));
+    await session.handleMessage(frame(3, "DDD")); // seq 1,2 never arrive
+    await session.handleMessage(JSON.stringify({ type: "utterance-end", eventId: "s3" }));
+    expect(seen[0].audio?.toString()).toBe("AAADDD");
+  });
+
+  it("rejects malformed frames and oversized payloads", async () => {
+    const { socket, session, start } = setup({ maxFrameBytes: 8 });
+    await start();
+    await session.handleMessage(JSON.stringify({ type: "audio", seq: -1, payload: "eA==" }));
+    expect(socket.last()).toMatchObject({ type: "error", code: "INVALID_MESSAGE" });
+    await session.handleMessage(JSON.stringify({ type: "audio", seq: 0 }));
+    expect(socket.last()).toMatchObject({ type: "error", code: "INVALID_MESSAGE" });
+    await session.handleMessage(frame(0, "this-payload-is-too-long"));
+    expect(socket.last()).toMatchObject({ type: "error", code: "FRAME_TOO_LARGE" });
+    await session.handleMessage(Buffer.alloc(16));
+    expect(socket.last()).toMatchObject({ type: "error", code: "FRAME_TOO_LARGE" });
+    expect(socket.closed).toBeNull(); // all non-fatal
+  });
+});
+
+describe("media server-vad mode", () => {
+  const VAD = { silenceMs: 100, minSpeechMs: 60, maxUtteranceMs: 5000, silenceRms: 400, sampleRate: 16000 };
+  const vadStart = { utteranceMode: "server-vad", audio: { encoding: "pcm16", sampleRate: 16000 } };
+
+  it("rejects server-vad without a declared audio format", async () => {
+    const { socket, session } = setup();
+    await session.handleMessage(JSON.stringify({ type: "start", token: TOKEN, businessId: "biz-1", utteranceMode: "server-vad" }));
+    expect(socket.last()).toMatchObject({ type: "error", code: "INVALID_START" });
+    expect(socket.closed).not.toBeNull();
+  });
+
+  it("segments speech automatically and runs turns", async () => {
+    const { pcmUtterance, pcmSilence } = await import("../helpers/audio");
+    const seen: VoiceTurnInput[] = [];
+    const { socket, session } = setup({
+      vadConfig: VAD,
+      turnRunner: async (input) => { seen.push(input); return cannedTurn(); },
+    });
+    await session.handleMessage(
+      JSON.stringify({ type: "start", token: TOKEN, businessId: "biz-1", callId: "call-1", ...vadStart }),
+    );
+    expect(socket.last()).toMatchObject({ type: "started", utteranceMode: "server-vad" });
+    await session.handleMessage(pcmUtterance(300));
+    await session.handleMessage(pcmSilence(300));
+    expect(seen).toHaveLength(1);
+    expect(seen[0].eventId).toMatch(/^vad-/);
+    expect(seen[0].audioMimeType).toBe("audio/wav");
+    const types = socket.messages().map((m) => m.type);
+    expect(types).toContain("vad");
+    expect(types).toContain("agent-audio");
+    expect(session.turnState).toBe("LISTENING");
+  });
+
+  it("auto-barges on speech while a turn is in flight (pending utterance kept)", async () => {
+    const { pcmUtterance, pcmSilence } = await import("../helpers/audio");
+    let resolveTurn!: (r: VoiceTurnResult) => void;
+    const seen: string[] = [];
+    const { socket, session } = setup({
+      vadConfig: VAD,
+      turnRunner: (input) => {
+        seen.push(input.eventId as string);
+        return new Promise<VoiceTurnResult>((res) => (resolveTurn = res));
+      },
+    });
+    await session.handleMessage(
+      JSON.stringify({ type: "start", token: TOKEN, businessId: "biz-1", callId: "call-1", ...vadStart }),
+    );
+    // First utterance starts a turn that stays in flight...
+    await session.handleMessage(pcmUtterance(300));
+    await session.handleMessage(pcmSilence(200));
+    expect(seen).toHaveLength(1);
+    // ...then the caller talks over it: auto barge-in + held follow-up...
+    await session.handleMessage(pcmUtterance(300));
+    await session.handleMessage(pcmSilence(200));
+    resolveTurn(cannedTurn());
+    await new Promise((r) => setTimeout(r, 50));
+    const types = socket.messages().map((m) => m.type);
+    expect(types).toContain("barge-in-ack");
+    expect(types).toContain("turn-superseded");
+    expect(seen).toHaveLength(2); // the interrupting speech became its own turn
+  });
+});
+
+describe("media failure fallback", () => {
+  it("speaks a safe fallback and hides technical detail (TURN_FAILED generic)", async () => {
+    const spoken: string[] = [];
+    const { socket, session, start } = setup({
+      turnRunner: async () => { throw new Error("OpenAI timeout after 60000ms"); },
+      speakRunner: async (input) => {
+        spoken.push(input.text);
+        return { audio: Buffer.from("FALLBACK"), mimeType: "audio/mpeg", audioUrl: null };
+      },
+    });
+    await start();
+    await session.handleMessage(JSON.stringify({ type: "text", transcript: "سلام", eventId: "f1" }));
+    expect(spoken).toHaveLength(1);
+    expect(spoken[0]).not.toContain("OpenAI");
+    const audio = socket.messages().find((m) => m.type === "agent-audio");
+    expect(audio).toMatchObject({ fallback: true, eventId: "f1" });
+    const err = socket.messages().find((m) => m.type === "error" && m.code === "TURN_FAILED");
+    expect(err?.message).toBe("turn_failed");
+    expect(JSON.stringify(socket.messages())).not.toContain("OpenAI");
+    expect(session.turnState).toBe("LISTENING"); // recoverable
+    expect(socket.closed).toBeNull();
+  });
+});
+
+describe("media silence handling", () => {
+  const cannedSpeak = async () => ({ audio: Buffer.from("NUDGE"), mimeType: "audio/mpeg", audioUrl: null });
+
+  it("nudges on silence, then gives up with a marker and hangs up", async () => {
+    let giveups = 0;
+    const { socket, session, start } = setup({
+      speakRunner: cannedSpeak,
+      silenceTimeoutMs: 20,
+      maxReprompts: 1,
+      markSilenceGiveup: async () => { giveups++; },
+    });
+    await start();
+    await new Promise((r) => setTimeout(r, 80)); // first timeout -> nudge
+    expect(socket.messages().some((m) => m.type === "agent-audio" && m.reprompt === true)).toBe(true);
+    await new Promise((r) => setTimeout(r, 80)); // second timeout -> final + giveup
+    const types = socket.messages().map((m) => m.type);
+    expect(types).toContain("silence-giveup");
+    expect(giveups).toBe(1);
+    expect(socket.closed).toMatchObject({ code: 1000 });
+    expect(session.turnState).toBe("ENDED");
+  });
+
+  it("caller speech cancels the reprompt (no talking over the caller)", async () => {
+    let releaseSpeak!: () => void;
+    const gate = new Promise<void>((res) => (releaseSpeak = res));
+    const { socket, start, session } = setup({
+      speakRunner: async () => {
+        await gate;
+        return { audio: Buffer.from("NUDGE"), mimeType: "audio/mpeg", audioUrl: null };
+      },
+      silenceTimeoutMs: 20,
+      maxReprompts: 5,
+    });
+    await start();
+    await new Promise((r) => setTimeout(r, 50)); // reprompt #1 starts, gated mid-synthesis
+    await session.handleMessage(JSON.stringify({ type: "text", transcript: "هستم!", eventId: "c1" }));
+    releaseSpeak();
+    await new Promise((r) => setTimeout(r, 50));
+    // The in-flight nudge (#1) was suppressed; the turn's own audio went out.
+    const audios = socket.messages().filter((m) => m.type === "agent-audio");
+    expect(audios.some((a) => a.eventId === "c1" && !("reprompt" in a))).toBe(true);
+    expect(audios.some((a) => a.eventId === `silence-${session.sessionId}-1`)).toBe(false);
+  });
+});
+
+describe("media server capacity", () => {
+  it("rejects new sessions over the cap with 503 SERVER_FULL", async () => {
+    const server = new MediaServer({ token: TOKEN, maxSessions: 1 });
+    const s1 = server.accept(new FakeSocket());
+    expect(s1.turnState).toBe("IDLE");
+    let err: unknown = null;
+    try {
+      server.accept(new FakeSocket());
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toMatchObject({ status: 503, code: "SERVER_FULL" });
+    server.release(s1);
+    const s2 = server.accept(new FakeSocket());
+    expect(s2.turnState).toBe("IDLE");
+  });
+
+  it("reports a state snapshot for health checks", async () => {
+    const server = new MediaServer({ token: TOKEN, resolveCall: async () => RESOLUTION });
+    const s1 = server.accept(new FakeSocket());
+    server.accept(new FakeSocket());
+    await s1.handleMessage(JSON.stringify({ type: "start", token: TOKEN, businessId: "biz-1", callId: "call-1" }));
+    const snap = server.snapshot();
+    expect(snap.sessions).toBe(2);
+    expect(snap.states).toEqual({ LISTENING: 1, IDLE: 1 });
   });
 });
