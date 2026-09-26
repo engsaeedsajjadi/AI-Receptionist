@@ -10,6 +10,7 @@ import type { TTSProvider, SpeechResult } from "@/lib/providers/tts";
 import { clearTurnMarker, runVoiceTurn } from "@/lib/voice/turn";
 import { POST as transcript } from "@/app/api/v1/webhooks/voice/transcript/route";
 import { ensureDbReady, hasTestDatabase, itDb, truncateAll } from "../helpers/db";
+import { uniqueTestIp } from "../helpers/http";
 import { createAgent, createBusiness } from "../helpers/fixtures";
 
 // In tests VOICE_WEBHOOK_SECRET is unset → env.webhookSecret falls back here.
@@ -25,6 +26,7 @@ function post(body: unknown, path: string): NextRequest {
         "Content-Type": "application/json",
         "x-webhook-signature": computeHmacHex(SECRET, raw),
         "x-idempotency-key": `voice-ident-${Date.now()}-${keySeq++}`,
+        "x-real-ip": uniqueTestIp(),
       },
       body: raw,
     }),

@@ -9,8 +9,9 @@ const runIntegration = hasTestDatabase();
 
 /**
  * These routes share the `default` preset (60/min per client IP). Tests use
- * documentation-range IPs via x-real-ip (TRUST_PROXY=false in tests, so the
- * limiter reads x-real-ip directly) — buckets no other test can pollute.
+ * TEST-NET-3 (203.0.113.0/24) documentation-range IPs via x-real-ip
+ * (TRUST_PROXY=false in tests, so the limiter reads x-real-ip directly) —
+ * buckets no other test can pollute (see tests/helpers/http.ts).
  * A minute-boundary straddle mid-loop would reset the window, so each test
  * runs a second fill loop if the first did not trip; one of the two loops is
  * guaranteed to contain 61 in-window hits.
@@ -38,7 +39,7 @@ describe.skipIf(!runIntegration)("rate-limit wiring on public routes (real datab
   });
 
   itDb("GET /api/health/ready trips 429 after 60 hits, then recovers", async () => {
-    const ip = "198.51.100.21";
+    const ip = "203.0.113.21";
     let trips = 0;
     for (let round = 0; round < 2 && trips === 0; round++) {
       for (let i = 0; i < 61 && trips === 0; i++) {
@@ -49,12 +50,12 @@ describe.skipIf(!runIntegration)("rate-limit wiring on public routes (real datab
     }
     expect(trips).toBeGreaterThan(0);
     // A different client is unaffected (per-IP buckets, not global).
-    const other = await ready(reqWithIp("http://localhost/api/health/ready", "198.51.100.22"));
+    const other = await ready(reqWithIp("http://localhost/api/health/ready", "203.0.113.22"));
     expect(other.status).toBe(200);
   });
 
   itDb("POST /api/v1/auth/logout is bounded per IP", async () => {
-    const ip = "198.51.100.23";
+    const ip = "203.0.113.23";
     let trips = 0;
     for (let round = 0; round < 2 && trips === 0; round++) {
       for (let i = 0; i < 61 && trips === 0; i++) {

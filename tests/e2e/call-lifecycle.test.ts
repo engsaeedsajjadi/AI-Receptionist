@@ -9,6 +9,7 @@ import type { LLMProvider, ChatCompletionResult } from "@/lib/providers/llm";
 import type { STTProvider, TranscriptionResult } from "@/lib/providers/stt";
 import type { TTSProvider, SpeechResult } from "@/lib/providers/tts";
 import { ensureDbReady, hasTestDatabase, itDb, truncateAll } from "../helpers/db";
+import { uniqueTestIp } from "../helpers/http";
 import { createAgent, createBusiness, createProperty } from "../helpers/fixtures";
 import { POST as callStarted } from "@/app/api/v1/webhooks/voice/call-started/route";
 import { POST as callEnded } from "@/app/api/v1/webhooks/voice/call-ended/route";
@@ -28,6 +29,7 @@ function post(body: unknown, key: string, path: string): NextRequest {
         "Content-Type": "application/json",
         "x-webhook-signature": computeHmacHex(SECRET, raw),
         "x-idempotency-key": key,
+        "x-real-ip": uniqueTestIp(),
       },
       body: raw,
     }),

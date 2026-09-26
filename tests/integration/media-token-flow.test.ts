@@ -12,6 +12,7 @@ import {
 } from "@/lib/voice/media-server";
 import { verifyMediaToken } from "@/lib/voice/media-tokens";
 import { ensureDbReady, hasTestDatabase, itDb, truncateAll } from "../helpers/db";
+import { uniqueTestIp } from "../helpers/http";
 import { createBusiness } from "../helpers/fixtures";
 
 // In tests VOICE_WEBHOOK_SECRET is unset → env.webhookSecret falls back here.
@@ -29,6 +30,7 @@ function post(body: unknown, path: string): NextRequest {
         "Content-Type": "application/json",
         "x-webhook-signature": computeHmacHex(WEBHOOK_SECRET, raw),
         "x-idempotency-key": `media-token-${Date.now()}-${keySeq++}`,
+        "x-real-ip": uniqueTestIp(),
       },
       body: raw,
     }),

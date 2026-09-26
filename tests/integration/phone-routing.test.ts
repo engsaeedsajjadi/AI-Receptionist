@@ -6,6 +6,7 @@ import { businesses, calls } from "@/db/schema";
 import { computeHmacHex } from "@/lib/security";
 import { resolveBusinessByCalledNumber } from "@/lib/services/phone-routing";
 import { ensureDbReady, hasTestDatabase, itDb, truncateAll } from "../helpers/db";
+import { uniqueTestIp } from "../helpers/http";
 import { createBusiness } from "../helpers/fixtures";
 import { POST as callStarted } from "@/app/api/v1/webhooks/voice/call-started/route";
 
@@ -22,6 +23,7 @@ function post(body: unknown): NextRequest {
         "Content-Type": "application/json",
         "x-webhook-signature": computeHmacHex(SECRET, raw),
         "x-idempotency-key": `pr-${Date.now()}-${keySeq++}`,
+        "x-real-ip": uniqueTestIp(),
       },
       body: raw,
     }),

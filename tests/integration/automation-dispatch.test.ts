@@ -5,6 +5,7 @@ import { closeDb, db } from "@/db";
 import { automationDispatches, notifications } from "@/db/schema";
 import { resetEnvCache } from "@/lib/env";
 import { ensureDbReady, hasTestDatabase, itDb, truncateAll } from "../helpers/db";
+import { uniqueTestIp } from "../helpers/http";
 import { createBusiness } from "../helpers/fixtures";
 import { POST as dispatch } from "@/app/api/v1/automation/dispatch/route";
 
@@ -17,6 +18,7 @@ function dispatchRequest(body: unknown, apiKey?: string): NextRequest {
       method: "POST",
       headers: {
         "content-type": "application/json",
+        "x-real-ip": uniqueTestIp(),
         ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
       },
       body: JSON.stringify(body),

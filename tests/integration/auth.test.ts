@@ -2,13 +2,16 @@ import { NextRequest } from "next/server";
 import { afterAll, beforeAll, describe, expect } from "vitest";
 import { closeDb } from "@/db";
 import { ensureDbReady, hasTestDatabase, itDb, truncateAll } from "../helpers/db";
+import { uniqueTestIp } from "../helpers/http";
 
 const runIntegration = hasTestDatabase();
 
 function req(url: string, body: unknown, ip: string, headers?: Record<string, string>): NextRequest {
   return new NextRequest(new Request(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "x-forwarded-for": ip, ...(headers ?? {}) },
+    // TRUST_PROXY=false in tests, so the limiter reads x-real-ip (NOT
+    // x-forwarded-for). Default to a unique bucket; explicit headers win.
+    headers: { "Content-Type": "application/json", "x-forwarded-for": ip, "x-real-ip": uniqueTestIp(), ...(headers ?? {}) },
     body: JSON.stringify(body),
   }));
 }
@@ -142,7 +145,7 @@ describe.skipIf(!runIntegration)("auth lifecycle (real database)", () => {
     for (let i = 0; i < 11; i++) {
       const res = await login(
         req("http://localhost/api/v1/auth/login", { email, password: "Wrong123!" }, `10.0.1.${i}`, {
-          "x-real-ip": `198.51.100.${20 + i}`,
+          "x-real-ip": `203.0.113.${20 + i}`,
         }),
       );
       statuses.push(res.status);
@@ -151,7 +154,7 @@ describe.skipIf(!runIntegration)("auth lifecycle (real database)", () => {
     expect(statuses[10]).toBe(429);
     const locked = await login(
       req("http://localhost/api/v1/auth/login", { email, password: "Strong123!" }, "10.0.1.99", {
-        "x-real-ip": "198.51.100.31",
+        "x-real-ip": "203.0.113.31",
       }),
     );
     expect(locked.status).toBe(429);
@@ -177,7 +180,7 @@ describe.skipIf(!runIntegration)("auth lifecycle (real database)", () => {
       password: "Strong123!",
     };
     // Fresh shared bucket (2 hits, limit 5): both attempts race for real.
-    const ip = { "x-real-ip": "198.51.100.40" };
+    const ip = { "x-real-ip": "203.0.113.40" };
     const [a, b] = await Promise.all([
       register(req("http://localhost/api/v1/auth/register", body, "10.9.9.1", ip)),
       register(req("http://localhost/api/v1/auth/register", body, "10.9.9.2", ip)),

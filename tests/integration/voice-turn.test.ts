@@ -12,6 +12,7 @@ import type { STTProvider, TranscriptionResult } from "@/lib/providers/stt";
 import type { TTSProvider, SpeechResult } from "@/lib/providers/tts";
 import { runVoiceTurn } from "@/lib/voice/turn";
 import { ensureDbReady, hasTestDatabase, itDb, truncateAll } from "../helpers/db";
+import { uniqueTestIp } from "../helpers/http";
 import { createAgent, createBusiness } from "../helpers/fixtures";
 import { POST as audioWebhook } from "@/app/api/v1/webhooks/voice/audio/route";
 
@@ -110,6 +111,7 @@ function signedJson(body: unknown, key: string): NextRequest {
         "Content-Type": "application/json",
         "x-webhook-signature": computeHmacHex(SECRET, raw),
         "x-idempotency-key": key,
+        "x-real-ip": uniqueTestIp(),
       },
       body: raw,
     }),
@@ -141,6 +143,7 @@ function signedMultipart(fields: Record<string, string>, audio: { bytes: Buffer;
         "Content-Type": `multipart/form-data; boundary=${boundary}`,
         "x-webhook-signature": computeHmacHex(SECRET, body),
         "x-idempotency-key": key,
+        "x-real-ip": uniqueTestIp(),
       },
       body: body as unknown as BodyInit,
     }),
@@ -324,7 +327,7 @@ describe.skipIf(!hasTestDatabase())("voice turn pipeline (real database, fake pr
     const req = new NextRequest(
       new Request("http://localhost/api/v1/webhooks/voice/audio", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "x-webhook-signature": "bad", "x-idempotency-key": nextKey() },
+        headers: { "Content-Type": "application/json", "x-webhook-signature": "bad", "x-idempotency-key": nextKey(), "x-real-ip": uniqueTestIp() },
         body: JSON.stringify({ a: 1 }),
       }),
     );

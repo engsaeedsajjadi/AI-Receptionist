@@ -9,7 +9,7 @@ import { createBusiness, createUser } from "../helpers/fixtures";
 import { POST as maintenance } from "@/app/api/v1/admin/maintenance/route";
 
 const runIntegration = hasTestDatabase();
-let ipOctet = 60;
+let ipOctet = 100;
 
 function req(token: string | null, body: unknown = {}): NextRequest {
   return new NextRequest(
@@ -18,7 +18,7 @@ function req(token: string | null, body: unknown = {}): NextRequest {
       headers: {
         "content-type": "application/json",
         ...(token ? { authorization: `Bearer ${token}` } : {}),
-        "x-real-ip": `198.51.100.${ipOctet++}`,
+        "x-real-ip": `203.0.113.${ipOctet++}`,
       },
       body: JSON.stringify(body),
     }),

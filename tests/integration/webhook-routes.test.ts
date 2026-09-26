@@ -5,6 +5,7 @@ import { db } from "@/db";
 import { callMessages, calls, usageRecords } from "@/db/schema";
 import { computeHmacHex } from "@/lib/security";
 import { ensureDbReady, hasTestDatabase, itDb, truncateAll } from "../helpers/db";
+import { uniqueTestIp } from "../helpers/http";
 import { createBusiness } from "../helpers/fixtures";
 import { POST as callStarted } from "@/app/api/v1/webhooks/voice/call-started/route";
 import { POST as transcript } from "@/app/api/v1/webhooks/voice/transcript/route";
@@ -25,6 +26,7 @@ function post(body: unknown, key: string, path: string): NextRequest {
         "Content-Type": "application/json",
         "x-webhook-signature": computeHmacHex(SECRET, raw),
         "x-idempotency-key": key,
+        "x-real-ip": uniqueTestIp(),
       },
       body: raw,
     }),

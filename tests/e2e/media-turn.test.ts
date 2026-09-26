@@ -15,6 +15,7 @@ import { loadVoiceSession } from "@/lib/voice/session-store";
 import { runVoiceTurn } from "@/lib/voice/turn";
 import { ensureDbReady, hasTestDatabase, itDb, truncateAll } from "../helpers/db";
 import { ensureRedisReady, hasTestRedis } from "../helpers/redis";
+import { uniqueTestIp } from "../helpers/http";
 import { createAgent, createBusiness, createProperty } from "../helpers/fixtures";
 import { POST as callStarted } from "@/app/api/v1/webhooks/voice/call-started/route";
 import { POST as callEnded } from "@/app/api/v1/webhooks/voice/call-ended/route";
@@ -33,6 +34,7 @@ function post(body: unknown, path: string): NextRequest {
         "Content-Type": "application/json",
         "x-webhook-signature": computeHmacHex(SECRET, raw),
         "x-idempotency-key": `e2e-media-${Date.now()}-${keySeq++}`,
+        "x-real-ip": uniqueTestIp(),
       },
       body: raw,
     }),
