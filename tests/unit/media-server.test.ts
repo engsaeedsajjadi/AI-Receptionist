@@ -6,6 +6,7 @@ import {
   type MediaSocket,
 } from "@/lib/voice/media-server";
 import type { VoiceTurnInput, VoiceTurnResult } from "@/lib/voice/turn";
+import type { CalledNumberRoute } from "@/lib/services/phone-routing";
 
 const TOKEN = "media-secret";
 
@@ -53,6 +54,7 @@ const RESOLUTION: CallResolution = { businessId: "biz-1", callId: "call-1", agen
 function setup(opts?: {
   turnRunner?: (input: VoiceTurnInput) => Promise<VoiceTurnResult>;
   resolveCall?: (businessId: string, callId?: string, externalCallId?: string) => Promise<CallResolution | null>;
+  routeCall?: (calledNumber: string) => Promise<CalledNumberRoute>;
   idleTimeoutMs?: number;
   maxBufferBytes?: number;
 }) {
@@ -61,6 +63,7 @@ function setup(opts?: {
     token: TOKEN,
     turnRunner: opts?.turnRunner ?? (async () => cannedTurn()),
     resolveCall: opts?.resolveCall ?? (async () => RESOLUTION),
+    routeCall: opts?.routeCall,
     idleTimeoutMs: opts?.idleTimeoutMs,
     maxBufferBytes: opts?.maxBufferBytes,
   });
@@ -197,5 +200,57 @@ describe("media server protocol", () => {
     await session.handleMessage(JSON.stringify({ type: "stop" }));
     expect(socket.last()).toMatchObject({ type: "stopped" });
     expect(socket.closed).toMatchObject({ code: 1000 });
+  });
+});
+
+describe("media session tenant routing", () => {
+  const routed = (businessId: string): CalledNumberRoute => ({
+    ok: true,
+    businessId,
+    matchedNumber: "02122334455",
+    via: "voice_number",
+  });
+
+  it("starts with calledNumber only (routes the tenant)", async () => {
+    const seen: string[] = [];
+    const { socket, session } = setup({
+      routeCall: async () => routed("biz-9"),
+      resolveCall: async (businessId) => {
+        seen.push(businessId);
+        return { businessId, callId: "call-9", agentId: null };
+      },
+    });
+    await session.handleMessage(
+      JSON.stringify({ type: "start", token: TOKEN, calledNumber: "+98 21 2233 4455", callId: "call-9" }),
+    );
+    expect(socket.last()).toMatchObject({ type: "started" });
+    expect(seen).toEqual(["biz-9"]);
+  });
+
+  it("rejects businessId that disagrees with the route", async () => {
+    const { socket, session } = setup({ routeCall: async () => routed("biz-9") });
+    await session.handleMessage(
+      JSON.stringify({ type: "start", token: TOKEN, businessId: "biz-EVIL", calledNumber: "02122334455" }),
+    );
+    expect(socket.last()).toMatchObject({ type: "error", code: "TENANT_MISMATCH" });
+    expect(socket.closed).not.toBeNull();
+  });
+
+  it("rejects unroutable numbers fail-closed", async () => {
+    const { socket, session } = setup({
+      routeCall: async () => ({ ok: false, reason: "UNROUTABLE_NUMBER", normalized: "02100000000" }),
+    });
+    await session.handleMessage(
+      JSON.stringify({ type: "start", token: TOKEN, calledNumber: "02100000000" }),
+    );
+    expect(socket.last()).toMatchObject({ type: "error", code: "UNROUTABLE_NUMBER" });
+    expect(socket.closed).not.toBeNull();
+  });
+
+  it("requires businessId or calledNumber", async () => {
+    const { socket, session } = setup();
+    await session.handleMessage(JSON.stringify({ type: "start", token: TOKEN, callId: "c" }));
+    expect(socket.last()).toMatchObject({ type: "error", code: "INVALID_START" });
+    expect(socket.closed).not.toBeNull();
   });
 });

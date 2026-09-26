@@ -8,19 +8,25 @@ import { AppError } from "@/lib/errors";
 import { env, getEnv } from "@/lib/env";
 import { logInfo, logWarn } from "@/lib/logger";
 import { getVoiceProvider } from "@/lib/providers/voice";
+import { resolveBusinessByCalledNumber } from "@/lib/services/phone-routing";
 import { normalizePersianText, normalizePhone } from "@/lib/normalization";
 import { enforceRateLimit } from "@/lib/rate-limit";
 import { claimWebhookIdempotency, verifyWebhookRequest } from "@/lib/security";
 import { withApiHandling } from "@/lib/server-core";
 
-const payloadSchema = z.object({
-  business_id: z.string().uuid(),
-  external_call_id: z.string().min(1).max(255),
+const payloadSchema = z
+  .object({
+    business_id: z.string().uuid().optional(),
+    called_number: z.string().min(1).max(30).optional(),
+    external_call_id: z.string().min(1).max(255),
   phone_number: z.string().min(1).max(30),
   agent_id: z.string().uuid().optional(),
   direction: z.enum(["INBOUND", "OUTBOUND"]).optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
-});
+  })
+  .refine((b) => b.business_id ?? b.called_number, {
+    message: "Either business_id or called_number is required",
+  });
 
 export async function POST(req: NextRequest) {
   return withApiHandling(async (rid) => {
@@ -36,10 +42,35 @@ export async function POST(req: NextRequest) {
       return ok({ ok: true, duplicate: true });
     }
 
+    // Tenant resolution: the HMAC authenticates the gateway, not the tenant.
+    // Prefer deterministic called-number routing; a business_id asserted by
+    // the gateway is accepted only when it agrees with the route.
+    let businessId: string | null = body.business_id ?? null;
+    let routing: Record<string, unknown> = { method: "business_id" };
+    if (body.called_number) {
+      const route = await resolveBusinessByCalledNumber(body.called_number);
+      if (!route.ok) {
+        if (route.reason === "AMBIGUOUS_NUMBER") {
+          throw new AppError(
+            409,
+            "CONFLICT",
+            "Called number matches multiple businesses; refusing to guess the tenant",
+          );
+        }
+        throw new AppError(404, "BUSINESS_NOT_FOUND", "No business is configured for the called number");
+      }
+      if (businessId && businessId !== route.businessId) {
+        throw new AppError(400, "INVALID_PAYLOAD", "business_id does not match the business routed by called_number");
+      }
+      businessId = route.businessId;
+      routing = { method: "called_number", via: route.via, matchedNumber: route.matchedNumber };
+    }
+    if (!businessId) throw new AppError(400, "INVALID_PAYLOAD", "Either business_id or called_number is required");
+
     const [business] = await db
       .select({ id: businesses.id, settings: businesses.settings })
       .from(businesses)
-      .where(eq(businesses.id, body.business_id))
+      .where(eq(businesses.id, businessId))
       .limit(1);
     if (!business) throw new AppError(404, "BUSINESS_NOT_FOUND", "Business not found");
 
@@ -51,14 +82,14 @@ export async function POST(req: NextRequest) {
     const [inserted] = await db
       .insert(calls)
       .values({
-        businessId: body.business_id,
+        businessId: businessId,
         externalCallId: body.external_call_id,
         phoneNumber,
         agentId: body.agent_id ?? null,
         direction: body.direction ?? "INBOUND",
         status: "RINGING",
         startedAt: new Date(),
-        metadata: { ...(body.metadata ?? {}), idempotencyKey },
+        metadata: { ...(body.metadata ?? {}), idempotencyKey, routing },
       })
       .onConflictDoNothing({ target: [calls.businessId, calls.externalCallId] })
       .returning({ id: calls.id });
@@ -69,7 +100,7 @@ export async function POST(req: NextRequest) {
       const [existing] = await db
         .select({ id: calls.id })
         .from(calls)
-        .where(and(eq(calls.businessId, body.business_id), eq(calls.externalCallId, body.external_call_id)))
+        .where(and(eq(calls.businessId, businessId), eq(calls.externalCallId, body.external_call_id)))
         .limit(1);
       callId = existing?.id ?? null;
     }
@@ -82,7 +113,7 @@ export async function POST(req: NextRequest) {
       await db
         .insert(usageRecords)
         .values({
-          businessId: body.business_id,
+          businessId: businessId,
           type: "calls",
           quantity: "1",
           unit: "count",
@@ -105,13 +136,13 @@ export async function POST(req: NextRequest) {
 
     logInfo("Inbound call started", {
       requestId: rid,
-      businessId: body.business_id,
+      businessId: businessId,
       callId,
       operation: "voice.call-started",
       status: created ? "ok" : "duplicate",
     });
 
-    return ok({ ok: true, callId, duplicate: !created, media });
+    return ok({ ok: true, callId, duplicate: !created, media, routing });
   });
 }
 

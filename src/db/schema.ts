@@ -65,6 +65,12 @@ export const businesses = pgTable(
     slug: varchar("slug", { length: 100 }).notNull(),
     industry: varchar("industry", { length: 100 }).notNull().default("real_estate"),
     phone: varchar("phone", { length: 30 }),
+    /**
+     * Dedicated inbound voice number (E.164/national digits, normalised).
+     * Unique when set: the deterministic called-number -> business route
+     * for inbound telephony (§6). NULL = no voice routing for this business.
+     */
+    voiceNumber: varchar("voice_number", { length: 30 }),
     address: text("address"),
     timezone: varchar("timezone", { length: 50 }).notNull().default("Asia/Tehran"),
     language: varchar("language", { length: 10 }).notNull().default("fa"),
@@ -80,6 +86,7 @@ export const businesses = pgTable(
   },
   (table) => ({
     slugIdx: uniqueIndex("businesses_slug_idx").on(table.slug),
+    voiceNumberIdx: uniqueIndex("businesses_voice_number_idx").on(table.voiceNumber),
   }),
 );
 

@@ -3,14 +3,20 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { calls } from "@/db/schema";
 import { logInfo, logWarn } from "@/lib/logger";
+import {
+  resolveBusinessByCalledNumber,
+  type CalledNumberRoute,
+} from "@/lib/services/phone-routing";
 import { runVoiceTurn, type VoiceTurnInput, type VoiceTurnResult } from "@/lib/voice/turn";
 
 /**
  * Media-sidecar protocol (JSON text frames + binary audio frames).
  *
  * Gateway → server:
- *   { type: "start", token, businessId, callId?, externalCallId?, agentId?,
- *     language?, voice?, audioMimeType? }
+ *   { type: "start", token, businessId?, calledNumber?, callId?, externalCallId?,
+ *     agentId?, language?, voice?, audioMimeType? }
+ * (businessId or calledNumber is required; when both are present they must
+ * agree — the dialled number routes the tenant deterministically.)
  *   <binary>                              audio chunk (appended to the utterance buffer)
  *   { type: "utterance-end", eventId }    run a turn on the buffered audio
  *   { type: "text", transcript, eventId } text-topology turn (gateway-side STT)
@@ -53,6 +59,8 @@ export type MediaServerOptions = {
     callId?: string,
     externalCallId?: string,
   ) => Promise<CallResolution | null>;
+  /** Called-number -> business routing (defaults to the DB-backed resolver). */
+  routeCall?: (calledNumber: string) => Promise<CalledNumberRoute>;
   idleTimeoutMs?: number;
   maxBufferBytes?: number;
 };
@@ -61,6 +69,8 @@ type StartMessage = {
   type: "start";
   token?: string;
   businessId?: string;
+  /** Dialled number; routes the tenant when businessId is absent (or must agree). */
+  calledNumber?: string;
   callId?: string;
   externalCallId?: string;
   agentId?: string;
@@ -129,7 +139,7 @@ export class MediaSession {
 
   constructor(
     private readonly socket: MediaSocket,
-    private readonly opts: Required<Pick<MediaServerOptions, "token" | "turnRunner" | "resolveCall">> &
+    private readonly opts: Required<Pick<MediaServerOptions, "token" | "turnRunner" | "resolveCall" | "routeCall">> &
       Pick<MediaServerOptions, "idleTimeoutMs" | "maxBufferBytes">,
   ) {
     sessionSeq += 1;
@@ -246,11 +256,27 @@ export class MediaSession {
       this.sendError("UNAUTHORIZED", "Invalid media token", true);
       return;
     }
-    if (!msg.businessId) {
-      this.sendError("INVALID_START", "start requires businessId", true);
+    // Tenant binding: deterministic called-number routing wins; an asserted
+    // businessId is accepted only when it agrees with the route (same rule
+    // as the call-started webhook — a call must never enter the wrong agent).
+    let businessId = msg.businessId ?? null;
+    if (msg.calledNumber) {
+      const route = await this.opts.routeCall(msg.calledNumber);
+      if (!route.ok) {
+        this.sendError("UNROUTABLE_NUMBER", `Called number is not routable (${route.reason})`, true);
+        return;
+      }
+      if (businessId && businessId !== route.businessId) {
+        this.sendError("TENANT_MISMATCH", "businessId disagrees with called-number routing", true);
+        return;
+      }
+      businessId = route.businessId;
+    }
+    if (!businessId) {
+      this.sendError("INVALID_START", "start requires businessId or calledNumber", true);
       return;
     }
-    const resolution = await this.opts.resolveCall(msg.businessId, msg.callId, msg.externalCallId);
+    const resolution = await this.opts.resolveCall(businessId, msg.callId, msg.externalCallId);
     if (!resolution) {
       this.sendError("CALL_NOT_FOUND", "Call not found for this business", true);
       return;
@@ -389,7 +415,7 @@ export class MediaSession {
 }
 
 export class MediaServer {
-  private readonly opts: Required<Pick<MediaServerOptions, "token" | "turnRunner" | "resolveCall">> &
+  private readonly opts: Required<Pick<MediaServerOptions, "token" | "turnRunner" | "resolveCall" | "routeCall">> &
     Pick<MediaServerOptions, "idleTimeoutMs" | "maxBufferBytes">;
 
   constructor(opts: MediaServerOptions) {
@@ -397,6 +423,7 @@ export class MediaServer {
       token: opts.token,
       turnRunner: opts.turnRunner ?? runVoiceTurn,
       resolveCall: opts.resolveCall ?? resolveCallFromDb,
+      routeCall: opts.routeCall ?? resolveBusinessByCalledNumber,
       idleTimeoutMs: opts.idleTimeoutMs,
       maxBufferBytes: opts.maxBufferBytes,
     };
