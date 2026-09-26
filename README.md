@@ -98,19 +98,39 @@ HMAC-signed webhooks, and exchange live audio with the media sidecar over WebSoc
 - Webhooks — `POST /api/v1/webhooks/voice/call-started|audio|transcript|tool-call|call-ended`
   (`VOICE_PROVIDER=generic`, `VOICE_WEBHOOK_SECRET`). Byte-exact HMAC-SHA256 signatures,
   ±5 min timestamp window, DB-backed idempotency keys (safe redelivery + concurrency).
+- Tenant routing — `call-started` accepts `business_id`, `called_number`, or both
+  (both must agree). `called_number` routes deterministically via
+  `businesses.voice_number` (unique; set it per tenant), with a unique-`phone`
+  fallback; ambiguous/unroutable numbers fail closed (409/404) — a call can
+  never enter another tenant's agent.
 - Call turns — `src/lib/voice/turn.ts`: audio → STT → guardrailed agent turn (audited
   tools only) → speakable-text cleaning → TTS → archived audio for gateway playback.
-  Gateway-side STT is supported via the transcript topology.
+  Gateway-side STT is supported via the transcript topology. Every turn reports a
+  latency split (`stt/agent/llm/tools/tts/store/total`).
 - Media sidecar — `scripts/media-server.ts` (prod compose `media` service, nginx
-  `/media` → `media:3001`, `VOICE_MEDIA_PUBLIC_URL=wss://<host>/media`): bidirectional
-  audio frames + barge-in, authenticated per-call with `VOICE_MEDIA_TOKEN`.
-- Speech — `STT_PROVIDER`/`TTS_PROVIDER` (`openai`/`compatible`; Persian-first prompts).
+  `/media` → `media:3001`, `VOICE_MEDIA_PUBLIC_URL=wss://<host>/media`): token +
+  optional origin allowlist, session cap, per-frame caps, sequenced audio frames
+  (reorder window + duplicate drop), server-VAD mode with auto barge-in, silence
+  reprompts + giveup, Persian failure fallbacks. Protocol: `src/lib/voice/media-server.ts`.
+- Speech — `STT_PROVIDER`/`TTS_PROVIDER` (`openai`/`compatible`; Persian-first).
+  Both are **turn-based** (file/utterance; see provider `capabilities`) — the
+  pipeline does not claim streaming STT/TTS. `VOICE_VAD_*` tunes server-side VAD.
+- Capabilities — every voice/STT/TTS provider declares `capabilities`
+  (`src/lib/providers/capabilities.ts`): transfer, streaming input, duplex audio,
+  DTMF, recording, playback modes. The generic gateway is turn-playback +
+  WS-input + transfer; DTMF/recording/duplex are honestly `false`.
 
 Required for production: `VOICE_PROVIDER=generic` + `VOICE_API_BASE_URL`/`VOICE_API_KEY`,
-`VOICE_WEBHOOK_SECRET`, STT/TTS provider keys, `VOICE_MEDIA_TOKEN`, and provider-side
-configuration pointing callbacks at `https://<your-domain>/api/v1/webhooks/voice/*`.
+`VOICE_WEBHOOK_SECRET`, STT/TTS provider keys, `VOICE_MEDIA_TOKEN`, per-tenant
+`voice_number`, and provider-side configuration pointing callbacks at
+`https://<your-domain>/api/v1/webhooks/voice/*`.
 With `dev` providers (or missing keys) every hop fails honestly with
 `PROVIDER_NOT_CONFIGURED` — the pipeline never fakes audio, transcripts, or success.
+
+Staging a real phone call: follow `docs/VOICE-STAGING.md` (numbers, webhooks, media
+URL, credentials, acceptance script). Status: pipeline implemented + tested with
+provider fakes at the boundary; **real-PSTN verification is BLOCKED on staging
+credentials** (see `docs/PHASE3-REPORT.md`).
 
 ## n8n workflows
 
