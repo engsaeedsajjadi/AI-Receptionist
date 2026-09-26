@@ -2,6 +2,7 @@ import { AppError } from "@/lib/errors";
 import { getEnv } from "@/lib/env";
 import { logError, logInfo } from "@/lib/logger";
 import { assertConfigured } from "@/lib/providers/types";
+import { NO_VOICE_CAPABILITIES, type VoiceCapabilities } from "@/lib/providers/capabilities";
 
 /**
  * Telephony provider abstraction.
@@ -54,6 +55,8 @@ export type PlayAudioInput = {
 
 export interface VoiceProvider {
   readonly name: string;
+  /** Explicit capability declaration — detect features, never assume them. */
+  readonly capabilities: VoiceCapabilities;
   answerCall(providerCallId: string, opts?: { requestId?: string }): Promise<VoiceActionResult>;
   hangupCall(providerCallId: string, opts?: { reason?: string; requestId?: string }): Promise<VoiceActionResult>;
   playAudio(providerCallId: string, audio: PlayAudioInput, opts?: { requestId?: string }): Promise<VoiceActionResult>;
@@ -83,6 +86,21 @@ async function sleep(ms: number): Promise<void> {
 
 export class GenericVoiceProvider implements VoiceProvider {
   readonly name = "generic";
+  /**
+   * Honest contract of the generic telephony gateway: turn-based playback
+   * (whole audio file / gateway TTS), media input over WebSocket, SIP-style
+   * transfer. No sample-level duplex audio, no DTMF, no provider recording.
+   */
+  readonly capabilities: VoiceCapabilities = {
+    supportsTransfer: true,
+    supportsStreamingInput: true,
+    supportsSendAudio: false,
+    supportsBidirectionalAudio: false,
+    supportsDTMF: false,
+    supportsRecording: false,
+    playbackModes: ["audio-url", "gateway-tts"],
+    streamingProtocol: "websocket",
+  };
   private baseURL: string;
   private apiKey: string;
   private timeoutMs: number;
@@ -261,6 +279,7 @@ export class GenericVoiceProvider implements VoiceProvider {
  */
 export class DevVoiceProvider implements VoiceProvider {
   readonly name = "dev";
+  readonly capabilities: VoiceCapabilities = NO_VOICE_CAPABILITIES;
   private fail(): never {
     throw new AppError(
       503,

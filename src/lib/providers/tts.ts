@@ -3,6 +3,7 @@ import { AppError } from "@/lib/errors";
 import { getEnv } from "@/lib/env";
 import { logError, logInfo } from "@/lib/logger";
 import { assertConfigured, mapSdkError, type ProviderUsage } from "@/lib/providers/types";
+import { NO_TTS_CAPABILITIES, type TTSCapabilities } from "@/lib/providers/capabilities";
 
 export type TtsAudioFormat = "mp3" | "wav" | "opus" | "pcm";
 
@@ -28,6 +29,8 @@ export type SynthesizeOptions = {
 
 export interface TTSProvider {
   readonly name: string;
+  /** Explicit capability declaration — detect features, never assume them. */
+  readonly capabilities: TTSCapabilities;
   synthesize(text: string, options?: SynthesizeOptions): Promise<SpeechResult>;
 }
 
@@ -49,6 +52,7 @@ type TtsProviderOptions = {
 
 abstract class BaseTtsProvider implements TTSProvider {
   abstract readonly name: string;
+  abstract readonly capabilities: TTSCapabilities;
   protected client: OpenAI;
   protected model: string;
   protected defaultVoice: string;
@@ -120,6 +124,14 @@ abstract class BaseTtsProvider implements TTSProvider {
 
 export class OpenAITTSProvider extends BaseTtsProvider {
   readonly name = "openai";
+  /** Whole-utterance synthesis: turn-based only. Persian text accepted (verify voice quality on staging). */
+  readonly capabilities: TTSCapabilities = {
+    supportsStreaming: false,
+    supportsPersian: true,
+    mode: "utterance",
+    formats: ["mp3", "wav", "opus", "pcm"],
+    maxCharacters: 4096,
+  };
 
   constructor(overrides?: Partial<TtsProviderOptions>) {
     const e = getEnv();
@@ -137,6 +149,18 @@ export class OpenAITTSProvider extends BaseTtsProvider {
 
 export class CompatibleTTSProvider extends BaseTtsProvider {
   readonly name = "compatible";
+  /**
+   * OpenAI-compatible utterance synthesis. Declared capabilities mirror the
+   * speech API surface; the compatible endpoint defines actual behaviour —
+   * verify Persian voice quality on staging.
+   */
+  readonly capabilities: TTSCapabilities = {
+    supportsStreaming: false,
+    supportsPersian: true,
+    mode: "utterance",
+    formats: ["mp3", "wav", "opus", "pcm"],
+    maxCharacters: 4096,
+  };
 
   constructor(overrides?: Partial<TtsProviderOptions>) {
     const e = getEnv();
@@ -161,6 +185,7 @@ export class CompatibleTTSProvider extends BaseTtsProvider {
  */
 export class DevTTSProvider implements TTSProvider {
   readonly name = "dev";
+  readonly capabilities: TTSCapabilities = NO_TTS_CAPABILITIES;
   async synthesize(): Promise<SpeechResult> {
     throw new AppError(
       503,

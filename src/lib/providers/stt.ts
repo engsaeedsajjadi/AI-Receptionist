@@ -3,6 +3,7 @@ import { AppError } from "@/lib/errors";
 import { getEnv } from "@/lib/env";
 import { logError, logInfo } from "@/lib/logger";
 import { assertConfigured, mapSdkError, type ProviderUsage } from "@/lib/providers/types";
+import { NO_STT_CAPABILITIES, type STTCapabilities } from "@/lib/providers/capabilities";
 
 export type TranscriptionResult = {
   text: string;
@@ -29,6 +30,8 @@ export type TranscribeOptions = {
 
 export interface STTProvider {
   readonly name: string;
+  /** Explicit capability declaration — detect features, never assume them. */
+  readonly capabilities: STTCapabilities;
   transcribe(audio: Buffer, options?: TranscribeOptions): Promise<TranscriptionResult>;
 }
 
@@ -73,6 +76,7 @@ type SttProviderOptions = {
 
 abstract class BaseSttProvider implements STTProvider {
   abstract readonly name: string;
+  abstract readonly capabilities: STTCapabilities;
   protected client: OpenAI;
   protected model: string;
 
@@ -145,6 +149,14 @@ abstract class BaseSttProvider implements STTProvider {
 
 export class OpenAISTTProvider extends BaseSttProvider {
   readonly name = "openai";
+  /** Whisper file transcription: turn-based only, no partials. Persian input accepted. */
+  readonly capabilities: STTCapabilities = {
+    supportsStreaming: false,
+    supportsPartialTranscripts: false,
+    supportsPersian: true,
+    mode: "file",
+    maxAudioBytes: 25 * 1024 * 1024,
+  };
 
   constructor(overrides?: Partial<SttProviderOptions>) {
     const e = getEnv();
@@ -161,6 +173,18 @@ export class OpenAISTTProvider extends BaseSttProvider {
 
 export class CompatibleSTTProvider extends BaseSttProvider {
   readonly name = "compatible";
+  /**
+   * OpenAI-compatible file transcription. Declared capabilities mirror the
+   * Whisper API surface; the compatible endpoint defines actual behaviour —
+   * verify Persian quality on staging.
+   */
+  readonly capabilities: STTCapabilities = {
+    supportsStreaming: false,
+    supportsPartialTranscripts: false,
+    supportsPersian: true,
+    mode: "file",
+    maxAudioBytes: 25 * 1024 * 1024,
+  };
 
   constructor(overrides?: Partial<SttProviderOptions>) {
     const e = getEnv();
@@ -184,6 +208,7 @@ export class CompatibleSTTProvider extends BaseSttProvider {
  */
 export class DevSTTProvider implements STTProvider {
   readonly name = "dev";
+  readonly capabilities: STTCapabilities = NO_STT_CAPABILITIES;
   async transcribe(): Promise<TranscriptionResult> {
     throw new AppError(
       503,

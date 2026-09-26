@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 import { afterAll, beforeAll, describe, expect } from "vitest";
+import type { STTCapabilities, TTSCapabilities } from "@/lib/providers/capabilities";
 import { and, eq } from "drizzle-orm";
 import { closeDb, db } from "@/db";
 import { appointments, calls } from "@/db/schema";
@@ -27,6 +28,13 @@ const key = (name: string) => `test:${tag}:${seq++}:${name}`;
 
 class FakeSTT implements STTProvider {
   readonly name = "fake";
+  readonly capabilities: STTCapabilities = {
+    supportsStreaming: false,
+    supportsPartialTranscripts: false,
+    supportsPersian: true,
+    mode: "file",
+    maxAudioBytes: null,
+  };
   calls = 0;
   async transcribe(): Promise<TranscriptionResult> {
     this.calls++;
@@ -45,6 +53,13 @@ class FakeSTT implements STTProvider {
 
 class FakeTTS implements TTSProvider {
   readonly name = "fake";
+  readonly capabilities: TTSCapabilities = {
+    supportsStreaming: false,
+    supportsPersian: true,
+    mode: "utterance",
+    formats: ["mp3"],
+    maxCharacters: 4096,
+  };
   calls = 0;
   async synthesize(text: string): Promise<SpeechResult> {
     this.calls++;
