@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, describe, expect } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { closeDb, db } from "@/db";
-import { callMessages, calls, notifications } from "@/db/schema";
+import { appointments, callMessages, calls, customers, leads, notifications } from "@/db/schema";
 import { runAgentTurn } from "@/lib/services/agent";
-import { executeIdempotentToolCall } from "@/lib/tools/registry";
+import { checkAvailability } from "@/lib/services/appointments";
+import { executeIdempotentToolCall, executeToolCall } from "@/lib/tools/registry";
 import type { ChatCompletionResult, LLMProvider } from "@/lib/providers/llm";
 import { ensureDbReady, hasTestDatabase, itDb, truncateAll } from "../helpers/db";
 import { createAgent, createBusiness } from "../helpers/fixtures";
@@ -177,6 +178,139 @@ describe("P0-3 tool-level idempotency (stored outcomes)", () => {
       .where(and(eq(callMessages.callId, call.id), eq(callMessages.role, "TOOL")));
     expect(tools).toHaveLength(1);
     expect(tools[0].eventId).toContain(eventId);
+  });
+
+  itDb("CRASH-SAFETY: outcome-store failure rolls the side effect back (single transaction)", async () => {
+    const business = await createBusiness();
+    const call = await seedCall(business.id, "atomic");
+    // A 300-char execution id passes the pre-checks and the handler (whose
+    // writes never embed it) but violates the event_id varchar(255) column
+    // on the outcome insert — i.e. the handler's writes and the outcome
+    // store provably share one fate. Without tx-threading the customer +
+    // lead below would survive the throw.
+    const oversized = `tool-exec-oversized-${"x".repeat(280)}`;
+    expect(oversized.length).toBeGreaterThan(255);
+    await expect(
+      executeIdempotentToolCall({
+        businessId: business.id,
+        callId: call.id,
+        toolExecId: oversized,
+        tool: "create_lead",
+        args: { name: "Atomic", phone: "09120000009", intent: "BUY" },
+        requestId: `req-atomic-${Date.now()}`,
+        actor: "agent-runtime",
+      }),
+    ).rejects.toThrow();
+    expect(await db.select().from(leads).where(eq(leads.businessId, business.id))).toHaveLength(0);
+    expect(await db.select().from(customers).where(eq(customers.businessId, business.id))).toHaveLength(0);
+    expect(await notificationCount(business.id)).toBe(0);
+    const tools = await db
+      .select()
+      .from(callMessages)
+      .where(and(eq(callMessages.callId, call.id), eq(callMessages.role, "TOOL")));
+    expect(tools).toHaveLength(0);
+  });
+
+  itDb("create_lead replay returns the STORED outcome (not an upsert re-execution)", async () => {
+    const business = await createBusiness();
+    const call = await seedCall(business.id, "lead");
+    const execId = `tool-exec-lead-${Date.now()}`;
+    const args = { name: "سارا", phone: "09120000001", intent: "BUY", location: "تهران" };
+    const run = (tag: string) =>
+      executeIdempotentToolCall({
+        businessId: business.id,
+        callId: call.id,
+        toolExecId: execId,
+        tool: "create_lead",
+        args: { ...args },
+        requestId: `req-lead-${tag}-${Date.now()}`,
+        actor: "agent-runtime",
+      });
+    const first = await run("a");
+    const second = await run("b");
+    expect(first.duplicate).toBe(false);
+    expect(first.result.status).toBe("SUCCESS");
+    expect(second.duplicate).toBe(true);
+    expect(second.result).toEqual(first.result);
+    // A re-executed upsert would report "updated_open"; the stored
+    // outcome still says "created" — proof of replay, not re-execution.
+    expect((first.result.data as { outcome: string }).outcome).toBe("created");
+    expect((second.result.data as { outcome: string }).outcome).toBe("created");
+    const rows = await db.select().from(leads).where(eq(leads.businessId, business.id));
+    expect(rows).toHaveLength(1);
+  });
+
+  itDb("update_lead runs inside the outcome transaction", async () => {
+    const business = await createBusiness();
+    const call = await seedCall(business.id, "updlead");
+    const created = await executeToolCall({
+      businessId: business.id,
+      callId: call.id,
+      tool: "create_lead",
+      args: { name: "رضا", phone: "09120000002", intent: "RENT" },
+      requestId: `req-seed-${Date.now()}`,
+      actor: "test",
+    });
+    const leadId = (created.data as { leadId: string }).leadId;
+    const execId = `tool-exec-updlead-${Date.now()}`;
+    const run = (tag: string) =>
+      executeIdempotentToolCall({
+        businessId: business.id,
+        callId: call.id,
+        toolExecId: execId,
+        tool: "update_lead",
+        args: { leadId, status: "CONTACTED", notes: "تماس گرفته شد" },
+        requestId: `req-upd-${tag}-${Date.now()}`,
+        actor: "agent-runtime",
+      });
+    const first = await run("a");
+    const second = await run("b");
+    expect(first).toMatchObject({ duplicate: false, result: { status: "SUCCESS" } });
+    expect(second.duplicate).toBe(true);
+    expect(second.result).toEqual(first.result);
+  });
+
+  itDb("create_appointment retry replays SUCCESS (one row, never a conflict)", async () => {
+    const business = await createBusiness();
+    const call = await seedCall(business.id, "appt");
+    const date = new Date(Date.now() + 6 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+    const avail = await checkAvailability({ businessId: business.id, date });
+    const slot = avail.slots.find((s) => s.available);
+    expect(slot).toBeTruthy();
+    const execId = `tool-exec-appt-${Date.now()}`;
+    const run = (tag: string) =>
+      executeIdempotentToolCall({
+        businessId: business.id,
+        callId: call.id,
+        toolExecId: execId,
+        tool: "create_appointment",
+        args: { scheduledAt: slot!.start, durationMinutes: 30 },
+        requestId: `req-appt-${tag}-${Date.now()}`,
+        actor: "agent-runtime",
+      });
+    const first = await run("a");
+    const second = await run("b");
+    expect(first.duplicate).toBe(false);
+    expect(first.result.status).toBe("SUCCESS");
+    // A re-executed booking would hit the overlap check and report
+    // UNAVAILABLE; the stored SUCCESS replays instead.
+    expect(second.duplicate).toBe(true);
+    expect(second.result.status).toBe("SUCCESS");
+    const rows = await db.select().from(appointments).where(eq(appointments.businessId, business.id));
+    expect(rows).toHaveLength(1);
+
+    // A DISTINCT operation for the same slot still conflicts (overlap
+    // protection intact under the new locking).
+    const rival = await executeIdempotentToolCall({
+      businessId: business.id,
+      callId: call.id,
+      toolExecId: `tool-exec-appt-rival-${Date.now()}`,
+      tool: "create_appointment",
+      args: { scheduledAt: slot!.start, durationMinutes: 30 },
+      requestId: `req-appt-rival-${Date.now()}`,
+      actor: "agent-runtime",
+    });
+    expect(rival.result.status).toBe("UNAVAILABLE");
   });
 
   itDb("agent turns without eventId execute directly (non-voice behavior unchanged)", async () => {

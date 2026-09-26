@@ -1,5 +1,5 @@
 import { and, eq, lt } from "drizzle-orm";
-import { db } from "@/db";
+import { db, type DbExecutor } from "@/db";
 import { automationDispatches, businesses, notifications } from "@/db/schema";
 import { AppError } from "@/lib/errors";
 import {
@@ -22,6 +22,8 @@ export type NotifyInput = {
   idempotencyKey?: string;
   requestId?: string;
   metadata?: Record<string, unknown>;
+  /** Run inside this executor (caller's transaction) instead of the root client. */
+  db?: DbExecutor;
 };
 
 export type NotifyResult = { id: string; delivered: boolean; duplicate: boolean };
@@ -31,12 +33,20 @@ export type NotifyResult = { id: string; delivered: boolean; duplicate: boolean 
  * 1. Insert PENDING row (or return existing row for the idempotency key).
  * 2. Deliver via the channel provider.
  * 3. Update row to SENT/FAILED + record usage.
+ *
+ * Crash-safety note: the `internal` channel (dashboard inbox, the voice
+ * default) is pure DB and therefore fully atomic when an executor is
+ * passed. External channels (email/SMTP) cannot join a transaction: a
+ * crash after the provider send but before commit re-sends on retry, so
+ * email is at-least-once across crash windows (deduped in all other
+ * cases via the idempotency key).
  */
 export async function notify(input: NotifyInput): Promise<NotifyResult> {
+  const dx = input.db ?? db;
   const channel: NotificationChannel = input.channel ?? getEnv().NOTIFICATION_DEFAULT_CHANNEL;
 
   if (input.idempotencyKey) {
-    const [existing] = await db
+    const [existing] = await dx
       .select({ id: notifications.id, status: notifications.status })
       .from(notifications)
       .where(
@@ -66,7 +76,7 @@ export async function notify(input: NotifyInput): Promise<NotifyResult> {
   if (input.idempotencyKey) {
     // Race-safe: concurrent same-key inserts collapse on the unique index;
     // the loser re-selects the winner instead of 500ing.
-    const [created] = await db
+    const [created] = await dx
       .insert(notifications)
       .values(values)
       .onConflictDoNothing({ target: [notifications.businessId, notifications.idempotencyKey] })
@@ -74,7 +84,7 @@ export async function notify(input: NotifyInput): Promise<NotifyResult> {
     if (created) {
       rowId = created.id;
     } else {
-      const [winner] = await db
+      const [winner] = await dx
         .select({ id: notifications.id, status: notifications.status })
         .from(notifications)
         .where(
@@ -88,13 +98,13 @@ export async function notify(input: NotifyInput): Promise<NotifyResult> {
       return { id: winner.id, delivered: winner.status === "SENT", duplicate: true };
     }
   } else {
-    const [created] = await db.insert(notifications).values(values).returning({ id: notifications.id });
+    const [created] = await dx.insert(notifications).values(values).returning({ id: notifications.id });
     rowId = created.id;
   }
 
   // Internal channel = persisted row itself; nothing external to deliver.
   if (channel === "internal") {
-    await db
+    await dx
       .update(notifications)
       .set({ status: "SENT", sentAt: new Date() })
       .where(eq(notifications.id, rowId));
@@ -106,18 +116,19 @@ export async function notify(input: NotifyInput): Promise<NotifyResult> {
       provider: "internal",
       idempotencyKey: input.idempotencyKey ? `notify:${input.idempotencyKey}` : undefined,
       metadata: { notificationId: rowId, channel },
+      db: input.db,
     });
     return { id: rowId, delivered: true, duplicate: false };
   }
 
   let result: { ok: boolean; error?: string };
   try {
-    result = await attemptDelivery(rowId, input, channel);
+    result = await attemptDelivery(dx, rowId, input, channel);
   } catch (err) {
     // The provider threw instead of returning a result: record the outcome
     // as FAILED (never a stuck PENDING, never a throw to the caller).
     result = { ok: false, error: err instanceof Error ? err.message : "delivery_error" };
-    await db
+    await dx
       .update(notifications)
       .set({ status: "FAILED", errorMessage: result.error })
       .where(eq(notifications.id, rowId));
@@ -138,6 +149,7 @@ export async function notify(input: NotifyInput): Promise<NotifyResult> {
     provider: channel,
     idempotencyKey: input.idempotencyKey ? `notify:${input.idempotencyKey}` : undefined,
     metadata: { notificationId: rowId, channel, delivered: result.ok },
+    db: input.db,
   });
 
   return { id: rowId, delivered: result.ok, duplicate: false };
@@ -145,6 +157,7 @@ export async function notify(input: NotifyInput): Promise<NotifyResult> {
 
 /** One delivery attempt: provider send → SENT/FAILED row update. */
 async function attemptDelivery(
+  dx: DbExecutor,
   rowId: string,
   input: { businessId: string; recipient?: string; title: string; message: string; requestId?: string },
   channel: NotificationChannel,
@@ -158,7 +171,7 @@ async function attemptDelivery(
     businessId: input.businessId,
   });
 
-  await db
+  await dx
     .update(notifications)
     .set(
       result.ok
@@ -211,6 +224,7 @@ export async function retryNotification(
     return { id: notificationId, delivered: true, duplicate: false };
   }
   const result = await attemptDelivery(
+    db,
     notificationId,
     {
       businessId,
@@ -324,6 +338,7 @@ export async function notifyHumanHandoff(input: {
   phone: string;
   reason?: string;
   requestId?: string;
+  db?: DbExecutor;
 }): Promise<NotifyResult> {
   return notify({
     businessId: input.businessId,
@@ -333,6 +348,7 @@ export async function notifyHumanHandoff(input: {
     idempotencyKey: `handoff:${input.callId}`,
     requestId: input.requestId,
     metadata: { callId: input.callId },
+    db: input.db,
   });
 }
 
@@ -347,6 +363,7 @@ export async function notifyCallbackRequested(input: {
    * intentionally registers a distinct callback request.
    */
   idempotencyKey?: string;
+  db?: DbExecutor;
 }): Promise<NotifyResult> {
   return notify({
     businessId: input.businessId,
@@ -356,6 +373,7 @@ export async function notifyCallbackRequested(input: {
     idempotencyKey: input.idempotencyKey,
     requestId: input.requestId,
     metadata: { leadId: input.leadId },
+    db: input.db,
   });
 }
 

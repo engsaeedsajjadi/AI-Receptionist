@@ -128,16 +128,41 @@ const TRANSFER_STARTABLE: CallStatus[] = ["CONNECTED", "ANSWERED", "IN_PROGRESS"
 export async function requestTransfer(
   businessId: string,
   callId: string,
-  opts?: { destination?: string; reason?: string; requestId?: string },
+  opts?: { destination?: string; reason?: string; requestId?: string; idempotencyKey?: string },
 ): Promise<{ status: "TRANSFERRED" | "TRANSFER_FAILED"; destination: string | null; message: string }> {
   const call = await getCall(businessId, callId);
   const config = await getTransferConfig(businessId);
   const destination = normalizePhone(opts?.destination ?? null) ?? config.transferNumber;
+  const opKey = opts?.idempotencyKey ?? null;
 
   if (!call.externalCallId) {
     throw new AppError(409, "TRANSFER_UNAVAILABLE", "Call has no telephony session to transfer");
   }
-  if (!TRANSFER_STARTABLE.includes(call.status)) {
+  // Same-operation reconciliation (crash safety for the un-transactional
+  // gateway call): when the recorded state already belongs to THIS
+  // operation, reconcile instead of throwing. A TRANSFERRED row returns
+  // success WITHOUT re-dialing; a mid-flight/failed row falls through to
+  // the gateway phase below, which re-issues with the provider
+  // idempotency key. Any other operation sees the usual errors.
+  const sameOperation = Boolean(opKey && call.transferIdempotencyKey === opKey);
+  if (sameOperation && call.status === "TRANSFERRED") {
+    logInfo("Transfer reconciled: already transferred by this operation (no re-dial)", {
+      requestId: opts?.requestId,
+      businessId,
+      callId,
+      operation: "call.transfer",
+      status: "TRANSFERRED",
+    });
+    return {
+      status: "TRANSFERRED",
+      destination: call.transferTo,
+      message: "در حال انتقال تماس به همکار ما. لطفاً منتظر بمانید.",
+    };
+  }
+  const recovering = Boolean(
+    sameOperation && (call.status === "TRANSFER_REQUESTED" || call.status === "TRANSFERRING" || call.status === "TRANSFER_FAILED"),
+  );
+  if (!recovering && !TRANSFER_STARTABLE.includes(call.status)) {
     throw new AppError(
       409,
       call.status === "TRANSFER_REQUESTED" || call.status === "TRANSFERRING"
@@ -150,20 +175,30 @@ export async function requestTransfer(
   }
 
   // Claim the transfer atomically: concurrent attempts serialize here and
-  // exactly one proceeds to the voice gateway.
-  const [claimed] = await db
-    .update(calls)
-    .set({ status: "TRANSFER_REQUESTED", transferTo: destination, transferRequestedAt: new Date() })
-    .where(
-      and(
-        eq(calls.id, callId),
-        eq(calls.businessId, businessId),
-        inArray(calls.status, TRANSFER_STARTABLE),
-      ),
-    )
-    .returning({ id: calls.id });
-  if (!claimed) {
-    throw new AppError(409, "TRANSFER_IN_PROGRESS", "A transfer is already in progress for this call");
+  // exactly one proceeds to the voice gateway. The claim (and its key)
+  // commits BEFORE the gateway call — it must, because the HTTP dial
+  // cannot be rolled back. Recovery skips the claim: this operation
+  // already owns the row.
+  if (!recovering) {
+    const [claimed] = await db
+      .update(calls)
+      .set({
+        status: "TRANSFER_REQUESTED",
+        transferTo: destination,
+        transferRequestedAt: new Date(),
+        transferIdempotencyKey: opKey,
+      })
+      .where(
+        and(
+          eq(calls.id, callId),
+          eq(calls.businessId, businessId),
+          inArray(calls.status, TRANSFER_STARTABLE),
+        ),
+      )
+      .returning({ id: calls.id });
+    if (!claimed) {
+      throw new AppError(409, "TRANSFER_IN_PROGRESS", "A transfer is already in progress for this call");
+    }
   }
 
   if (!destination) {
@@ -194,10 +229,24 @@ export async function requestTransfer(
   try {
     // We own the TRANSFER_REQUESTED claim; the condition below is a safety
     // net (a concurrent completion/reaper must win over a stale transfer).
+    // Keyed executions additionally match their own key and refresh the
+    // attempt instant, so a same-operation recovery re-asserts ownership
+    // (and restarts the reaper window) instead of expiring.
     const [marking] = await db
       .update(calls)
-      .set({ status: "TRANSFERRING" })
-      .where(and(eq(calls.id, callId), eq(calls.businessId, businessId), eq(calls.status, "TRANSFER_REQUESTED")))
+      .set(opKey ? { status: "TRANSFERRING", transferRequestedAt: new Date() } : { status: "TRANSFERRING" })
+      .where(
+        and(
+          eq(calls.id, callId),
+          eq(calls.businessId, businessId),
+          opKey
+            ? and(
+                inArray(calls.status, ["TRANSFER_REQUESTED", "TRANSFERRING", "TRANSFER_FAILED"]),
+                eq(calls.transferIdempotencyKey, opKey),
+              )
+            : eq(calls.status, "TRANSFER_REQUESTED"),
+        ),
+      )
       .returning({ id: calls.id });
     if (!marking) {
       throw new AppError(409, "TRANSFER_UNAVAILABLE", "Transfer claim expired before dialing");
@@ -205,6 +254,11 @@ export async function requestTransfer(
     const result = await getVoiceProvider().transferCall(call.externalCallId, destination, {
       timeoutSeconds: config.timeoutSeconds,
       requestId: opts?.requestId,
+      // Provider-side dedup for the crash-during-dial window: a recovery
+      // re-issues with the SAME key, so a gateway that honors it never
+      // dials twice. Gateways that ignore unknown fields keep today's
+      // behavior (documented in docs/VOICE-STAGING.md).
+      idempotencyKey: opKey ?? undefined,
     });
     if (!result.ok) throw new AppError(502, "TRANSFER_FAILED", "Transfer rejected by voice gateway");
 

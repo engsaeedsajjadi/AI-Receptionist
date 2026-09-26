@@ -1,6 +1,6 @@
-import { and, eq, gte, inArray, lt, ne } from "drizzle-orm";
+import { and, eq, gte, inArray, lt, ne, sql } from "drizzle-orm";
 import { z } from "zod";
-import { db } from "@/db";
+import { db, type DbExecutor } from "@/db";
 import { appointments, businesses, customers, leads, users } from "@/db/schema";
 import { AppError } from "@/lib/errors";
 import { acquireLock } from "@/lib/redis";
@@ -226,15 +226,24 @@ async function assertSlotWithinSchedule(
 /**
  * Overlap check + insert inside a caller-owned transaction.
  * The caller must hold the `appt:{businessId}:{dayKey}` distributed lock.
+ *
+ * The business row is locked FOR UPDATE first: the overlap predicate (with
+ * its both-assigned-different-assignee exception) cannot be expressed as an
+ * exclusion constraint, so row-level serialization — held to transaction
+ * end in EVERY entry path, including outer tool-outcome transactions — is
+ * what makes concurrent bookings for one business strictly serial. The
+ * Redis lock alone is insufficient there: it releases before an outer
+ * transaction commits.
  */
 async function insertAppointmentTx(
-  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  dx: DbExecutor,
   businessId: string,
   fields: SlotFields,
   start: Date,
   end: Date,
 ) {
-  const existing = await tx
+  await dx.execute(sql`SELECT 1 FROM ${businesses} WHERE ${businesses.id} = ${businessId} FOR UPDATE`);
+  const existing = await dx
     .select()
     .from(appointments)
     .where(
@@ -253,7 +262,7 @@ async function insertAppointmentTx(
       throw new AppError(409, "APPOINTMENT_CONFLICT", "Appointment time is no longer available.");
     }
   }
-  const [created] = await tx
+  const [created] = await dx
     .insert(appointments)
     .values({
       businessId,
@@ -317,8 +326,12 @@ async function assertAppointmentRefsInBusiness(
   }
 }
 
-export async function createAppointment(businessId: string, raw: unknown, opts?: { requestId?: string }) {
-  void opts;
+export async function createAppointment(
+  businessId: string,
+  raw: unknown,
+  opts?: { requestId?: string; db?: DbExecutor },
+) {
+  void opts?.requestId;
   const input = CreateAppointmentSchema.parse(raw);
   const start = new Date(input.scheduledAt);
   if (Number.isNaN(start.getTime())) throw new AppError(400, "VALIDATION_ERROR", "Invalid scheduledAt");
@@ -328,10 +341,32 @@ export async function createAppointment(businessId: string, raw: unknown, opts?:
 
   const { key } = await assertSlotWithinSchedule(businessId, start, input.durationMinutes);
 
-  // Distributed lock per business+day prevents double-booking races.
+  // Distributed lock per business+day fails fast on booking races; the
+  // business-row FOR UPDATE inside insertAppointmentTx is the correctness
+  // lock (held to transaction end even inside an outer tool-outcome tx).
   const release = await acquireLock(`appt:${businessId}:${key}`, 15);
   if (!release) throw new AppError(409, "APPOINTMENT_CONFLICT", "Appointment time is being booked, please retry");
   try {
+    // Join the caller's transaction when one is passed (tool outcome
+    // atomicity) — Drizzle has no nested transactions, so no db.transaction
+    // wrapper here in that case.
+    const dx = opts?.db;
+    if (dx) {
+      return insertAppointmentTx(
+        dx,
+        businessId,
+        {
+          leadId: input.leadId ?? undefined,
+          customerId: input.customerId ?? undefined,
+          assignedUserId: input.assignedUserId ?? undefined,
+          title: input.title ?? undefined,
+          durationMinutes: input.durationMinutes,
+          notes: input.notes ?? undefined,
+        },
+        start,
+        end,
+      );
+    }
     return await db.transaction(async (tx) =>
       insertAppointmentTx(
         tx,

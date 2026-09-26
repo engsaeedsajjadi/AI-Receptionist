@@ -244,6 +244,13 @@ export const calls = pgTable(
     transferTo: varchar("transfer_to", { length: 30 }),
     transferRequestedAt: timestamp("transfer_requested_at", { withTimezone: true }),
     transferCompletedAt: timestamp("transfer_completed_at", { withTimezone: true }),
+    // Operation identity of the transfer attempt that owns the current
+    // transfer state (the tool execution id). A retry carrying the SAME key
+    // reconciles against the recorded state (returns TRANSFERRED without
+    // re-dialing, or re-issues with the provider key) instead of throwing —
+    // this is what makes transfer_call crash-safe despite its gateway HTTP
+    // call being unable to join a DB transaction. NULL for legacy attempts.
+    transferIdempotencyKey: varchar("transfer_idempotency_key", { length: 255 }),
     metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },

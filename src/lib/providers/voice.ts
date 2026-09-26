@@ -18,7 +18,9 @@ import { NO_VOICE_CAPABILITIES, type VoiceCapabilities } from "@/lib/providers/c
  *   POST {base}/calls/{providerCallId}/answer
  *   POST {base}/calls/{providerCallId}/hangup            { reason? }
  *   POST {base}/calls/{providerCallId}/play              { audioUrl?, text?, language? }
- *   POST {base}/calls/{providerCallId}/transfer          { destination, timeoutSeconds? }
+ *   POST {base}/calls/{providerCallId}/transfer          { destination, timeoutSeconds?, idempotencyKey? }
+ *     (idempotencyKey: gateways SHOULD dedup retries carrying the same key —
+ *     the app re-issues with a stable key when recovering a crashed transfer)
  *   POST {base}/calls/{providerCallId}/stream/start      { websocketUrl, language?, mediaToken }
  * The gateway MUST forward mediaToken verbatim as `token` in the media
  * WebSocket `start` frame. It is a short-lived per-call credential issued
@@ -72,7 +74,7 @@ export interface VoiceProvider {
   transferCall(
     providerCallId: string,
     destination: string,
-    opts?: { timeoutSeconds?: number; requestId?: string },
+    opts?: { timeoutSeconds?: number; requestId?: string; idempotencyKey?: string },
   ): Promise<TransferResult>;
   getCallStatus(providerCallId: string, opts?: { requestId?: string }): Promise<VoiceCallStatus>;
 }
@@ -245,14 +247,18 @@ export class GenericVoiceProvider implements VoiceProvider {
   async transferCall(
     providerCallId: string,
     destination: string,
-    opts?: { timeoutSeconds?: number; requestId?: string },
+    opts?: { timeoutSeconds?: number; requestId?: string; idempotencyKey?: string },
   ): Promise<TransferResult> {
     if (!destination) throw new AppError(400, "INVALID_PAYLOAD", "Transfer destination is required");
     try {
       const raw = await this.request<{ status?: string }>(
         "POST",
         `/calls/${encodeURIComponent(providerCallId)}/transfer`,
-        { destination, timeoutSeconds: opts?.timeoutSeconds ?? 30 },
+        {
+          destination,
+          timeoutSeconds: opts?.timeoutSeconds ?? 30,
+          ...(opts?.idempotencyKey ? { idempotencyKey: opts.idempotencyKey } : {}),
+        },
         opts?.requestId,
       );
       const status = String(raw?.status ?? "initiated").toLowerCase();

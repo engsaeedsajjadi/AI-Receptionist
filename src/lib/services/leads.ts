@@ -1,6 +1,6 @@
 import { and, desc, eq, notInArray } from "drizzle-orm";
 import { z } from "zod";
-import { db } from "@/db";
+import { db, type DbExecutor } from "@/db";
 import { leads } from "@/db/schema";
 import { AppError } from "@/lib/errors";
 import { advisoryXactLock } from "@/lib/tx";
@@ -123,73 +123,89 @@ export async function createOrUpdateLead(input: {
   extraction: NormalizedLead;
   source?: string;
   callId?: string;
+  /** Join the caller's transaction instead of opening our own (tool outcome atomicity). */
+  db?: DbExecutor;
 }): Promise<{ lead: typeof leads.$inferSelect; outcome: LeadOutcome }> {
-  return db.transaction(async (tx) => {
-    // Serialize concurrent upserts for the same customer: without this, two
-    // simultaneous calls both see "no open lead" and insert duplicates.
-    await advisoryXactLock(tx, `lead:${input.businessId}:${input.customerId}`);
-    const [latest] = await tx
-      .select()
-      .from(leads)
-      .where(and(eq(leads.businessId, input.businessId), eq(leads.customerId, input.customerId)))
-      .orderBy(desc(leads.updatedAt))
-      .limit(1);
-
-    const e = input.extraction;
-    const patch = {
-      type: e.intent,
-      budgetMin: e.budgetMin ?? undefined,
-      budgetMax: e.budgetMax ?? undefined,
-      location: e.location ?? undefined,
-      minArea: e.minArea ?? undefined,
-      maxArea: e.maxArea ?? undefined,
-      bedrooms: e.bedrooms ?? undefined,
-      timeframe: e.timeframe ?? undefined,
-      requestedVisit: e.requestedVisit || undefined,
-      summary: e.summary ?? undefined,
-      updatedAt: new Date(),
-    } as const;
-
-    if (latest && (OPEN_STATUSES as readonly string[]).includes(latest.status)) {
-      const [updated] = await tx
-        .update(leads)
-        .set({ ...patch, updatedAt: new Date() })
-        .where(eq(leads.id, latest.id))
-        .returning();
-      return { lead: updated, outcome: "updated_open" };
-    }
-
-    if (latest && latest.status === "LOST") {
-      const [reopened] = await tx
-        .update(leads)
-        .set({ ...patch, status: "NEW", source: input.source ?? latest.source, updatedAt: new Date() })
-        .where(eq(leads.id, latest.id))
-        .returning();
-      return { lead: reopened, outcome: "reopened" };
-    }
-
-    const [created] = await tx
-      .insert(leads)
-      .values({
-        businessId: input.businessId,
-        customerId: input.customerId,
-        source: input.source ?? "call",
-        type: e.intent,
-        status: "NEW",
-        budgetMin: e.budgetMin,
-        budgetMax: e.budgetMax,
-        location: e.location,
-        minArea: e.minArea,
-        maxArea: e.maxArea,
-        bedrooms: e.bedrooms,
-        timeframe: e.timeframe,
-        requestedVisit: e.requestedVisit,
-        summary: e.summary,
-      })
-      .returning();
-    return { lead: created, outcome: latest ? "existing_customer_new_lead" : "created" };
-  });
+  // Drizzle has no nested transactions: when an executor is passed we run
+  // the policy directly on it; otherwise we open our own transaction.
+  if (input.db) return applyLeadPolicy(input.db, input);
+  return db.transaction(async (tx) => applyLeadPolicy(tx, input));
 }
+
+async function applyLeadPolicy(
+  dx: DbExecutor,
+  input: {
+    businessId: string;
+    customerId: string;
+    extraction: NormalizedLead;
+    source?: string;
+    callId?: string;
+  },
+): Promise<{ lead: typeof leads.$inferSelect; outcome: LeadOutcome }> {
+  // Serialize concurrent upserts for the same customer: without this, two
+  // simultaneous calls both see "no open lead" and insert duplicates.
+  await advisoryXactLock(dx, `lead:${input.businessId}:${input.customerId}`);
+  const [latest] = await dx
+    .select()
+    .from(leads)
+    .where(and(eq(leads.businessId, input.businessId), eq(leads.customerId, input.customerId)))
+    .orderBy(desc(leads.updatedAt))
+    .limit(1);
+
+  const e = input.extraction;
+  const patch = {
+    type: e.intent,
+    budgetMin: e.budgetMin ?? undefined,
+    budgetMax: e.budgetMax ?? undefined,
+    location: e.location ?? undefined,
+    minArea: e.minArea ?? undefined,
+    maxArea: e.maxArea ?? undefined,
+    bedrooms: e.bedrooms ?? undefined,
+    timeframe: e.timeframe ?? undefined,
+    requestedVisit: e.requestedVisit || undefined,
+    summary: e.summary ?? undefined,
+    updatedAt: new Date(),
+  } as const;
+
+  if (latest && (OPEN_STATUSES as readonly string[]).includes(latest.status)) {
+    const [updated] = await dx
+      .update(leads)
+      .set({ ...patch, updatedAt: new Date() })
+      .where(eq(leads.id, latest.id))
+      .returning();
+    return { lead: updated, outcome: "updated_open" };
+  }
+
+  if (latest && latest.status === "LOST") {
+    const [reopened] = await dx
+      .update(leads)
+      .set({ ...patch, status: "NEW", source: input.source ?? latest.source, updatedAt: new Date() })
+      .where(eq(leads.id, latest.id))
+      .returning();
+    return { lead: reopened, outcome: "reopened" };
+  }
+
+  const [created] = await dx
+    .insert(leads)
+    .values({
+      businessId: input.businessId,
+      customerId: input.customerId,
+      source: input.source ?? "call",
+      type: e.intent,
+      status: "NEW",
+      budgetMin: e.budgetMin,
+      budgetMax: e.budgetMax,
+      location: e.location,
+      minArea: e.minArea,
+      maxArea: e.maxArea,
+      bedrooms: e.bedrooms,
+      timeframe: e.timeframe,
+      requestedVisit: e.requestedVisit,
+      summary: e.summary,
+    })
+    .returning();
+  return { lead: created, outcome: latest ? "existing_customer_new_lead" : "created" };
+  }
 
 /**
  * Full call-intake flow: deduplicate customer → apply lead policy.
@@ -220,8 +236,8 @@ export async function intakeLeadFromCall(input: {
   return { customer, lead, outcome };
 }
 
-export async function getLead(businessId: string, leadId: string) {
-  const [row] = await db
+export async function getLead(businessId: string, leadId: string, dbx?: DbExecutor) {
+  const [row] = await (dbx ?? db)
     .select()
     .from(leads)
     .where(and(eq(leads.id, leadId), eq(leads.businessId, businessId)))

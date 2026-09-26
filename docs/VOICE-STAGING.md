@@ -42,7 +42,7 @@ JSON everywhere, 15s timeout, 2 retries on network faults.
 | `POST /calls/{id}/answer` | Answer the ringing call |
 | `POST /calls/{id}/hangup` `{reason?}` | Hang up |
 | `POST /calls/{id}/play` `{audioUrl?, text?, language?}` | Play reply audio (URL preferred; `text` = gateway-side TTS fallback, Persian) |
-| `POST /calls/{id}/transfer` `{destination, timeoutSeconds?}` | Transfer to human; response `{status}` (`completed` ⇒ TRANSFERRED, else INITIATED; HTTP error ⇒ TRANSFER_FAILED) |
+| `POST /calls/{id}/transfer` `{destination, timeoutSeconds?, idempotencyKey?}` | Transfer to human; response `{status}` (`completed` ⇒ TRANSFERRED, else INITIATED; HTTP error ⇒ TRANSFER_FAILED). Gateways SHOULD dedup retries carrying the same `idempotencyKey` (the app re-issues with a stable key when recovering a crashed transfer; gateways that ignore it keep at-least-once behavior across that window only) |
 | `POST /calls/{id}/stream/start` `{websocketUrl, language?, mediaToken}` | Open media WS to the sidecar; forward `mediaToken` verbatim as `token` in the `start` frame |
 | `POST /calls/{id}/stream/stop` | Close media streaming |
 | `GET /calls/{id}` → `{status, ...}` | Poll call status |

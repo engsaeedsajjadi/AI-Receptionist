@@ -1,6 +1,35 @@
+/**
+ * Audited tool registry: the ONLY way the LLM touches the world.
+ *
+ * Crash-safety model (P0-3): every voice-turn tool runs through
+ * executeIdempotentToolCall with a stable operation id. Guarantees per
+ * tool class — stated precisely, no more:
+ *
+ * - Pure-DB tools (create/update_lead, create_appointment,
+ *   request_callback, send_notification/internal): the side effect and the
+ *   stored outcome commit in ONE transaction. A crash either rolls both
+ *   back (retry re-executes onto clean state) or commits both (retry
+ *   replays the stored outcome). Exactly-once per operation. VERIFIED by
+ *   the atomicity tests (outcome-store failure rolls the effect back).
+ * - transfer_call: the gateway dial cannot join a DB transaction, so the
+ *   atomic claim commits first and a same-operation retry RECONCILES
+ *   (TRANSFERRED returns without re-dialing; mid-flight/failed states
+ *   re-issue with a stable provider idempotencyKey). Exactly-once per
+ *   operation IF the gateway honors idempotencyKey; otherwise
+ *   at-least-once across the crash-during-dial window only (all other
+ *   cases dedup via the claim + outcome row). PARTIAL by nature of the
+ *   provider boundary — see docs/VOICE-STAGING.md.
+ * - send_notification/email: SMTP cannot be transactional. Internal
+ *   (default) is exactly-once per operation; email is at-least-once
+ *   across crash windows (a crash after provider-send but before commit
+ *   re-sends on retry), deduped everywhere else by the idempotency key.
+ * - Reads (search tools, check_availability, get_business_info): no side
+ *   effects; the stored outcome is a replay cache (saves provider cost
+ *   and keeps crash-retries on identical rails).
+ */
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { db } from "@/db";
+import { db, type DbExecutor } from "@/db";
 import { auditLogs, businesses, callMessages } from "@/db/schema";
 import { advisoryXactLock } from "@/lib/tx";
 import { AppError } from "@/lib/errors";
@@ -28,6 +57,25 @@ export type ToolContext = {
   requestId: string;
   /** Who invoked the tool: "voice-webhook" | "agent-runtime" | "api" | user id. */
   actor: string;
+  /**
+   * Stable operation identity for this execution (the toolExecId when run
+   * through executeIdempotentToolCall). Handlers MUST derive any
+   * downstream idempotency keys from this — never from requestId, which
+   * changes across crash-retries.
+   */
+  idempotencyKey?: string;
+  /**
+   * Database executor for this execution. Set to the outcome transaction by
+   * executeIdempotentToolCall so DB-backed side effects commit atomically
+   * with the stored outcome (true crash safety: a crash can neither lose
+   * the outcome of a committed effect nor keep the effect of a lost
+   * outcome). Absent for direct (non-idempotent) executions.
+   *
+   * Handlers with un-rollbackable external effects (transfer_call's gateway
+   * HTTP call) deliberately IGNORE this and manage their own
+   * claim-then-reconcile protocol instead — see requestTransfer.
+   */
+  db?: DbExecutor;
 };
 
 export type ToolResult = {
@@ -124,6 +172,7 @@ const createLeadTool: ToolDefinition = {
       businessId: ctx.businessId,
       phone: extraction.phone,
       name: extraction.name ?? undefined,
+      db: ctx.db,
     });
     const { lead, outcome } = await createOrUpdateLead({
       businessId: ctx.businessId,
@@ -131,6 +180,7 @@ const createLeadTool: ToolDefinition = {
       extraction,
       source: "call",
       callId: ctx.callId,
+      db: ctx.db,
     });
     return { status: "SUCCESS", data: { leadId: lead.id, customerId: customer.id, outcome, leadStatus: lead.status } };
   },
@@ -152,7 +202,7 @@ const updateLeadTool: ToolDefinition = {
   }),
   handler: async (args, ctx) => {
     const { leads } = await import("@/db/schema");
-    const lead = await getLead(ctx.businessId, args.leadId as string);
+    const lead = await getLead(ctx.businessId, args.leadId as string, ctx.db);
     const patch: Record<string, unknown> = { updatedAt: new Date() };
     if (args.status) patch.status = args.status;
     if (typeof args.notes === "string") patch.notes = normalizePersianText(args.notes);
@@ -170,7 +220,7 @@ const updateLeadTool: ToolDefinition = {
       const v = parseBedrooms(args.bedrooms as string | number);
       if (v != null) patch.bedrooms = v;
     }
-    const [updated] = await db
+    const [updated] = await (ctx.db ?? db)
       .update(leads)
       .set(patch)
       .where(dbAnd(dbEq(leads.id, lead.id), dbEq(leads.businessId, ctx.businessId)))
@@ -214,7 +264,7 @@ const createAppointmentTool: ToolDefinition = {
   }),
   handler: async (args, ctx) => {
     try {
-      const created = await createAppointment(ctx.businessId, args, { requestId: ctx.requestId });
+      const created = await createAppointment(ctx.businessId, args, { requestId: ctx.requestId, db: ctx.db });
       return {
         status: "SUCCESS",
         data: { appointmentId: created.id, scheduledAt: created.scheduledAt, durationMinutes: created.durationMinutes },
@@ -246,7 +296,10 @@ const requestCallbackTool: ToolDefinition = {
       leadId: args.leadId as string | undefined,
       phone,
       requestId: ctx.requestId,
-      idempotencyKey: `tool:${ctx.requestId}:callback`,
+      // Stable across crash-retries when executed idempotently; the
+      // requestId fallback preserves legacy direct-execution behavior.
+      idempotencyKey: ctx.idempotencyKey ? `tool:${ctx.idempotencyKey}` : `tool:${ctx.requestId}:callback`,
+      db: ctx.db,
     });
     return { status: "SUCCESS", data: { callbackId: result.id, phone } };
   },
@@ -259,10 +312,14 @@ const transferCallTool: ToolDefinition = {
   schema: z.object({ reason: z.string().max(500).optional(), destination: z.string().max(30).optional() }),
   handler: async (args, ctx) => {
     if (!ctx.callId) return { status: "FAILED", error: "No live call to transfer." };
+    // NOTE: transfer deliberately does NOT join ctx.db — its atomic claim
+    // must COMMIT before the un-rollbackable gateway HTTP call. Crash
+    // safety comes from claim-then-reconcile keyed by the execution id.
     const result = await requestTransfer(ctx.businessId, ctx.callId, {
       destination: args.destination as string | undefined,
       reason: args.reason as string | undefined,
       requestId: ctx.requestId,
+      idempotencyKey: ctx.idempotencyKey,
     });
     if (result.status === "TRANSFERRED") {
       return { status: "SUCCESS", data: { destination: result.destination, message: result.message } };
@@ -294,9 +351,12 @@ const sendNotificationTool: ToolDefinition = {
       channel: "internal",
       title: normalizePersianText(String(args.title)),
       message: normalizePersianText(String(args.message)),
-      idempotencyKey: `tool:${ctx.requestId}:${String(args.title).slice(0, 40)}`,
+      idempotencyKey: ctx.idempotencyKey
+        ? `tool:${ctx.idempotencyKey}`
+        : `tool:${ctx.requestId}:${String(args.title).slice(0, 40)}`,
       requestId: ctx.requestId,
       metadata: { callId: ctx.callId, actor: ctx.actor },
+      db: ctx.db,
     });
     return { status: "SUCCESS", data: { notificationId: result.id } };
   },
@@ -330,7 +390,7 @@ export function getToolDefinitions(): Array<{ name: string; description: string;
 
 async function auditToolCall(ctx: ToolContext, tool: string, status: string, ok: boolean): Promise<void> {
   try {
-    await db.insert(auditLogs).values({
+    await (ctx.db ?? db).insert(auditLogs).values({
       businessId: ctx.businessId,
       actorType: "tool",
       actorId: ctx.actor,
@@ -359,6 +419,10 @@ export async function executeToolCall(input: {
   args: Record<string, unknown>;
   requestId: string;
   actor: string;
+  /** Stable operation identity (see ToolContext.idempotencyKey). */
+  idempotencyKey?: string;
+  /** Run DB-backed side effects inside this executor (see ToolContext.db). */
+  db?: DbExecutor;
 }): Promise<ToolResult> {
   const ctx: ToolContext = {
     businessId: input.businessId,
@@ -366,6 +430,8 @@ export async function executeToolCall(input: {
     userId: input.userId,
     requestId: input.requestId,
     actor: input.actor,
+    idempotencyKey: input.idempotencyKey,
+    db: input.db,
   };
   const tool = TOOLS[input.tool];
   if (!tool) {
@@ -462,6 +528,15 @@ export function deriveToolExecId(eventId: string, tool: string, args: Record<str
  * the same turn replays instead of duplicating side effects (leads,
  * appointments, notifications, transfers).
  *
+ * Crash safety is REAL, not just race safety: the outcome check, the tool
+ * execution, and the outcome store all run inside ONE database transaction
+ * (DB-backed handlers receive `tx` via ctx.db). A crash can therefore never
+ * commit a side effect without its outcome row, nor an outcome row without
+ * its side effect — retries either replay the stored outcome or re-execute
+ * onto clean state. The sole exception is transfer_call, whose gateway HTTP
+ * call cannot join a DB transaction: it reconciles via its own
+ * claim-then-reconcile protocol keyed by the same execution id.
+ *
  * Both entry points share this: the voice tool-call webhook (provider
  * event_id) and the agent runtime loop (derived execution ids).
  */
@@ -504,6 +579,9 @@ export async function executeIdempotentToolCall(input: {
       };
     }
 
+    // The handler runs INSIDE this transaction (ctx.db = tx): its writes and
+    // the outcome insert below commit or roll back together. This closes the
+    // crash window the naive check-execute-store leaves open.
     const result = await executeToolCall({
       businessId: input.businessId,
       callId: input.callId,
@@ -511,6 +589,8 @@ export async function executeIdempotentToolCall(input: {
       args: input.args,
       requestId: input.requestId,
       actor: input.actor,
+      idempotencyKey: input.toolExecId,
+      db: tx,
     });
 
     await tx

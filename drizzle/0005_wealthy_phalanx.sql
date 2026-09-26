@@ -1,0 +1,1 @@
+ALTER TABLE "calls" ADD COLUMN "transfer_idempotency_key" varchar(255);

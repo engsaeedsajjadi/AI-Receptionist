@@ -1,4 +1,4 @@
-import { db } from "@/db";
+import { db, type DbExecutor } from "@/db";
 import { usageRecords } from "@/db/schema";
 import { estimateCost } from "@/lib/pricing";
 import type { ProviderUsage } from "@/lib/providers/types";
@@ -23,6 +23,8 @@ export type RecordUsageInput = {
   /** Idempotency: retries with the same key are recorded once. */
   idempotencyKey?: string;
   metadata?: Record<string, unknown>;
+  /** Run inside this executor (caller's transaction) instead of the root client. */
+  db?: DbExecutor;
 };
 
 function toQuantityString(quantity: number): string {
@@ -48,8 +50,9 @@ export async function recordUsage(input: RecordUsageInput): Promise<{ recorded: 
     metadata: input.metadata ?? {},
   };
 
+  const dx = input.db ?? db;
   if (input.idempotencyKey) {
-    const rows = await db
+    const rows = await dx
       .insert(usageRecords)
       .values(values)
       .onConflictDoNothing({ target: [usageRecords.businessId, usageRecords.idempotencyKey] })
@@ -57,7 +60,7 @@ export async function recordUsage(input: RecordUsageInput): Promise<{ recorded: 
     return { recorded: rows.length > 0, costUsd: cost };
   }
 
-  await db.insert(usageRecords).values(values);
+  await dx.insert(usageRecords).values(values);
   return { recorded: true, costUsd: cost };
 }
 

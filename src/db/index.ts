@@ -55,6 +55,16 @@ export const db: NodePgDatabase = new Proxy({} as NodePgDatabase, {
   },
 });
 
+/**
+ * Transaction object type (same idiom as insertAppointmentTx).
+ * Services that accept an optional executor run inside the caller's
+ * transaction when one is passed — this is what makes tool side effects
+ * atomic with their idempotency-outcome rows (P0-3 crash safety).
+ */
+export type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+/** Either the root client or a transaction: both expose the same query API. */
+export type DbExecutor = typeof db | DbTransaction;
+
 export async function checkDbHealth(): Promise<{ ok: boolean; latencyMs?: number; error?: string }> {
   try {
     const { sql } = await import("drizzle-orm");

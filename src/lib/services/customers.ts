@@ -1,5 +1,5 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
-import { db } from "@/db";
+import { db, type DbExecutor } from "@/db";
 import { appointments, calls, customers, leads } from "@/db/schema";
 import { AppError } from "@/lib/errors";
 import { normalizePersianText, normalizePhone } from "@/lib/normalization";
@@ -10,6 +10,8 @@ export type CustomerInput = {
   name?: string;
   email?: string;
   metadata?: Record<string, unknown>;
+  /** Run inside this executor (caller's transaction) instead of the root client. */
+  db?: DbExecutor;
 };
 
 /**
@@ -21,8 +23,9 @@ export async function findOrCreateCustomer(input: CustomerInput) {
   const phone = normalizePhone(input.phone);
   if (!phone) throw new AppError(400, "VALIDATION_ERROR", "Invalid phone number");
   const name = input.name ? normalizePersianText(input.name) : "";
+  const dx = input.db ?? db;
 
-  const [existing] = await db
+  const [existing] = await dx
     .select()
     .from(customers)
     .where(and(eq(customers.businessId, input.businessId), eq(customers.phone, phone)))
@@ -41,7 +44,7 @@ export async function findOrCreateCustomer(input: CustomerInput) {
       needsUpdate = true;
     }
     if (!needsUpdate) return existing;
-    const [updated] = await db
+    const [updated] = await dx
       .update(customers)
       .set(patch)
       .where(eq(customers.id, existing.id))
@@ -49,7 +52,7 @@ export async function findOrCreateCustomer(input: CustomerInput) {
     return updated ?? existing;
   }
 
-  const [created] = await db
+  const [created] = await dx
     .insert(customers)
     .values({
       businessId: input.businessId,
@@ -64,7 +67,7 @@ export async function findOrCreateCustomer(input: CustomerInput) {
   if (created) return created;
 
   // Lost a race: another transaction inserted the row — re-select it.
-  const [row] = await db
+  const [row] = await dx
     .select()
     .from(customers)
     .where(and(eq(customers.businessId, input.businessId), eq(customers.phone, phone)))
