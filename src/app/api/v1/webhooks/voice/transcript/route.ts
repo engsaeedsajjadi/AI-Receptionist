@@ -105,9 +105,19 @@ export async function POST(req: NextRequest) {
       // partial → final transition — never on redeliveries.
       const becameFinal = body.is_final && (!existing || !wasFinal);
       if (becameFinal) {
+        // P0-4: `call` was read BEFORE the advisory lock (existence check)
+        // and is stale by the time we get here. Appending to it would lose
+        // concurrent segments (lost update: every writer starts from the
+        // same prefix, last commit wins). Re-read INSIDE the serialized
+        // section so each append builds on its predecessor.
+        const [fresh] = await tx
+          .select({ transcript: calls.transcript })
+          .from(calls)
+          .where(eq(calls.id, call.id))
+          .limit(1);
         await tx
           .update(calls)
-          .set({ transcript: `${call.transcript ?? ""}\n${content}`.trim().slice(0, 100_000) })
+          .set({ transcript: `${fresh?.transcript ?? ""}\n${content}`.trim().slice(0, 100_000) })
           .where(eq(calls.id, call.id));
       }
       return { duplicate: false, messageId };

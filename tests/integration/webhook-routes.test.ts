@@ -170,6 +170,43 @@ describe.skipIf(!hasTestDatabase())("voice webhook routes: idempotency + concurr
     expect(updated.transcript).toBe("سلام من دنبال آپارتمان هستم");
   });
 
+  itDb("transcript: concurrent finals for different segments all survive (no lost update)", async () => {
+    const business = await createBusiness("Webhook Biz Race");
+    const call = await seedCall(business.id, `ext-${Date.now()}-race`);
+    const N = 8;
+    const segments = Array.from({ length: N }, (_, i) => `segment-${i}-${Date.now()}`);
+    const responses = await Promise.all(
+      segments.map((text, i) =>
+        transcript(
+          post(
+            {
+              business_id: business.id,
+              external_call_id: call.externalCallId,
+              transcript: text,
+              role: "CUSTOMER",
+              is_final: true,
+              event_id: `race-seg-${i}-${Date.now()}`,
+            },
+            nextKey(),
+            "/api/v1/webhooks/voice/transcript",
+          ),
+        ),
+      ),
+    );
+    for (const r of responses) expect(r.status).toBe(200);
+    const bodies = (await Promise.all(responses.map((r) => r.json()))) as Array<{ duplicate: boolean }>;
+    // Distinct segments: every delivery is new work, none a duplicate.
+    expect(bodies.every((b) => b.duplicate === false)).toBe(true);
+
+    const messages = await db.select().from(callMessages).where(eq(callMessages.callId, call.id));
+    expect(messages).toHaveLength(N);
+    const [updated] = await db.select().from(calls).where(eq(calls.id, call.id)).limit(1);
+    // Order across concurrent writers is not deterministic — presence is.
+    for (const text of segments) {
+      expect(updated.transcript ?? "").toContain(text);
+    }
+  });
+
   itDb("tool-call: same event twice executes once, returns stored outcome", async () => {
     const business = await createBusiness("Webhook Biz F");
     const call = await seedCall(business.id, `ext-${Date.now()}-f`);
