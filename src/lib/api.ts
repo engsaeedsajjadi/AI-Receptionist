@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { AppError, toErrorPayload } from "@/lib/errors";
+import { AppError, type ErrorCode, toErrorPayload } from "@/lib/errors";
 import { logError } from "@/lib/logger";
 
 // Backwards-compatible alias: existing routes throw `new ApiError(status, code, message)`.
@@ -13,6 +13,26 @@ export async function parseJson<T>(req: NextRequest): Promise<T> {
   } catch {
     throw new AppError(400, "INVALID_JSON", "Invalid JSON payload");
   }
+}
+
+/**
+ * Map a Postgres unique violation (23505) to a typed 409 by constraint name;
+ * rethrows anything else untouched. Pre-insert SELECT checks have a race
+ * window, so the unique index is the real guard — this keeps the loser on a
+ * clean 409 instead of a 500.
+ */
+export function mapUniqueViolation(
+  err: unknown,
+  byConstraint: Record<string, { code: ErrorCode; message: string }>,
+): never {
+  const pg = err as { code?: string; constraint?: string; cause?: { code?: string; constraint?: string } };
+  const code = pg?.code ?? pg?.cause?.code;
+  const constraint = pg?.constraint ?? pg?.cause?.constraint;
+  if (code === "23505" && constraint && byConstraint[constraint]) {
+    const mapped = byConstraint[constraint];
+    throw new AppError(409, mapped.code, mapped.message);
+  }
+  throw err;
 }
 
 export function parseWith<T>(schema: z.ZodType<T>, data: unknown): T {

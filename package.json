@@ -14,7 +14,8 @@
     "db:push": "drizzle-kit push",
     "db:migrate": "tsx scripts/migrate.ts",
     "db:seed": "tsx scripts/seed.ts",
-    "media:server": "tsx scripts/media-server.ts"
+    "media:server": "tsx scripts/media-server.ts",
+    "maintenance": "tsx scripts/maintenance.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.936.0",

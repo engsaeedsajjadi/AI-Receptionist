@@ -3,7 +3,7 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/db";
 import { users } from "@/db/schema";
-import { ApiError, ok, paginated, parseJsonWith, parsePagination } from "@/lib/api";
+import { ApiError, mapUniqueViolation, ok, paginated, parseJsonWith, parsePagination } from "@/lib/api";
 import { getAuthContext, hashPassword, validatePasswordPolicy } from "@/lib/auth";
 import { normalizePersianText, normalizePhone } from "@/lib/normalization";
 import { hasRole } from "@/lib/permissions";
@@ -66,18 +66,25 @@ export async function POST(req: NextRequest) {
     const [existing] = await db.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1);
     if (existing) throw new ApiError(409, "EMAIL_EXISTS", "Email already exists");
 
-    const [created] = await db
-      .insert(users)
-      .values({
-        businessId: auth.businessId,
-        name: normalizePersianText(body.name),
-        email,
-        phone: body.phone ? (normalizePhone(body.phone) ?? normalizePersianText(body.phone)) : null,
-        passwordHash: await hashPassword(body.password),
-        role: body.role,
-      })
-      .returning();
-    return ok(publicUser(created), 201);
+    let created: typeof users.$inferSelect;
+    try {
+      [created] = await db
+        .insert(users)
+        .values({
+          businessId: auth.businessId,
+          name: normalizePersianText(body.name),
+          email,
+          phone: body.phone ? (normalizePhone(body.phone) ?? normalizePersianText(body.phone)) : null,
+          passwordHash: await hashPassword(body.password),
+          role: body.role,
+        })
+        .returning();
+    } catch (err) {
+      mapUniqueViolation(err, {
+        users_email_idx: { code: "EMAIL_EXISTS", message: "Email already exists" },
+      });
+    }
+    return ok(publicUser(created!), 201);
   });
 }
 

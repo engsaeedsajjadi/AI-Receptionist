@@ -134,14 +134,60 @@ describe.skipIf(!runIntegration)("auth lifecycle (real database)", () => {
         password: "Strong123!",
       }, "10.0.0.11"),
     );
-    let lastStatus = 0;
+    // Distinct x-real-ip per attempt (the limiter reads x-real-ip when
+    // TRUST_PROXY=false): this simulates a distributed attack so every
+    // attempt reaches the handler. Sharing one bucket would 429 at the rate
+    // limiter after 5 hits and never exercise the lockout itself.
+    const statuses: number[] = [];
     for (let i = 0; i < 11; i++) {
       const res = await login(
-        req("http://localhost/api/v1/auth/login", { email, password: "Wrong123!" }, `10.0.1.${i}`),
+        req("http://localhost/api/v1/auth/login", { email, password: "Wrong123!" }, `10.0.1.${i}`, {
+          "x-real-ip": `198.51.100.${20 + i}`,
+        }),
       );
-      lastStatus = res.status;
+      statuses.push(res.status);
     }
-    // 429 with lockout message (rate-limit code doubles as lockout signal).
-    expect(lastStatus).toBe(429);
+    expect(statuses.slice(0, 10)).toEqual(new Array(10).fill(401));
+    expect(statuses[10]).toBe(429);
+    const locked = await login(
+      req("http://localhost/api/v1/auth/login", { email, password: "Strong123!" }, "10.0.1.99", {
+        "x-real-ip": "198.51.100.31",
+      }),
+    );
+    expect(locked.status).toBe(429);
+    const payload = (await locked.json()) as { error: { message: string } };
+    expect(payload.error.message).toContain("locked");
+    // Mechanism proof: the counter advanced and lockedUntil is set.
+    const { db } = await import("@/db");
+    const { users } = await import("@/db/schema");
+    const { eq } = await import("drizzle-orm");
+    const [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
+    expect(user.failedLoginCount).toBeGreaterThanOrEqual(10);
+    expect(user.lockedUntil).not.toBeNull();
+  });
+
+  itDb("concurrent duplicate registrations collapse to one 201 + one 409 (never 500)", async () => {
+    const { POST: register } = await import("@/app/api/v1/auth/register/route");
+    const stamp = Date.now();
+    const body = {
+      businessName: "Race Biz",
+      businessSlug: `race-biz-${stamp}`,
+      name: "Race",
+      email: `race-${stamp}@example.com`,
+      password: "Strong123!",
+    };
+    // Fresh shared bucket (2 hits, limit 5): both attempts race for real.
+    const ip = { "x-real-ip": "198.51.100.40" };
+    const [a, b] = await Promise.all([
+      register(req("http://localhost/api/v1/auth/register", body, "10.9.9.1", ip)),
+      register(req("http://localhost/api/v1/auth/register", body, "10.9.9.2", ip)),
+    ]);
+    const statuses = [a.status, b.status].sort();
+    expect(statuses).toEqual([201, 409]);
+    const loser = a.status === 409 ? a : b;
+    const payload = (await loser.json()) as { error: { code: string } };
+    // Interleave-dependent: full-winner-first loses on the email pre-check,
+    // mid-flight overlap loses on the slug unique index. Either way 409.
+    expect(["EMAIL_EXISTS", "SLUG_EXISTS"]).toContain(payload.error.code);
   });
 });

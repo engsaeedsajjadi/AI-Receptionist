@@ -3,7 +3,7 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/db";
 import { agents, businesses, users } from "@/db/schema";
-import { ok, parseJsonWith } from "@/lib/api";
+import { mapUniqueViolation, ok, parseJsonWith } from "@/lib/api";
 import { AppError } from "@/lib/errors";
 import { buildAgentPrompt } from "@/lib/agent-prompt";
 import { hashPassword, issueAuthTokens, validatePasswordPolicy } from "@/lib/auth";
@@ -43,40 +43,48 @@ export async function POST(req: NextRequest) {
 
     const passwordHash = await hashPassword(body.password);
 
-    const result = await db.transaction(async (tx) => {
-      const [biz] = await tx
-        .insert(businesses)
-        .values({
-          name: normalizePersianText(body.businessName),
-          slug,
-          phone,
-          industry: "real_estate",
-        })
-        .returning();
+    let result: { biz: { id: string; name: string }; user: { id: string; businessId: string; name: string; email: string; role: string } };
+    try {
+      result = await db.transaction(async (tx) => {
+        const [biz] = await tx
+          .insert(businesses)
+          .values({
+            name: normalizePersianText(body.businessName),
+            slug,
+            phone,
+            industry: "real_estate",
+          })
+          .returning();
 
-      const [user] = await tx
-        .insert(users)
-        .values({
+        const [user] = await tx
+          .insert(users)
+          .values({
+            businessId: biz.id,
+            name: normalizePersianText(body.name),
+            email,
+            phone,
+            passwordHash,
+            role: "ADMIN",
+          })
+          .returning();
+
+        await tx.insert(agents).values({
           businessId: biz.id,
-          name: normalizePersianText(body.name),
-          email,
-          phone,
-          passwordHash,
-          role: "ADMIN",
-        })
-        .returning();
+          name: "منشی هوشمند",
+          systemPrompt: buildAgentPrompt({
+            businessName: biz.name,
+            businessContext: "دفتر املاک - پاسخ‌گویی تماس‌ها و ثبت سرنخ",
+          }),
+        });
 
-      await tx.insert(agents).values({
-        businessId: biz.id,
-        name: "منشی هوشمند",
-        systemPrompt: buildAgentPrompt({
-          businessName: biz.name,
-          businessContext: "دفتر املاک - پاسخ‌گویی تماس‌ها و ثبت سرنخ",
-        }),
+        return { biz, user };
       });
-
-      return { biz, user };
-    });
+    } catch (err) {
+      mapUniqueViolation(err, {
+        businesses_slug_idx: { code: "SLUG_EXISTS", message: "Business slug already exists" },
+        users_email_idx: { code: "EMAIL_EXISTS", message: "Email already exists" },
+      });
+    }
 
     const tokens = await issueAuthTokens({ userId: result.user.id, businessId: result.biz.id, role: "ADMIN" });
 

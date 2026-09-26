@@ -258,6 +258,21 @@ describe.skipIf(!runIntegration)("RBAC + tenant enforcement at the HTTP layer (r
     expect((await demoted.json()).role).toBe("AGENT");
   });
 
+  itDb("concurrent duplicate user creates collapse to one 201 + one 409", async () => {
+    const email = `race-user-${Date.now()}@example.com`;
+    const mk = () =>
+      req("http://localhost/api/v1/users", tokens.managerA, {
+        method: "POST",
+        body: { name: "Race User", email, password: "Test1234!", role: "AGENT" },
+      });
+    const r1 = mk();
+    const r2 = mk();
+    const [a, b] = await Promise.all([createUserRoute(r1.request), createUserRoute(r2.request)]);
+    expect([a.status, b.status].sort()).toEqual([201, 409]);
+    const loser = a.status === 409 ? a : b;
+    expect(((await loser.json()) as { error: { code: string } }).error.code).toBe("EMAIL_EXISTS");
+  });
+
   itDb("ADMIN cannot delete their own account (control)", async () => {
     const del = req(`http://localhost/api/v1/users/${adminA1}`, tokens.adminA1, {
       method: "DELETE",
