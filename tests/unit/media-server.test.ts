@@ -509,3 +509,56 @@ describe("media server capacity", () => {
     expect(snap.states).toEqual({ LISTENING: 1, IDLE: 1 });
   });
 });
+
+describe("media concurrency probe (§56 sandbox)", () => {
+  it("serves 10 concurrent sessions x 3 turns without loss or deadlock", async () => {
+    const server = new MediaServer({
+      token: TOKEN,
+      resolveCall: async (businessId) => ({ businessId, callId: `call-${businessId}`, agentId: null }),
+      turnRunner: async (input) => {
+        await new Promise((r) => setTimeout(r, 5)); // simulate provider latency
+        return cannedTurn({ transcript: `heard-${input.eventId}` });
+      },
+      sessionHooks: { save: async () => {}, remove: async () => {} },
+    });
+    const clients = Array.from({ length: 10 }, () => {
+      const socket = new FakeSocket();
+      return { socket, session: server.accept(socket) };
+    });
+
+    await Promise.all(
+      clients.map(async ({ session }, i) => {
+        await session.handleMessage(
+          JSON.stringify({ type: "start", token: TOKEN, businessId: `biz-${i}`, callId: `call-biz-${i}` }),
+        );
+      }),
+    );
+    expect(server.snapshot()).toEqual({ sessions: 10, states: { LISTENING: 10 } });
+
+    const latencies: number[] = [];
+    await Promise.all(
+      clients.map(async ({ session }, i) => {
+        for (let t = 0; t < 3; t++) {
+          const t0 = Date.now();
+          await session.handleMessage(Buffer.from(`audio-${i}-${t}`));
+          await session.handleMessage(JSON.stringify({ type: "utterance-end", eventId: `e-${i}-${t}` }));
+          latencies.push(Date.now() - t0);
+        }
+      }),
+    );
+
+    for (const { socket } of clients) {
+      const done = socket.messages().filter((m) => m.type === "turn-complete");
+      expect(done).toHaveLength(3);
+      expect(socket.messages().filter((m) => m.type === "error")).toHaveLength(0);
+    }
+    latencies.sort((a, b) => a - b);
+    const p95 = latencies[Math.ceil(latencies.length * 0.95) - 1];
+    // Stub-provider plumbing overhead must stay far below real provider latency.
+    expect(p95).toBeLessThan(1000);
+
+    await Promise.all(clients.map(({ session }) => session.handleMessage(JSON.stringify({ type: "stop" }))));
+    for (const { session } of clients) server.release(session);
+    expect(server.snapshot().sessions).toBe(0);
+  });
+});
