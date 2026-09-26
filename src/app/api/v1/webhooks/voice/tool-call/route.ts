@@ -10,8 +10,7 @@ import { logInfo } from "@/lib/logger";
 import { enforceRateLimit } from "@/lib/rate-limit";
 import { claimWebhookIdempotency, verifyWebhookRequest } from "@/lib/security";
 import { withApiHandling } from "@/lib/server-core";
-import { advisoryXactLock } from "@/lib/tx";
-import { executeToolCall, type ToolResult } from "@/lib/tools/registry";
+import { executeIdempotentToolCall, executeToolCall } from "@/lib/tools/registry";
 
 const payloadSchema = z.object({
   business_id: z.string().uuid(),
@@ -23,9 +22,7 @@ const payloadSchema = z.object({
   event_id: z.string().min(1).max(255).optional(),
 });
 
-type StoredOutcome = { status: string; data?: unknown; error?: string | null };
-
-function toResponse(result: ToolResult, duplicate: boolean) {
+function toResponse(result: { status: string; data?: unknown; error?: string }, duplicate: boolean) {
   return ok({
     ok: result.status === "SUCCESS",
     duplicate,
@@ -57,62 +54,16 @@ export async function POST(req: NextRequest) {
     if (!call) throw new AppError(404, "CALL_NOT_FOUND", "Call not found");
 
     // Event-scoped execution: same event_id → stored outcome, never a rerun.
-    // The advisory lock serializes concurrent duplicates so only one writer
-    // executes; the loser reads the stored outcome.
+    // Shared with the agent runtime loop (P0-3) via executeIdempotentToolCall.
     if (body.event_id) {
-      const eventId = body.event_id;
-      const outcome = await db.transaction(async (tx) => {
-        await advisoryXactLock(tx, `tool-exec:${call.id}:${eventId}`);
-        const [existing] = await tx
-          .select({ metadata: callMessages.metadata })
-          .from(callMessages)
-          .where(and(eq(callMessages.callId, call.id), eq(callMessages.eventId, eventId)))
-          .limit(1);
-        if (existing) {
-          const stored = (existing.metadata as Record<string, unknown>)?.outcome as StoredOutcome | undefined;
-          if (stored && typeof stored.status === "string") {
-            return {
-              result: {
-                status: stored.status,
-                data: stored.data,
-                error: stored.error ?? undefined,
-              } as ToolResult,
-              duplicate: true,
-            };
-          }
-          // Row exists but holds no outcome (shouldn't happen) — treat as duplicate, no rerun.
-          return {
-            result: { status: "FAILED", error: "Tool execution already recorded" } as ToolResult,
-            duplicate: true,
-          };
-        }
-
-        const result = await executeToolCall({
-          businessId: body.business_id,
-          callId: call.id,
-          tool: body.tool,
-          args: body.arguments,
-          requestId: rid,
-          actor: "voice-webhook",
-        });
-
-        await tx
-          .insert(callMessages)
-          .values({
-            callId: call.id,
-            role: "TOOL",
-            content: JSON.stringify({ tool: body.tool, status: result.status }),
-            eventId,
-            metadata: {
-              tool: body.tool,
-              status: result.status,
-              requestId: rid,
-              outcome: { status: result.status, data: result.data ?? null, error: result.error ?? null } satisfies StoredOutcome,
-            },
-          })
-          .onConflictDoNothing({ target: [callMessages.callId, callMessages.eventId] });
-
-        return { result, duplicate: false };
+      const outcome = await executeIdempotentToolCall({
+        businessId: body.business_id,
+        callId: call.id,
+        toolExecId: body.event_id,
+        tool: body.tool,
+        args: body.arguments,
+        requestId: rid,
+        actor: "voice-webhook",
       });
 
       logInfo("Voice tool call executed", {

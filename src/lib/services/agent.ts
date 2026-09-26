@@ -8,7 +8,13 @@ import { logInfo, logWarn } from "@/lib/logger";
 import { getLLMProvider, type ChatMessage, type LLMProvider } from "@/lib/providers/llm";
 import { normalizePersianText } from "@/lib/normalization";
 import { recordLlmUsage } from "@/lib/services/usage";
-import { executeToolCall, getToolDefinitions } from "@/lib/tools/registry";
+import {
+  deriveToolExecId,
+  executeIdempotentToolCall,
+  executeToolCall,
+  getToolDefinitions,
+  type ToolResult,
+} from "@/lib/tools/registry";
 
 export const AgentConfigSchema = z.object({
   agentName: z.string().max(150).optional(),
@@ -213,14 +219,32 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
 
     for (const tc of result.toolCalls) {
       const toolStart = Date.now();
-      const toolResult = await executeToolCall({
-        businessId: input.businessId,
-        callId: input.callId,
-        tool: tc.name,
-        args: tc.arguments,
-        requestId: input.requestId,
-        actor: input.actor ?? "agent-runtime",
-      });
+      // P0-3: voice turns carry a canonical eventId — run each tool through
+      // the stored-outcome path so a crash-retry of the same turn replays
+      // instead of duplicating side effects. Non-voice turns (no eventId)
+      // execute directly, as before.
+      let toolResult: ToolResult;
+      if (input.callId && input.eventId) {
+        const idempotent = await executeIdempotentToolCall({
+          businessId: input.businessId,
+          callId: input.callId,
+          toolExecId: deriveToolExecId(input.eventId, tc.name, tc.arguments),
+          tool: tc.name,
+          args: tc.arguments,
+          requestId: input.requestId,
+          actor: input.actor ?? "agent-runtime",
+        });
+        toolResult = idempotent.result;
+      } else {
+        toolResult = await executeToolCall({
+          businessId: input.businessId,
+          callId: input.callId,
+          tool: tc.name,
+          args: tc.arguments,
+          requestId: input.requestId,
+          actor: input.actor ?? "agent-runtime",
+        });
+      }
       toolMs += Date.now() - toolStart;
       executed.push({ tool: tc.name, status: toolResult.status });
       messages.push({

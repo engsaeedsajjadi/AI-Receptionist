@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { db } from "@/db";
-import { auditLogs, businesses } from "@/db/schema";
+import { auditLogs, businesses, callMessages } from "@/db/schema";
+import { advisoryXactLock } from "@/lib/tx";
 import { AppError } from "@/lib/errors";
 import type { ToolResultStatus } from "@/lib/guardrails";
 import { logError, logInfo } from "@/lib/logger";
@@ -424,5 +426,111 @@ export async function executeToolCall(input: {
     }
     return { status: "FAILED", error: message };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Tool-level idempotency (P0-3): stored outcomes keyed by execution identity
+// ---------------------------------------------------------------------------
+
+export type StoredToolOutcome = { status: string; data?: unknown; error?: string | null };
+
+/** Deterministic JSON encoding (sorted keys, recursive) for args hashing. */
+export function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map((v) => stableStringify(v)).join(",")}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`).join(",")}}`;
+}
+
+/**
+ * Derive a stable execution id for an agent-loop tool call. Keyed on the
+ * OPERATION (turn event + tool + canonical args), not the attempt: LLM
+ * toolCall ids are not stable across retries, but the same operation
+ * re-emitted after a crash must replay — never re-execute.
+ */
+export function deriveToolExecId(eventId: string, tool: string, args: Record<string, unknown>): string {
+  const hash = createHash("sha256").update(`${tool}:${stableStringify(args)}`).digest("hex").slice(0, 16);
+  return `${eventId}:tool:${tool}:${hash}`.slice(0, 255);
+}
+
+/**
+ * Execute a tool exactly once per (callId, toolExecId): concurrent
+ * duplicates serialize on an advisory lock and the loser reads the STORED
+ * outcome. Outcomes persist as TOOL-role call messages so a crash-retry of
+ * the same turn replays instead of duplicating side effects (leads,
+ * appointments, notifications, transfers).
+ *
+ * Both entry points share this: the voice tool-call webhook (provider
+ * event_id) and the agent runtime loop (derived execution ids).
+ */
+export async function executeIdempotentToolCall(input: {
+  businessId: string;
+  callId: string;
+  /** Execution identity: provider event_id (webhook) or derived id (agent loop). */
+  toolExecId: string;
+  tool: string;
+  args: Record<string, unknown>;
+  requestId: string;
+  actor: string;
+}): Promise<{ result: ToolResult; duplicate: boolean }> {
+  return db.transaction(async (tx) => {
+    await advisoryXactLock(tx, `tool-exec:${input.callId}:${input.toolExecId}`);
+    const [existing] = await tx
+      .select({ metadata: callMessages.metadata })
+      .from(callMessages)
+      .where(dbAnd(dbEq(callMessages.callId, input.callId), dbEq(callMessages.eventId, input.toolExecId)))
+      .limit(1);
+    if (existing) {
+      const stored = (existing.metadata as Record<string, unknown>)?.outcome as StoredToolOutcome | undefined;
+      if (stored && typeof stored.status === "string") {
+        logInfo("Tool outcome replayed (idempotent)", {
+          requestId: input.requestId,
+          businessId: input.businessId,
+          callId: input.callId,
+          operation: `tool.${input.tool}`,
+          status: stored.status,
+        });
+        return {
+          result: { status: stored.status, data: stored.data, error: stored.error ?? undefined } as ToolResult,
+          duplicate: true,
+        };
+      }
+      // Row exists but holds no outcome (shouldn't happen) — never rerun blindly.
+      return {
+        result: { status: "FAILED", error: "Tool execution already recorded" } as ToolResult,
+        duplicate: true,
+      };
+    }
+
+    const result = await executeToolCall({
+      businessId: input.businessId,
+      callId: input.callId,
+      tool: input.tool,
+      args: input.args,
+      requestId: input.requestId,
+      actor: input.actor,
+    });
+
+    await tx
+      .insert(callMessages)
+      .values({
+        callId: input.callId,
+        role: "TOOL",
+        content: JSON.stringify({ tool: input.tool, status: result.status }),
+        eventId: input.toolExecId,
+        metadata: {
+          tool: input.tool,
+          status: result.status,
+          requestId: input.requestId,
+          actor: input.actor,
+          outcome: { status: result.status, data: result.data ?? null, error: result.error ?? null } satisfies StoredToolOutcome,
+        },
+      })
+      .onConflictDoNothing({ target: [callMessages.callId, callMessages.eventId] });
+
+    return { result, duplicate: false };
+  });
 }
 
