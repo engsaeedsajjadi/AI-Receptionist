@@ -1,16 +1,17 @@
-import { and, desc, eq, gte, ilike, lte } from "drizzle-orm";
+import { and, desc, eq, gte, ilike, lte, sql } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { db } from "@/db";
 import { calls } from "@/db/schema";
-import { ok } from "@/lib/api";
+import { ok, paginated, parsePagination } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
 import { normalizePersianText } from "@/lib/normalization";
 import { checkGlobalPublicRateLimit, withApiHandling } from "@/lib/server-core";
 
 export async function GET(req: NextRequest) {
   return withApiHandling(async () => {
-    checkGlobalPublicRateLimit(req);
+    await checkGlobalPublicRateLimit(req);
     const auth = await getAuthContext(req);
+    const { page, limit, offset } = parsePagination(req);
 
     const status = req.nextUrl.searchParams.get("status");
     const phone = req.nextUrl.searchParams.get("phone");
@@ -31,12 +32,11 @@ export async function GET(req: NextRequest) {
     if (dateFrom) conditions.push(gte(calls.createdAt, new Date(dateFrom)));
     if (dateTo) conditions.push(lte(calls.createdAt, new Date(dateTo)));
 
-    const rows = await db
-      .select()
-      .from(calls)
-      .where(and(...conditions))
-      .orderBy(desc(calls.createdAt));
+    const [rows, total] = await Promise.all([
+      db.select().from(calls).where(and(...conditions)).orderBy(desc(calls.createdAt)).limit(limit).offset(offset),
+      db.select({ count: sql<number>`count(*)::int` }).from(calls).where(and(...conditions)).then((r) => r[0]?.count ?? 0),
+    ]);
 
-    return ok(rows);
+    return ok(paginated(rows, page, limit, total));
   });
 }

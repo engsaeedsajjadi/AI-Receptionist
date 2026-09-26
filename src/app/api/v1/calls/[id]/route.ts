@@ -10,7 +10,7 @@ type Ctx = { params: Promise<{ id: string }> };
 
 export async function GET(req: NextRequest, ctx: Ctx) {
   return withApiHandling(async () => {
-    checkGlobalPublicRateLimit(req);
+    await checkGlobalPublicRateLimit(req);
     const auth = await getAuthContext(req);
     const { id } = await ctx.params;
 

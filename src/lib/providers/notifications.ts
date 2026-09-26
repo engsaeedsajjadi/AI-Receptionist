@@ -1,0 +1,204 @@
+import nodemailer, { type Transporter } from "nodemailer";
+import { AppError } from "@/lib/errors";
+import { getEnv, isProduction } from "@/lib/env";
+import { logError, logInfo } from "@/lib/logger";
+
+export type NotificationChannel = "email" | "internal" | "sms" | "telegram";
+
+export type SendNotificationInput = {
+  to: string;
+  subject?: string;
+  body: string;
+  requestId?: string;
+  businessId?: string;
+};
+
+export type SendNotificationResult = {
+  ok: boolean;
+  id?: string;
+  error?: string;
+};
+
+export interface NotificationProvider {
+  readonly channel: NotificationChannel;
+  send(input: SendNotificationInput): Promise<SendNotificationResult>;
+}
+
+// ---------------------------------------------------------------------------
+// Email (SMTP)
+// ---------------------------------------------------------------------------
+
+export class EmailNotificationProvider implements NotificationProvider {
+  readonly channel: NotificationChannel = "email";
+  private transporter: Transporter | null = null;
+
+  private getTransporter(): Transporter {
+    if (this.transporter) return this.transporter;
+    const e = getEnv();
+    if (!e.SMTP_HOST || !e.SMTP_USER || !e.SMTP_PASS) {
+      throw new AppError(503, "PROVIDER_NOT_CONFIGURED", "SMTP is not configured (SMTP_HOST/SMTP_USER/SMTP_PASS required)");
+    }
+    this.transporter = nodemailer.createTransport({
+      host: e.SMTP_HOST,
+      port: e.SMTP_PORT,
+      secure: e.SMTP_SECURE,
+      auth: { user: e.SMTP_USER, pass: e.SMTP_PASS },
+      connectionTimeout: 10_000,
+      socketTimeout: 15_000,
+    });
+    return this.transporter;
+  }
+
+  async send(input: SendNotificationInput): Promise<SendNotificationResult> {
+    try {
+      const info = await this.getTransporter().sendMail({
+        from: getEnv().SMTP_FROM,
+        to: input.to,
+        subject: input.subject ?? "(بدون موضوع)",
+        text: input.body,
+      });
+      logInfo("Email notification sent", {
+        requestId: input.requestId,
+        businessId: input.businessId,
+        provider: "smtp",
+        operation: "notify.email",
+        status: "ok",
+      });
+      return { ok: true, id: String(info.messageId ?? "") || undefined };
+    } catch (err) {
+      logError("Email notification failed", {
+        requestId: input.requestId,
+        businessId: input.businessId,
+        provider: "smtp",
+        operation: "notify.email",
+        status: "error",
+        error: err,
+      });
+      return { ok: false, error: err instanceof Error ? err.message : "smtp_error" };
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Internal (in-app / dashboard) — persisted by the notification service.
+// This provider only validates; the service writes the DB row.
+// ---------------------------------------------------------------------------
+
+export class InternalNotificationProvider implements NotificationProvider {
+  readonly channel: NotificationChannel = "internal";
+  async send(input: SendNotificationInput): Promise<SendNotificationResult> {
+    if (!input.to && !input.businessId) {
+      return { ok: false, error: "missing_recipient" };
+    }
+    return { ok: true, id: `internal-${Date.now()}` };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// SMS via generic HTTP webhook adapter (operator-configured gateway)
+// ---------------------------------------------------------------------------
+
+export class SmsWebhookProvider implements NotificationProvider {
+  readonly channel: NotificationChannel = "sms";
+
+  async send(input: SendNotificationInput): Promise<SendNotificationResult> {
+    const url = process.env.SMS_WEBHOOK_URL;
+    if (!url) {
+      return { ok: false, error: "SMS_WEBHOOK_URL is not configured" };
+    }
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10_000);
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(process.env.SMS_API_KEY ? { Authorization: `Bearer ${process.env.SMS_API_KEY}` } : {}),
+          },
+          body: JSON.stringify({
+            to: input.to,
+            text: input.body,
+            sender: process.env.SMS_SENDER ?? undefined,
+          }),
+          signal: controller.signal,
+        });
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          return { ok: false, error: `sms_gateway_http_${res.status}: ${text.slice(0, 200)}` };
+        }
+        return { ok: true };
+      } finally {
+        clearTimeout(timer);
+      }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "sms_error" };
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Telegram Bot API
+// ---------------------------------------------------------------------------
+
+export class TelegramNotificationProvider implements NotificationProvider {
+  readonly channel: NotificationChannel = "telegram";
+
+  async send(input: SendNotificationInput): Promise<SendNotificationResult> {
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    if (!token) return { ok: false, error: "TELEGRAM_BOT_TOKEN is not configured" };
+    const chatId = input.to || process.env.TELEGRAM_DEFAULT_CHAT_ID;
+    if (!chatId) return { ok: false, error: "missing_telegram_chat_id" };
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10_000);
+      try {
+        const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: chatId, text: input.subject ? `${input.subject}\n${input.body}` : input.body }),
+          signal: controller.signal,
+        });
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          return { ok: false, error: `telegram_http_${res.status}: ${text.slice(0, 200)}` };
+        }
+        return { ok: true };
+      } finally {
+        clearTimeout(timer);
+      }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "telegram_error" };
+    }
+  }
+}
+
+/**
+ * Console provider — TEST/DEV FIXTURES ONLY.
+ * Instantiating in production throws, so it can never be selected accidentally.
+ */
+export class ConsoleNotificationProvider implements NotificationProvider {
+  readonly channel: NotificationChannel = "internal";
+  constructor() {
+    if (isProduction) {
+      throw new AppError(503, "PROVIDER_NOT_CONFIGURED", "ConsoleNotificationProvider is forbidden in production");
+    }
+  }
+  async send(input: SendNotificationInput): Promise<SendNotificationResult> {
+    console.log("[dev-notification]", { to: input.to, subject: input.subject, body: input.body?.slice(0, 200) });
+    return { ok: true, id: `console-${Date.now()}` };
+  }
+}
+
+export function getNotificationProvider(channel: NotificationChannel): NotificationProvider {
+  switch (channel) {
+    case "email":
+      return new EmailNotificationProvider();
+    case "internal":
+      return new InternalNotificationProvider();
+    case "sms":
+      return new SmsWebhookProvider();
+    case "telegram":
+      return new TelegramNotificationProvider();
+  }
+}

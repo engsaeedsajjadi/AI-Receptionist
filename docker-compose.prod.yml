@@ -1,0 +1,148 @@
+# AI-Receptionist — production stack (app + postgres + redis + n8n + nginx)
+# Secrets MUST come from the environment (or Docker secrets), never from files in Git.
+# Required: DATABASE_URL or POSTGRES_PASSWORD, REDIS_URL, JWT_SECRET, JWT_REFRESH_SECRET,
+#           VOICE_WEBHOOK_SECRET, N8N_WEBHOOK_SECRET, N8N_BASIC_AUTH_PASSWORD, OPENAI_API_KEY (or compatible)
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.0-pg16
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-receptionist}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-app_db}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-receptionist} -d ${POSTGRES_DB:-app_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - backend
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD is required}"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - backend
+
+  app:
+    build: .
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      APP_URL: ${APP_URL:?APP_URL is required}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      REDIS_URL: ${REDIS_URL:?REDIS_URL is required}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET is required}
+      VOICE_WEBHOOK_SECRET: ${VOICE_WEBHOOK_SECRET:?VOICE_WEBHOOK_SECRET is required}
+      N8N_WEBHOOK_SECRET: ${N8N_WEBHOOK_SECRET:?N8N_WEBHOOK_SECRET is required}
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+      COMPATIBLE_LLM_BASE_URL: ${COMPATIBLE_LLM_BASE_URL:-}
+      COMPATIBLE_LLM_API_KEY: ${COMPATIBLE_LLM_API_KEY:-}
+      COMPATIBLE_LLM_MODEL: ${COMPATIBLE_LLM_MODEL:-}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1536}
+      VOICE_PROVIDER: ${VOICE_PROVIDER:-generic}
+      VOICE_API_BASE_URL: ${VOICE_API_BASE_URL:-}
+      VOICE_API_KEY: ${VOICE_API_KEY:-}
+      STT_PROVIDER: ${STT_PROVIDER:-openai}
+      STT_MODEL: ${STT_MODEL:-whisper-1}
+      TTS_PROVIDER: ${TTS_PROVIDER:-openai}
+      TTS_MODEL: ${TTS_MODEL:-tts-1}
+      TTS_VOICE: ${TTS_VOICE:-alloy}
+      STORAGE_PROVIDER: ${STORAGE_PROVIDER:-s3}
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-ai-receptionist}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-no-reply@example.com}
+      NOTIFICATION_DEFAULT_CHANNEL: ${NOTIFICATION_DEFAULT_CHANNEL:-email}
+      N8N_ENABLED: ${N8N_ENABLED:-true}
+      N8N_URL: http://n8n:5678
+      N8N_API_KEY: ${N8N_API_KEY:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-production}
+    volumes:
+      - appstorage:/app/storage
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health/live').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+    networks:
+      - backend
+      - frontend
+
+  n8n:
+    image: n8nio/n8n:1.x
+    restart: always
+    environment:
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER:-admin}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD:?N8N_BASIC_AUTH_PASSWORD is required}
+      N8N_HOST: ${N8N_HOST:-n8n}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      N8N_WEBHOOK_SECRET: ${N8N_WEBHOOK_SECRET:?N8N_WEBHOOK_SECRET is required}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_OPS_CHAT_ID: ${TELEGRAM_OPS_CHAT_ID:-}
+      TELEGRAM_SALES_CHAT_ID: ${TELEGRAM_SALES_CHAT_ID:-}
+      TELEGRAM_URGENT_CHAT_ID: ${TELEGRAM_URGENT_CHAT_ID:-}
+      GENERIC_TIMEZONE: ${TZ:-Asia/Tehran}
+    volumes:
+      - n8ndata:/home/node/.n8n
+    networks:
+      - backend
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: always
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+    networks:
+      - frontend
+
+volumes:
+  pgdata:
+  redisdata:
+  appstorage:
+  n8ndata:
+
+networks:
+  backend:
+  frontend:

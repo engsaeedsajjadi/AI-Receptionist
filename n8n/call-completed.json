@@ -1,0 +1,107 @@
+{
+  "name": "AI-Receptionist / call-completed",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "ai-receptionist/call-completed",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "wh-call-done",
+      "name": "Call Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "a1b2c3d4-call-done-0002"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.N8N_WEBHOOK_SECRET;\nif (!secret) throw new Error('N8N_WEBHOOK_SECRET env is not set');\nconst item = $input.first();\nconst headers = item.json.headers ?? {};\nconst signature = headers['x-webhook-signature'] ?? headers['X-Webhook-Signature'];\nconst idempotencyKey = headers['x-idempotency-key'] ?? headers['X-Idempotency-Key'];\nif (!signature || !idempotencyKey) throw new Error('Missing webhook signature or idempotency key');\nconst rawBody = JSON.stringify(item.json.body ?? item.json);\nconst expected = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');\nif (signature !== expected) throw new Error('Invalid webhook signature');\nconst payload = item.json.body?.payload ?? item.json.payload ?? {};\nif (!payload.callId || !payload.businessId) throw new Error('Invalid call-completed payload');\nreturn [{ json: { ...payload, _idempotencyKey: idempotencyKey } }];"
+      },
+      "id": "verify-call-done",
+      "name": "Verify Signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $getWorkflowStaticData('global');\ndata.seen = data.seen || {};\nconst now = Date.now();\nfor (const k of Object.keys(data.seen)) { if (data.seen[k] < now - 86400000) delete data.seen[k]; }\nconst item = $input.first().json;\nif (data.seen[item._idempotencyKey]) { return [{ json: { ...item, _duplicate: true } }]; }\ndata.seen[item._idempotencyKey] = now;\nreturn [{ json: { ...item, _duplicate: false } }];"
+      },
+      "id": "dedupe-call-done",
+      "name": "Deduplicate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            { "id": "is-dup", "leftValue": "={{ $json._duplicate }}", "rightValue": true, "operator": { "type": "boolean", "operation": "equals" } }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-dup-call",
+      "name": "Is Duplicate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nconst duration = Number(item.durationSeconds ?? 0);\nconst summary = String(item.summary ?? '').slice(0, 500);\nconst text = `پایان تماس\\nشماره: ${item.phone ?? '—'}\\nمدت: ${duration} ثانیه\\nخلاصه: ${summary || '—'}`;\nreturn [{ json: { ...item, _message: text } }];"
+      },
+      "id": "format-call",
+      "name": "Format Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 220]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.telegram.org/bot{{ $env.TELEGRAM_BOT_TOKEN }}/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"chat_id\": \"{{ $env.TELEGRAM_OPS_CHAT_ID }}\", \"text\": \"{{ $json._message }}\" }",
+        "options": { "timeout": 10000 }
+      },
+      "id": "notify-call",
+      "name": "Notify Ops Chat",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1340, 220]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"ok\": true, \"duplicate\": {{ $json._duplicate ?? false }} }"
+      },
+      "id": "respond-call",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [1560, 300]
+    }
+  ],
+  "connections": {
+    "Call Webhook": { "main": [[{ "node": "Verify Signature", "type": "main", "index": 0 }]] },
+    "Verify Signature": { "main": [[{ "node": "Deduplicate", "type": "main", "index": 0 }]] },
+    "Deduplicate": { "main": [[{ "node": "Is Duplicate?", "type": "main", "index": 0 }]] },
+    "Is Duplicate?": {
+      "main": [
+        [{ "node": "Respond", "type": "main", "index": 0 }],
+        [{ "node": "Format Summary", "type": "main", "index": 0 }]
+      ]
+    },
+    "Format Summary": { "main": [[{ "node": "Notify Ops Chat", "type": "main", "index": 0 }]] },
+    "Notify Ops Chat": { "main": [[{ "node": "Respond", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "staticData": {}
+}

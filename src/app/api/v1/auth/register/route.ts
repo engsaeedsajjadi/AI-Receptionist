@@ -1,34 +1,45 @@
 import { eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
+import { z } from "zod";
 import { db } from "@/db";
 import { agents, businesses, users } from "@/db/schema";
-import { ApiError, ok, parseJson } from "@/lib/api";
+import { ok, parseJsonWith } from "@/lib/api";
+import { AppError } from "@/lib/errors";
 import { buildAgentPrompt } from "@/lib/agent-prompt";
-import { hashPassword, issueAuthTokens } from "@/lib/auth";
-import { normalizePersianText } from "@/lib/normalization";
-import { checkRateLimit, withApiHandling } from "@/lib/server-core";
+import { hashPassword, issueAuthTokens, validatePasswordPolicy } from "@/lib/auth";
+import { normalizePersianText, normalizePhone } from "@/lib/normalization";
+import { enforceRateLimit } from "@/lib/rate-limit";
+import { withApiHandling } from "@/lib/server-core";
+
+const registerSchema = z.object({
+  businessName: z.string().min(2).max(255),
+  businessSlug: z
+    .string()
+    .min(2)
+    .max(100)
+    .regex(/^[a-z0-9-]+$/, "Slug must be lowercase letters, digits and hyphens"),
+  name: z.string().min(2).max(150),
+  email: z.string().email().max(255),
+  phone: z.string().max(30).optional(),
+  password: z.string().min(8).max(128),
+});
 
 export async function POST(req: NextRequest) {
   return withApiHandling(async () => {
-    checkRateLimit(`register:${req.headers.get("x-forwarded-for") ?? "ip"}`, 5, 60_000);
+    await enforceRateLimit(req, "login");
 
-    const body = await parseJson<{
-      businessName: string;
-      businessSlug: string;
-      name: string;
-      email: string;
-      phone?: string;
-      password: string;
-    }>(req);
+    const body = await parseJsonWith(req, registerSchema);
+    validatePasswordPolicy(body.password);
 
     const email = body.email.toLowerCase().trim();
     const slug = body.businessSlug.trim().toLowerCase();
+    const phone = body.phone ? (normalizePhone(body.phone) ?? normalizePersianText(body.phone)) : null;
 
-    const existingUser = await db.select().from(users).where(eq(users.email, email)).limit(1);
-    if (existingUser.length > 0) throw new ApiError(409, "EMAIL_EXISTS", "Email already exists");
+    const existingUser = await db.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1);
+    if (existingUser.length > 0) throw new AppError(409, "EMAIL_EXISTS", "Email already exists");
 
-    const existingBiz = await db.select().from(businesses).where(eq(businesses.slug, slug)).limit(1);
-    if (existingBiz.length > 0) throw new ApiError(409, "SLUG_EXISTS", "Business slug already exists");
+    const existingBiz = await db.select({ id: businesses.id }).from(businesses).where(eq(businesses.slug, slug)).limit(1);
+    if (existingBiz.length > 0) throw new AppError(409, "SLUG_EXISTS", "Business slug already exists");
 
     const passwordHash = await hashPassword(body.password);
 
@@ -38,7 +49,7 @@ export async function POST(req: NextRequest) {
         .values({
           name: normalizePersianText(body.businessName),
           slug,
-          phone: body.phone ?? null,
+          phone,
           industry: "real_estate",
         })
         .returning();
@@ -49,7 +60,7 @@ export async function POST(req: NextRequest) {
           businessId: biz.id,
           name: normalizePersianText(body.name),
           email,
-          phone: body.phone ?? null,
+          phone,
           passwordHash,
           role: "ADMIN",
         })
