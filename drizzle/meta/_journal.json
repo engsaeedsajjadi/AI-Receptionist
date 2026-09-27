@@ -1,0 +1,34 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1790410545212,
+      "tag": "0000_gorgeous_living_mummy",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1790414960130,
+      "tag": "0001_voice_provider_default",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790414993460,
+      "tag": "0002_call_message_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1790423473846,
+      "tag": "0003_spooky_cobalt_man",
+      "breakpoints": true
+    }
+  ]
+}

@@ -1,34 +1,58 @@
 {
-  "name": "nextjs-postgresql-template",
+  "name": "ai-receptionist",
   "private": true,
+  "version": "0.2.0",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -H 0.0.0.0",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:generate": "drizzle-kit generate",
+    "db:push": "drizzle-kit push",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "db:seed": "tsx scripts/seed.ts",
+    "media:server": "tsx scripts/media-server.ts",
+    "maintenance": "tsx scripts/maintenance.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.936.0",
+    "@aws-sdk/s3-request-presigner": "^3.936.0",
+    "@sentry/nextjs": "^10.30.0",
     "bcryptjs": "^3.0.3",
-    "dotenv": "17.3.1",
+    "dotenv": "^17.3.1",
     "drizzle-orm": "0.45.2",
+    "ioredis": "^5.9.2",
     "jose": "^6.2.12",
+    "mammoth": "^1.11.0",
     "next": "16.2.6",
+    "nodemailer": "^7.0.12",
+    "openai": "^6.17.0",
+    "pdf-parse": "^1.1.1",
     "pg": "8.20.0",
+    "pino": "^10.3.0",
     "react": "19.2.6",
-    "react-dom": "19.2.6"
+    "react-dom": "19.2.6",
+    "ws": "^8.21.3",
+    "zod": "^4.3.5"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "4.1.17",
     "@types/node": "22.19.15",
+    "@types/nodemailer": "^7.0.5",
     "@types/pg": "8.18.0",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
+    "@types/ws": "^8.18.1",
     "drizzle-kit": "0.31.10",
     "eslint": "9.39.4",
     "eslint-config-next": "16.2.6",
     "postcss": "8.5.8",
     "tailwindcss": "4.1.17",
-    "typescript": "5.9.3"
+    "tsx": "^4.21.0",
+    "typescript": "5.9.3",
+    "vitest": "^3.2.4"
   }
 }

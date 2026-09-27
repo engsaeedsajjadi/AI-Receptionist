@@ -1,0 +1,123 @@
+{
+ "name": "AI-Receptionist / appointment",
+ "nodes": [
+  {
+   "parameters": {
+    "path": "ai-receptionist/appointment",
+    "httpMethod": "POST",
+    "responseMode": "responseNode",
+    "authentication": "headerAuth",
+    "options": {}
+   },
+   "id": "wh-appt",
+   "name": "Appointment Webhook",
+   "type": "n8n-nodes-base.webhook",
+   "typeVersion": 2,
+   "position": [
+    240,
+    300
+   ],
+   "webhookId": "a1b2c3d4-appt-0003",
+   "credentials": {
+    "httpHeaderAuth": {
+     "id": null,
+     "name": "AI Receptionist Automation Token"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "jsCode": "const input = $input.first().json;\nconst body = input.body ?? input;\nconst payload = body.payload ?? {};\nconst idempotencyKey = body.idempotency_key ?? input.headers?.['x-idempotency-key'];\nif (!idempotencyKey) throw new Error('Missing idempotency key');\nif (!payload.appointmentId || !payload.businessId || !payload.action) throw new Error('Invalid appointment payload');\nconst labels = { created: 'نوبت جدید', rescheduled: 'جابه‌جایی نوبت', cancelled: 'لغو نوبت' };\nconst text = `${labels[payload.action] ?? payload.action}\\nزمان: ${payload.scheduledAt ?? '—'}\\nشناسه: ${payload.appointmentId}`;\nreturn [{ json: {\n  businessId: payload.businessId,\n  event: 'appointment',\n  channel: 'telegram',\n  recipient: $env.TELEGRAM_OPS_CHAT_ID,\n  title: labels[payload.action] ?? payload.action,\n  message: text,\n  idempotencyKey,\n} }];"
+   },
+   "id": "prepare-appointment",
+   "name": "Prepare Dispatch",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    520,
+    300
+   ]
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "={{ $env.APP_BASE_URL }}/api/v1/automation/dispatch",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Authorization",
+       "value": "=Bearer {{ $env.N8N_API_KEY }}"
+      }
+     ]
+    },
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify($json) }}",
+    "options": {
+     "timeout": 10000
+    }
+   },
+   "id": "dispatch-appointment",
+   "name": "Dispatch via App",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    800,
+    300
+   ]
+  },
+  {
+   "parameters": {
+    "respondWith": "json",
+    "responseBody": "={ \"ok\": true, \"duplicate\": {{ $json.duplicate }}, \"delivered\": {{ $json.delivered }} }"
+   },
+   "id": "respond-appt",
+   "name": "Respond",
+   "type": "n8n-nodes-base.respondToWebhook",
+   "typeVersion": 1.4,
+   "position": [
+    1060,
+    300
+   ]
+  }
+ ],
+ "connections": {
+  "Appointment Webhook": {
+   "main": [
+    [
+     {
+      "node": "Prepare Dispatch",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Prepare Dispatch": {
+   "main": [
+    [
+     {
+      "node": "Dispatch via App",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Dispatch via App": {
+   "main": [
+    [
+     {
+      "node": "Respond",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  }
+ },
+ "settings": {
+  "executionOrder": "v1"
+ }
+}

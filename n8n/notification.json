@@ -1,0 +1,123 @@
+{
+ "name": "AI-Receptionist / notification fan-out",
+ "nodes": [
+  {
+   "parameters": {
+    "path": "ai-receptionist/notification",
+    "httpMethod": "POST",
+    "responseMode": "responseNode",
+    "authentication": "headerAuth",
+    "options": {}
+   },
+   "id": "wh-notif",
+   "name": "Notification Webhook",
+   "type": "n8n-nodes-base.webhook",
+   "typeVersion": 2,
+   "position": [
+    240,
+    300
+   ],
+   "webhookId": "a1b2c3d4-notif-0005",
+   "credentials": {
+    "httpHeaderAuth": {
+     "id": null,
+     "name": "AI Receptionist Automation Token"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "jsCode": "const input = $input.first().json;\nconst body = input.body ?? input;\nconst payload = body.payload ?? {};\nconst idempotencyKey = body.idempotency_key ?? input.headers?.['x-idempotency-key'];\nif (!idempotencyKey) throw new Error('Missing idempotency key');\nif (!payload.businessId || !payload.title || !payload.message || !payload.recipient) {\n  throw new Error('Invalid notification payload (businessId, title, message, recipient required)');\n}\nconst channel = ['telegram', 'sms', 'email'].includes(payload.channel) ? payload.channel : 'telegram';\nreturn [{ json: {\n  businessId: payload.businessId,\n  event: 'notification',\n  channel,\n  recipient: payload.recipient,\n  title: payload.title,\n  message: payload.message,\n  idempotencyKey,\n} }];"
+   },
+   "id": "prepare-notification",
+   "name": "Prepare Dispatch",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    520,
+    300
+   ]
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "={{ $env.APP_BASE_URL }}/api/v1/automation/dispatch",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Authorization",
+       "value": "=Bearer {{ $env.N8N_API_KEY }}"
+      }
+     ]
+    },
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify($json) }}",
+    "options": {
+     "timeout": 10000
+    }
+   },
+   "id": "dispatch-notification",
+   "name": "Dispatch via App",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    800,
+    300
+   ]
+  },
+  {
+   "parameters": {
+    "respondWith": "json",
+    "responseBody": "={ \"ok\": true, \"duplicate\": {{ $json.duplicate }}, \"delivered\": {{ $json.delivered }} }"
+   },
+   "id": "respond-notif",
+   "name": "Respond",
+   "type": "n8n-nodes-base.respondToWebhook",
+   "typeVersion": 1.4,
+   "position": [
+    1060,
+    300
+   ]
+  }
+ ],
+ "connections": {
+  "Notification Webhook": {
+   "main": [
+    [
+     {
+      "node": "Prepare Dispatch",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Prepare Dispatch": {
+   "main": [
+    [
+     {
+      "node": "Dispatch via App",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Dispatch via App": {
+   "main": [
+    [
+     {
+      "node": "Respond",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  }
+ },
+ "settings": {
+  "executionOrder": "v1"
+ }
+}

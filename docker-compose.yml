@@ -1,0 +1,89 @@
+# AI-Receptionist — local development stack
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.0-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: app_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d app_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/app_db
+      REDIS_URL: redis://redis:6379
+      N8N_URL: http://n8n:5678
+      APP_URL: http://localhost:3000
+    volumes:
+      - appstorage:/app/storage
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health/live').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  n8n:
+    image: n8nio/n8n:1.x
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "5678:5678"
+    environment:
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: admin
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD:-change-me}
+      N8N_HOST: localhost
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: http://localhost:5678
+      N8N_WEBHOOK_SECRET: ${N8N_WEBHOOK_SECRET:-dev-webhook-secret}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_OPS_CHAT_ID: ${TELEGRAM_OPS_CHAT_ID:-}
+      TELEGRAM_SALES_CHAT_ID: ${TELEGRAM_SALES_CHAT_ID:-}
+      TELEGRAM_URGENT_CHAT_ID: ${TELEGRAM_URGENT_CHAT_ID:-}
+      GENERIC_TIMEZONE: Asia/Tehran
+    volumes:
+      - n8ndata:/home/node/.n8n
+      - ./n8n:/home/node/workflows:ro
+
+volumes:
+  pgdata:
+  redisdata:
+  appstorage:
+  n8ndata:

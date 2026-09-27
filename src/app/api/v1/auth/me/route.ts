@@ -8,7 +8,7 @@ import { checkGlobalPublicRateLimit, withApiHandling } from "@/lib/server-core";
 
 export async function GET(req: NextRequest) {
   return withApiHandling(async () => {
-    checkGlobalPublicRateLimit(req);
+    await checkGlobalPublicRateLimit(req);
     const auth = await getAuthContext(req);
     const [business] = await db.select().from(businesses).where(eq(businesses.id, auth.businessId)).limit(1);
 

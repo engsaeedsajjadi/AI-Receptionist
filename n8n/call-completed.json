@@ -1,0 +1,123 @@
+{
+ "name": "AI-Receptionist / call-completed",
+ "nodes": [
+  {
+   "parameters": {
+    "path": "ai-receptionist/call-completed",
+    "httpMethod": "POST",
+    "responseMode": "responseNode",
+    "authentication": "headerAuth",
+    "options": {}
+   },
+   "id": "wh-call-done",
+   "name": "Call Webhook",
+   "type": "n8n-nodes-base.webhook",
+   "typeVersion": 2,
+   "position": [
+    240,
+    300
+   ],
+   "webhookId": "a1b2c3d4-call-done-0002",
+   "credentials": {
+    "httpHeaderAuth": {
+     "id": null,
+     "name": "AI Receptionist Automation Token"
+    }
+   }
+  },
+  {
+   "parameters": {
+    "jsCode": "const input = $input.first().json;\nconst body = input.body ?? input;\nconst payload = body.payload ?? {};\nconst idempotencyKey = body.idempotency_key ?? input.headers?.['x-idempotency-key'];\nif (!idempotencyKey) throw new Error('Missing idempotency key');\nif (!payload.callId || !payload.businessId) throw new Error('Invalid call-completed payload');\nconst duration = Number(payload.durationSeconds ?? 0);\nconst summary = String(payload.summary ?? '').slice(0, 500);\nconst text = `پایان تماس\\nشماره: ${payload.phone ?? '—'}\\nمدت: ${duration} ثانیه\\nخلاصه: ${summary || '—'}`;\nreturn [{ json: {\n  businessId: payload.businessId,\n  event: 'call-completed',\n  channel: 'telegram',\n  recipient: $env.TELEGRAM_OPS_CHAT_ID,\n  title: 'پایان تماس',\n  message: text,\n  idempotencyKey,\n} }];"
+   },
+   "id": "prepare-call_completed",
+   "name": "Prepare Dispatch",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    520,
+    300
+   ]
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "={{ $env.APP_BASE_URL }}/api/v1/automation/dispatch",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "Authorization",
+       "value": "=Bearer {{ $env.N8N_API_KEY }}"
+      }
+     ]
+    },
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify($json) }}",
+    "options": {
+     "timeout": 10000
+    }
+   },
+   "id": "dispatch-call_completed",
+   "name": "Dispatch via App",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    800,
+    300
+   ]
+  },
+  {
+   "parameters": {
+    "respondWith": "json",
+    "responseBody": "={ \"ok\": true, \"duplicate\": {{ $json.duplicate }}, \"delivered\": {{ $json.delivered }} }"
+   },
+   "id": "respond-call",
+   "name": "Respond",
+   "type": "n8n-nodes-base.respondToWebhook",
+   "typeVersion": 1.4,
+   "position": [
+    1060,
+    300
+   ]
+  }
+ ],
+ "connections": {
+  "Call Webhook": {
+   "main": [
+    [
+     {
+      "node": "Prepare Dispatch",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Prepare Dispatch": {
+   "main": [
+    [
+     {
+      "node": "Dispatch via App",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Dispatch via App": {
+   "main": [
+    [
+     {
+      "node": "Respond",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  }
+ },
+ "settings": {
+  "executionOrder": "v1"
+ }
+}

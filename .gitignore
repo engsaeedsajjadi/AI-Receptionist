@@ -9,3 +9,10 @@ pnpm-debug.log*
 .DS_Store
 coverage
 dist
+storage
+
+*.tsbuildinfo
+test-results/
+
+# Local validation copy
+zipcheck/

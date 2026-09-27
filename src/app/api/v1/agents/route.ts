@@ -10,7 +10,7 @@ import { checkGlobalPublicRateLimit, withApiHandling } from "@/lib/server-core";
 
 export async function GET(req: NextRequest) {
   return withApiHandling(async () => {
-    checkGlobalPublicRateLimit(req);
+    await checkGlobalPublicRateLimit(req);
     const auth = await getAuthContext(req);
 
     const rows = await db
@@ -25,7 +25,7 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   return withApiHandling(async () => {
-    checkGlobalPublicRateLimit(req);
+    await checkGlobalPublicRateLimit(req);
     const auth = await getAuthContext(req);
     if (!hasRole(auth.role, "ADMIN")) throw new ApiError(403, "FORBIDDEN", "Insufficient permissions");
 
@@ -38,13 +38,17 @@ export async function POST(req: NextRequest) {
       configuration?: Record<string, unknown>;
     }>(req);
 
+    if (body.voiceProvider !== undefined && body.voiceProvider !== "generic") {
+      throw new ApiError(400, "VALIDATION_ERROR", "Unknown voice provider (expected \"generic\")");
+    }
+
     const [created] = await db
       .insert(agents)
       .values({
         businessId: auth.businessId,
         name: normalizePersianText(body.name),
         systemPrompt: body.systemPrompt ?? "",
-        voiceProvider: body.voiceProvider ?? "mock",
+        voiceProvider: body.voiceProvider ?? "generic",
         voiceId: body.voiceId ?? "fa-default",
         language: body.language ?? "fa-IR",
         configuration: body.configuration ?? {},

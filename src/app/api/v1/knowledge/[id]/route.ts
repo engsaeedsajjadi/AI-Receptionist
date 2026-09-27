@@ -1,18 +1,20 @@
 import { and, eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
+import { z } from "zod";
 import { db } from "@/db";
 import { knowledgeDocuments } from "@/db/schema";
-import { ApiError, ok, parseJson } from "@/lib/api";
+import { ApiError, ok, parseJsonWith } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
 import { normalizePersianText } from "@/lib/normalization";
 import { hasRole } from "@/lib/permissions";
 import { checkGlobalPublicRateLimit, withApiHandling } from "@/lib/server-core";
+import { deleteDocument, reindexDocument } from "@/lib/services/knowledge";
 
 type Ctx = { params: Promise<{ id: string }> };
 
 export async function GET(req: NextRequest, ctx: Ctx) {
   return withApiHandling(async () => {
-    checkGlobalPublicRateLimit(req);
+    await checkGlobalPublicRateLimit(req);
     const auth = await getAuthContext(req);
     const { id } = await ctx.params;
 
@@ -27,14 +29,27 @@ export async function GET(req: NextRequest, ctx: Ctx) {
   });
 }
 
+const updateSchema = z.object({
+  title: z.string().min(1).max(255).optional(),
+  content: z.string().min(20).max(500_000).optional(),
+  sourceUrl: z.string().url().max(2048).optional(),
+});
+
 export async function PUT(req: NextRequest, ctx: Ctx) {
-  return withApiHandling(async () => {
-    checkGlobalPublicRateLimit(req);
+  return withApiHandling(async (rid) => {
+    await checkGlobalPublicRateLimit(req);
     const auth = await getAuthContext(req);
     if (!hasRole(auth.role, "MANAGER")) throw new ApiError(403, "FORBIDDEN", "Insufficient permissions");
 
     const { id } = await ctx.params;
-    const body = await parseJson<Partial<{ title: string; content: string; sourceUrl: string }>>(req);
+    const body = await parseJsonWith(req, updateSchema);
+
+    const [existing] = await db
+      .select()
+      .from(knowledgeDocuments)
+      .where(and(eq(knowledgeDocuments.id, id), eq(knowledgeDocuments.businessId, auth.businessId)))
+      .limit(1);
+    if (!existing) throw new ApiError(404, "KNOWLEDGE_NOT_FOUND", "Document not found");
 
     const [updated] = await db
       .update(knowledgeDocuments)
@@ -44,27 +59,27 @@ export async function PUT(req: NextRequest, ctx: Ctx) {
         sourceUrl: body.sourceUrl,
         updatedAt: new Date(),
       })
-      .where(and(eq(knowledgeDocuments.id, id), eq(knowledgeDocuments.businessId, auth.businessId)))
+      .where(eq(knowledgeDocuments.id, id))
       .returning();
 
-    if (!updated) throw new ApiError(404, "KNOWLEDGE_NOT_FOUND", "Document not found");
+    // Content edits invalidate embeddings → reindex with the real pipeline.
+    if (body.content) {
+      await reindexDocument(auth.businessId, id, { requestId: rid });
+      const [doc] = await db.select().from(knowledgeDocuments).where(eq(knowledgeDocuments.id, id)).limit(1);
+      return ok(doc);
+    }
     return ok(updated);
   });
 }
 
 export async function DELETE(req: NextRequest, ctx: Ctx) {
   return withApiHandling(async () => {
-    checkGlobalPublicRateLimit(req);
+    await checkGlobalPublicRateLimit(req);
     const auth = await getAuthContext(req);
     if (!hasRole(auth.role, "MANAGER")) throw new ApiError(403, "FORBIDDEN", "Insufficient permissions");
 
     const { id } = await ctx.params;
-    const deleted = await db
-      .delete(knowledgeDocuments)
-      .where(and(eq(knowledgeDocuments.id, id), eq(knowledgeDocuments.businessId, auth.businessId)))
-      .returning();
-
-    if (!deleted.length) throw new ApiError(404, "KNOWLEDGE_NOT_FOUND", "Document not found");
+    await deleteDocument(auth.businessId, id);
     return ok({ ok: true });
   });
 }
