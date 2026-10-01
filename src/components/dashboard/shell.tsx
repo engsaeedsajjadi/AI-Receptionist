@@ -13,7 +13,8 @@ const NAV: Array<{ href: string; label: string; roles?: Array<"ADMIN" | "MANAGER
   { href: "/dashboard/customers", label: "مشتریان" },
   { href: "/dashboard/appointments", label: "نوبت‌ها" },
   { href: "/dashboard/knowledge", label: "پایگاه دانش" },
-  { href: "/dashboard/agent", label: "منشی هوشمند" },
+  { href: "/dashboard/agents", label: "AI Agent Studio" },
+  { href: "/dashboard/billing", label: "صورتحساب", roles: ["ADMIN", "MANAGER"] },
   { href: "/dashboard/usage", label: "مصرف" },
   { href: "/dashboard/users", label: "کاربران", roles: ["ADMIN", "MANAGER"] },
   { href: "/dashboard/settings", label: "تنظیمات", roles: ["ADMIN"] },
@@ -49,9 +50,9 @@ export function DashboardShell({ children }: { children: ReactNode }) {
   const visibleNav = NAV.filter((n) => !n.roles || n.roles.includes(user.role));
 
   return (
-    <div className="mx-auto flex min-h-screen w-full max-w-7xl gap-4 px-4 py-6 sm:px-6">
-      <aside className="hidden w-56 shrink-0 md:block">
-        <div className="sticky top-6 rounded-2xl bg-slate-900 p-4 text-white">
+    <div className="flex min-h-screen w-full gap-4 bg-slate-50 px-3 py-3 sm:px-4">
+      <aside className="hidden w-64 shrink-0 md:block">
+        <div className="sticky top-3 min-h-[calc(100vh-1.5rem)] rounded-2xl bg-slate-950 p-4 text-white shadow-xl">
           <p className="truncate text-sm font-bold">{businessName ?? "داشبورد"}</p>
           <p className="mt-1 truncate text-xs text-slate-300">
             {user.name} — {user.role}
