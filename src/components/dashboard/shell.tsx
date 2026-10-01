@@ -9,7 +9,9 @@ import { LoadingState } from "@/components/dashboard/ui";
 const NAV: Array<{ href: string; label: string; roles?: Array<"ADMIN" | "MANAGER" | "AGENT"> }> = [
   { href: "/dashboard", label: "نمای کلی" },
   { href: "/dashboard/calls", label: "تماس‌ها" },
+  { href: "/dashboard/voice", label: "Voice Console" },
   { href: "/dashboard/leads", label: "سرنخ‌ها" },
+  { href: "/dashboard/crm", label: "CRM Pipeline" },
   { href: "/dashboard/customers", label: "مشتریان" },
   { href: "/dashboard/appointments", label: "نوبت‌ها" },
   { href: "/dashboard/knowledge", label: "پایگاه دانش" },
