@@ -1,0 +1,2 @@
+import type { MetadataRoute } from "next";
+export default function manifest(): MetadataRoute.Manifest { return { name:"AI Receptionist Enterprise", short_name:"AI Receptionist", description:"Enterprise AI receptionist and voice CRM", start_url:"/dashboard", display:"standalone", background_color:"#f8fafc", theme_color:"#0f172a", lang:"fa", dir:"rtl", icons:[{src:"/favicon.svg",sizes:"any",type:"image/svg+xml"}] }; }
