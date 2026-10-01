@@ -1,0 +1,5 @@
+"use client";
+import Link from "next/link";
+import { PageHeader } from "@/components/dashboard/ui";
+const stages=[["NEW","جدید"],["CONTACTED","تماس گرفته"],["QUALIFIED","واجد شرایط"],["VISIT_SCHEDULED","قرار"],["NEGOTIATION","مذاکره"],["WON","موفق"]];
+export default function CRMPage(){return <div><PageHeader title="CRM Pipeline" desc="نمای Kanban سرنخ‌ها و فرصت‌های فروش" actions={<Link href="/dashboard/leads" className="saas-secondary">نمای جدولی</Link>}/><div className="grid min-w-[980px] grid-cols-6 gap-3 overflow-x-auto pb-3">{stages.map(([key,label])=><section className="rounded-2xl bg-slate-100 p-3" key={key}><div className="mb-3 flex items-center justify-between"><strong className="text-sm">{label}</strong><span className="rounded-full bg-white px-2 py-0.5 text-xs">—</span></div><div className="rounded-xl border border-dashed border-slate-300 bg-white/60 p-4 text-center text-xs text-slate-500">کارت‌های {key} از API Leads</div></section>)}</div></div>}
