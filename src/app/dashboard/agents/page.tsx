@@ -1,0 +1,4 @@
+"use client";
+import Link from "next/link";
+import { PageHeader } from "@/components/dashboard/ui";
+export default function AgentsPage(){return <div><PageHeader title="AI Agent Studio" desc="ساخت، آزمایش و مدیریت منشی‌های هوشمند" actions={<Link className="saas-primary" href="/dashboard/agents/new">ساخت Agent جدید</Link>}/><div className="saas-panel"><h2 className="font-semibold">Agent Builder</h2><p className="mt-2 text-sm text-slate-500">هویت، شخصیت، صدا، دانش، ابزارها و قوانین کسب‌وکار را از یک محیط واحد مدیریت کنید.</p><div className="mt-6 grid gap-3 md:grid-cols-4">{["Real Estate Receptionist","Medical Clinic Assistant","Hotel Booking Agent","Customer Support Agent"].map(x=><div className="rounded-xl border border-slate-200 p-4" key={x}><div className="mb-3 h-10 w-10 rounded-xl bg-slate-900"/><strong className="text-sm">{x}</strong><p className="mt-1 text-xs text-slate-500">Template</p></div>)}</div></div></div>}
