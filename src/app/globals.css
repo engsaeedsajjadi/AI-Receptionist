@@ -1,1 +1,17 @@
 @import "tailwindcss";
+
+:root { color-scheme: light; --surface:#ffffff; --canvas:#f8fafc; --ink:#0f172a; }
+* { box-sizing:border-box; }
+html { background:var(--canvas); }
+body { margin:0; background:var(--canvas); color:var(--ink); font-family:Tahoma,Arial,sans-serif; }
+button,a,input,textarea,select { transition:all .16s ease; }
+.saas-panel { border:1px solid #e2e8f0; border-radius:1rem; background:#fff; padding:1.25rem; box-shadow:0 1px 2px rgb(15 23 42 / .04); }
+.saas-eyebrow { font-size:.72rem; font-weight:700; letter-spacing:.04em; color:#64748b; text-transform:uppercase; }
+.saas-primary { display:inline-flex; align-items:center; justify-content:center; border-radius:.7rem; background:#0f172a; color:#fff; padding:.58rem .9rem; font-size:.82rem; font-weight:700; }
+.saas-primary:hover { background:#1e293b; }
+.saas-secondary { display:inline-flex; align-items:center; justify-content:center; border:1px solid #cbd5e1; border-radius:.7rem; background:#fff; color:#334155; padding:.58rem .9rem; font-size:.82rem; font-weight:600; }
+.saas-secondary:hover { background:#f8fafc; }
+.saas-input { border:1px solid #cbd5e1; border-radius:.7rem; background:#fff; padding:.65rem .8rem; outline:none; }
+.saas-input:focus { border-color:#64748b; box-shadow:0 0 0 3px rgb(148 163 184 / .18); }
+table th, table td { padding:.7rem .8rem; text-align:right; }
+@media (max-width:640px){ .saas-panel{padding:1rem;border-radius:.85rem;} }

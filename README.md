@@ -1,3 +1,7 @@
+# AI Receptionist Enterprise SaaS
+
+> Enterprise SaaS branch adds tenant/workspace memberships, subscription billing, usage metering, AI Agent Studio, CRM pipeline, voice console, PWA manifest and CI validation while preserving existing business-scoped APIs.
+
 # AI Receptionist — Persian AI Telephone Receptionist MVP
 
 Production-oriented multi-tenant AI telephone receptionist for Persian-speaking businesses.
@@ -5,7 +9,7 @@ Inbound calls are answered by an LLM agent that speaks Persian, searches the bus
 base (RAG), lists/searches real-estate properties, captures leads, books appointments, and
 hands off to a human when needed — with full tenant isolation, audit trails, and cost tracking.
 
-Stack: **Next.js 15 (TypeScript, API Routes) · PostgreSQL 16 + pgvector · Drizzle ORM ·
+Stack: **Next.js 16 (TypeScript, API Routes) · PostgreSQL 16 + pgvector · Drizzle ORM ·
 Redis · n8n · Docker**. Persan-first RTL dashboard (English + Persian UI).
 
 ## Features

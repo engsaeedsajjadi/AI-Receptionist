@@ -1,0 +1,50 @@
+name: Enterprise CI
+on:
+  push:
+    branches: [main, enterprise-saas-v1]
+  pull_request:
+    branches: [main]
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: ai_receptionist_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U app -d ai_receptionist_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://app:app@127.0.0.1:5432/ai_receptionist_test
+      TEST_DATABASE_URL: postgresql://app:app@127.0.0.1:5432/ai_receptionist_test
+      REDIS_URL: redis://127.0.0.1:6379
+      TEST_REDIS_URL: redis://127.0.0.1:6379
+      JWT_SECRET: 01234567890123456789012345678901
+      JWT_REFRESH_SECRET: 01234567890123456789012345678902
+      N8N_WEBHOOK_SECRET: 01234567890123456789012345678904
+      LLM_PROVIDER: dev
+      STT_PROVIDER: dev
+      TTS_PROVIDER: dev
+      EMBEDDING_PROVIDER: dev
+      STORAGE_PROVIDER: local
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run db:migrate
+      - run: npm test
+      - run: npm run build
