@@ -13,7 +13,7 @@ export type ChatMessage = {
   /** For role=tool: the tool_call id this message responds to. */
   toolCallId?: string;
   /** Assistant tool calls (OpenAI wire shape, simplified). */
-  toolCalls?: Array<{ id: string; name: string; arguments: string }>;
+  toolCalls?: Array<{ id: string; name: string; arguments: string; thoughtSignature?: string }>;
 };
 
 export type LlmToolDefinition = {
@@ -80,6 +80,7 @@ function toWireMessages(messages: ChatMessage[]): OpenAI.Chat.ChatCompletionMess
           id: t.id,
           type: "function" as const,
           function: { name: t.name, arguments: t.arguments },
+          ...(t.thoughtSignature ? { extra_content: { google: { thought_signature: t.thoughtSignature } } } : {}),
         })),
       };
     }
@@ -142,7 +143,8 @@ abstract class BaseOpenAiChatProvider implements LLMProvider {
           } catch {
             args = { _raw: tc.function.arguments };
           }
-          return { id: tc.id, name: tc.function.name, arguments: args };
+          const extra = (tc as unknown as { extra_content?: { google?: { thought_signature?: string } } }).extra_content;
+          return { id: tc.id, name: tc.function.name, arguments: args, thoughtSignature: extra?.google?.thought_signature };
         });
 
       const usage: ProviderUsage = {
