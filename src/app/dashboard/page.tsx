@@ -36,7 +36,7 @@ export default function OverviewPage() {
 
   return (
     <div>
-      <PageHeader title="نمای کلی" desc="شاخص‌های زنده کسب‌وکار شما" />
+      <PageHeader title="داشبورد مدیریتی" desc="نمای زنده تماس‌ها، CRM، مشتریان و مصرف AI" />
       {error ? (
         <ErrorState message={error} onRetry={() => window.location.reload()} />
       ) : !stats ? (
@@ -68,8 +68,11 @@ export default function OverviewPage() {
               </div>
             )}
           </section>
-          <section className="mt-6 grid gap-2 sm:grid-cols-3">
+          <section className="mt-6 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {[
+              { href: "/dashboard/voice", label: "Voice Console" },
+              { href: "/dashboard/crm", label: "CRM Pipeline" },
+              { href: "/dashboard/agents", label: "AI Agent Studio" },
               { href: "/dashboard/calls", label: "مشاهده تماس‌ها" },
               { href: "/dashboard/leads", label: "مشاهده سرنخ‌ها" },
               { href: "/dashboard/knowledge", label: "مدیریت پایگاه دانش" },
