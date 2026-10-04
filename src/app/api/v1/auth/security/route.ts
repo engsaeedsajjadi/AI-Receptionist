@@ -17,8 +17,8 @@ export async function GET(req: NextRequest) {
 }
 export async function POST(req: NextRequest) {
   return withApiHandling(async () => {
-    await enforceRateLimit(req, "login");
     const auth = await getAuthContext(req);
+    await enforceRateLimit(req, "login", `mfa:${auth.userId}`);
     const body = await parseJsonWith(req, z.object({ action: z.enum(["setup", "confirm", "disable"]), password: z.string().min(1).max(128), code: z.string().max(100).optional() }));
     return db.transaction(async (tx) => {
       const [user] = await tx.select().from(users).where(and(eq(users.id, auth.userId), eq(users.businessId, auth.businessId))).for("update").limit(1);

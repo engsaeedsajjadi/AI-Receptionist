@@ -1,3 +1,5 @@
+import { loadAgentMemory, summarizeConversation } from "@/lib/services/memory";
+import { hybridSearch } from "@/lib/services/knowledge";
 import { requireTenantFeature } from "@/lib/tenant-config";
 import { assertTenantScope } from "@/lib/request-context";
 import { and, desc, eq } from "drizzle-orm";
@@ -22,8 +24,10 @@ export const AgentConfigSchema = z.object({
   transferNumber: z.string().max(30).optional(),
   fallbackBehavior: z.string().max(1000).optional(),
   systemInstructions: z.string().max(5000).optional(),
-  model: z.string().min(1).max(150).optional(),
-  allowedTools: z.array(z.string().min(1).max(100)).max(50).optional(),
+  memoryEnabled: z.boolean().default(false),
+  retrievalMode: z.enum(["tools", "automatic"]).default("tools"),
+  model: z.string().min(1).max(150).nullable().optional(),
+  allowedTools: z.array(z.string().min(1).max(100)).max(50).nullable().optional(),
   temperature: z.number().min(0).max(2).default(0.2),
   maxToolIterations: z.number().int().min(1).max(10).default(5),
 });
@@ -60,7 +64,7 @@ function parseAgentConfig(agent: typeof agents.$inferSelect): AgentConfig {
     ...raw,
   });
   if (!parsed.success) {
-    return AgentConfigSchema.parse({ agentName: agent.name });
+    throw new AppError(400, "VALIDATION_ERROR", "Agent configuration is invalid; correct it before running the agent");
   }
   return parsed.data;
 }
@@ -145,7 +149,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
     .join("\n");
   void settings;
 
-  const systemPrompt = buildSystemPrompt({
+  let systemPrompt = buildSystemPrompt({
     language: config.language,
     businessName: business.name,
     agentName: config.agentName ?? agent.name,
@@ -155,11 +159,16 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
     businessContext,
   });
 
+  if (config.memoryEnabled && input.callId) systemPrompt += "\n" + await loadAgentMemory(input.businessId, input.callId);
   const llm = input.llm ?? getLLMProvider();
   const tools = getToolDefinitions().filter((tool) => !config.allowedTools || config.allowedTools.includes(tool.name));
   const allowedTools = new Set(tools.map((tool) => tool.name));
   const evidence = new Map<string, { document: string; content: string }>();
-  const messages: ChatMessage[] = [{ role: "system", content: systemPrompt }, ...history.slice(-MAX_HISTORY_MESSAGES)];
+  if (config.retrievalMode === "automatic" && allowedTools.has("search_knowledge")) {
+    const found = await hybridSearch({ businessId: input.businessId, query: userMessage, topK: 5, requestId: input.requestId });
+    for (const chunk of found.chunks) evidence.set(chunk.id, { document: chunk.documentTitle, content: chunk.content.slice(0, 1500) });
+  }
+  const messages: ChatMessage[] = [{ role: "system", content: systemPrompt + (evidence.size ? "\n" + evidencePrompt([...evidence.values()]) : "") }, ...history.slice(-MAX_HISTORY_MESSAGES)];
 
   let inputTokens = 0;
   let outputTokens = 0;
@@ -169,7 +178,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
 
   for (let iteration = 0; iteration < config.maxToolIterations; iteration++) {
     const result = await llm.complete(messages, {
-      model: config.model,
+      model: config.model ?? undefined,
       tools,
       toolChoice: "auto",
       temperature: config.temperature,
@@ -256,6 +265,10 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
     }
   }
 
+  if (config.memoryEnabled && input.callId) {
+    try { await summarizeConversation({ businessId: input.businessId, callId: input.callId, requestId: input.requestId, llm, model: config.model ?? undefined }); }
+    catch (error) { logWarn("Conversation summary unavailable", { businessId: input.businessId, callId: input.callId, error: error instanceof Error ? error.message : String(error) }); }
+  }
   return { reply, toolCalls: executed, agentId: agent.id, usage: { inputTokens, outputTokens } };
 }
 

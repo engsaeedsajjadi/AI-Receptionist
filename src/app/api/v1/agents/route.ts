@@ -1,3 +1,4 @@
+import { AgentConfigSchema } from "@/lib/services/agent";
 import { desc, eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { db } from "@/db";
@@ -51,7 +52,7 @@ export async function POST(req: NextRequest) {
         voiceProvider: body.voiceProvider ?? "generic",
         voiceId: body.voiceId ?? "fa-default",
         language: body.language ?? "fa-IR",
-        configuration: body.configuration ?? {},
+        configuration: AgentConfigSchema.parse(body.configuration ?? {}),
       })
       .returning();
 

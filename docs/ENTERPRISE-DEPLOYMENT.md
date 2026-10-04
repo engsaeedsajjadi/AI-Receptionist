@@ -30,3 +30,13 @@ Production expects `x-webhook-signature: t=<unix-seconds>,v1=<HMAC-SHA256>` sign
 ## Delivery semantics
 
 Queue delivery is at least once. The remote receiver must honor the stable idempotency key because a crash after remote success and before local acknowledgement can repeat delivery. Leases prevent stale workers from acknowledging a newer claim. Failed jobs retain the error and attempts; tenant admins can retry dead jobs. Call completion uses a transactional outbox; other event sources and notification delivery still have documented crash windows.
+
+## Observability
+
+`/api/metrics` requires `Authorization: Bearer <METRICS_TOKEN>` and fails closed if the token is unset. Metrics expose status-class totals, request duration histograms and Node process metrics; they intentionally omit customer and tenant labels to avoid high cardinality and sensitive labels. Scrape each replica directly rather than through a load balancer.
+
+The optional `docker-compose.monitoring.yml` overlay provisions Prometheus and Grafana. Set METRICS_TOKEN and GRAFANA_ADMIN_PASSWORD first. Grafana binds to localhost:3002; use an authenticated administrative tunnel or reverse proxy. Review and security-scan pinned images before deployment. Configure OTEL_EXPORTER_OTLP_TRACES_ENDPOINT and optional OTEL_EXPORTER_OTLP_HEADERS for an existing trusted OTLP collector. Trace attributes contain request/tenant IDs but no prompts, tokens or transcript bodies. Metrics and trace export have unit coverage; a deployed collector/dashboard acceptance test remains required.
+
+## Agent memory
+
+Agent configuration supports `memoryEnabled` and `retrievalMode: tools|automatic`. These are opt-in to preserve existing inference behavior. Automatic retrieval runs tenant-scoped hybrid search before the model only when search_knowledge is allowed. Conversation memory summarizes after 30 messages and at least 20 new messages since the previous summary; it keeps a bounded rolling summary in call metadata and reads up to three previous summaries for the linked customer. It never matches unlinked customers by a claimed phone number. Summaries are lossy model output, not authorization evidence. Purging call records removes derived memory; deleting only the transcript does not purge its summary/metadata. Apply your retention policy to all three fields and stored recordings. The dashboard exposes model, temperature, tool permissions, retrieval and memory controls.

@@ -43,6 +43,9 @@ services:
       redis:
         condition: service_healthy
     environment: &app-environment
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}
       NODE_ENV: production
       PORT: 3000
       APP_URL: ${APP_URL:?APP_URL is required}
