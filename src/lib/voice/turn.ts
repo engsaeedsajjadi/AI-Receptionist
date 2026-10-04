@@ -1,3 +1,4 @@
+import { meteredSpeech } from "@/lib/services/metered-ai";
 import { requireTenantFeature } from "@/lib/tenant-config";
 import { AppError } from "@/lib/errors";
 import { logInfo, logWarn } from "@/lib/logger";
@@ -184,7 +185,7 @@ export async function runVoiceTurn(input: VoiceTurnInput): Promise<VoiceTurnResu
   // 3. Reply → speakable text → speech.
   const spokenText = toSpokenPersian(agentResult.reply) || agentResult.reply.trim().slice(0, 500);
   const t2 = Date.now();
-  const ttsResult = await tts.synthesize(spokenText, {
+  const ttsResult = await meteredSpeech(input.businessId, tts, spokenText, {
     voice: input.voice,
     format: "mp3",
     requestId: input.requestId,

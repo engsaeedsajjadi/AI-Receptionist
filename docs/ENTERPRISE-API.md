@@ -50,3 +50,7 @@ The accompanying API inventory lists every route/method present in the source. I
 ## Platform tenant administration
 
 `GET /api/v1/platform/tenants?limit=30&after=<uuid>` returns `{tenants,nextCursor}` with a safe projection (id, name, slug, active state, creation date), maximum 100 rows. `PATCH` accepts `{id,isActive,reason}`; reason must contain 10–1000 characters. Both require a live, active `SUPER_ADMIN` with enrolled MFA. Tenant roles cannot use these endpoints. The service independently revalidates database privileges. Own-tenant state changes return 409. Suspension atomically changes tenant state, increments every user's credential version, revokes sessions, and writes an audit event in the affected tenant. Repeating the same state is a no-op. Reactivation requires new login; it never resurrects revoked sessions. This is a deliberate, narrowly scoped control-plane exception to normal tenant-only reads. No impersonation or tenant data export is provided.
+
+## Quotas
+
+`GET /api/v1/billing/quotas` returns the current tenant plan and per-meter consumed/reserved quantities, UTC window and limits; tenant-admin authorization required. `connected:false` means enforcement is incomplete for that meter. `PATCH /api/v1/platform/quotas` accepts `{businessId,policy,reason}`; only active SUPER_ADMIN with MFA can merge overrides, with an audit record. Hard admission failures return HTTP 402 with `QUOTA_EXCEEDED`. See ENTERPRISE-QUOTAS.md for policy shape.

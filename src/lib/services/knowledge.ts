@@ -1,3 +1,4 @@
+import { meteredEmbeddings } from "@/lib/services/metered-ai";
 import { requireTenantFeature } from "@/lib/tenant-config";
 import { assertTenantScope } from "@/lib/request-context";
 import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
@@ -57,7 +58,7 @@ async function embedAndStore(input: {
 }): Promise<{ embedded: number; tokens: number }> {
   if (input.chunks.length === 0) return { embedded: 0, tokens: 0 };
   const provider = getEmbeddingProvider();
-  const results = await provider.embedMany(
+  const results = await meteredEmbeddings(input.businessId, provider,
     input.chunks.map((c) => c.content),
     { requestId: input.requestId },
   );
@@ -425,7 +426,7 @@ export async function hybridSearch(input: {
   try {
     const embedding = input.embed
       ? await input.embed(normalized)
-      : (await getEmbeddingProvider().embed(normalized, { requestId: input.requestId })).embedding;
+      : (await meteredEmbeddings(input.businessId, getEmbeddingProvider(), [normalized], { requestId: input.requestId }))[0].embedding;
     assertDimensions(embedding);
     vectorResults = (await vectorSearch(input.businessId, embedding, topK)).filter((r) => r.score >= minSimilarity);
   } catch (err) {

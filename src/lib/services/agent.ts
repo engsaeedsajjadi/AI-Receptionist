@@ -1,3 +1,4 @@
+import { meteredCompletion } from "@/lib/services/metered-ai";
 import { loadAgentMemory, summarizeConversation } from "@/lib/services/memory";
 import { hybridSearch } from "@/lib/services/knowledge";
 import { requireTenantFeature } from "@/lib/tenant-config";
@@ -177,7 +178,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
   let idempotencySeq = 0;
 
   for (let iteration = 0; iteration < config.maxToolIterations; iteration++) {
-    const result = await llm.complete(messages, {
+    const result = await meteredCompletion(input.businessId, llm, messages, {
       model: config.model ?? undefined,
       tools,
       toolChoice: "auto",

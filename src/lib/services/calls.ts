@@ -1,3 +1,4 @@
+import { meteredCompletion } from "@/lib/services/metered-ai";
 import { assertTenantScope } from "@/lib/request-context";
 import { and, eq, inArray, lt, sql } from "drizzle-orm";
 import { db } from "@/db";
@@ -403,7 +404,7 @@ export async function generateCallSummary(
   if (transcript.length < 20) return null;
   try {
     const { getLLMProvider } = await import("@/lib/providers/llm");
-    const result = await getLLMProvider().complete(
+    const result = await meteredCompletion(businessId, getLLMProvider(),
       [
         {
           role: "system",
@@ -416,7 +417,7 @@ export async function generateCallSummary(
     );
     const summary = result.content?.trim() || null;
     if (summary) {
-      await db.update(calls).set({ summary }).where(eq(calls.id, callId));
+      await db.update(calls).set({ summary }).where(and(eq(calls.id, callId), eq(calls.businessId, businessId)));
       const { recordLlmUsage } = await import("@/lib/services/usage");
       await recordLlmUsage({
         businessId,

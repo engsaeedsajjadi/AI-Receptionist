@@ -1,3 +1,4 @@
+import { inventoryQuota } from "@/lib/services/quotas";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { z } from "zod";
@@ -73,6 +74,7 @@ export async function PUT(req: NextRequest, ctx: Ctx) {
     const updated = await db.transaction(async (tx) => {
       const target = await protectTarget(tx, auth.businessId, id, auth.role,
         Boolean((body.role && !["ADMIN", "TENANT_ADMIN"].includes(body.role)) || body.isActive === false));
+      if (body.isActive === true && !target.isActive) await inventoryQuota(tx, auth.businessId, "tenant_users", 1);
       const changesIdentity = Boolean(passwordHash || body.role || body.isActive === false);
       const [row] = await tx.update(users).set({ name: body.name ? normalizePersianText(body.name) : undefined,
         role: body.role, isActive: body.isActive, passwordHash,

@@ -58,3 +58,22 @@ Manual invoice billing now provides configured plan pricing, immutable invoice s
 | 18. AI features | Existing summaries plus optional conversation/customer memory | Evaluated sentiment, scoring, extraction, recommendations and quality monitoring |
 | 19. Code quality | Typed services, focused refactoring and API/database/security documentation | Repository-wide quality gates and remaining duplicated paths |
 | 20. Delivery | Reviewable GitHub branch/draft PR, migrations/configuration/docs and test evidence | Production-ready release, all acceptance criteria and deployment evidence |
+
+
+## Follow-up specification / Phase 1 checkpoint
+
+Status: **PARTIAL**. The uploaded follow-up work order is being applied to this branch without rebuilding existing modules. Tenant-row-locked multi-meter reservation, original-window settlement/release, soft/hard/grace caps, plan configuration and audited tenant overrides are implemented. Agent/user inventory changes use the same transaction as admission. LLM, embedding and TTS consumption paths are connected; call-duration, STT and physical storage quotas remain incomplete. See ENTERPRISE-QUOTAS.md for precise guarantees and limitations. New remote CI evidence is pending.
+
+Testing correction: three historical live LLM cases returned early when credentials were missing and were counted as passes by Vitest. They have been moved to an explicit `npm run test:live:ai` acceptance command which fails when required credentials/database are absent. They are no longer included in the Enterprise CI passing-test count. This does not lower coverage thresholds or remove deterministic tests. Historical totals must not be interpreted as executed live-provider validation.
+
+| Follow-up priority | Status | Acceptance still needed |
+| --- | --- | --- |
+| P0 billing quota enforcement | PARTIAL | Remaining meters, reservation recovery, provider-bound acceptance and CI concurrency evidence |
+| P0 tenant isolation final audit | PARTIAL | Repository-wide coverage beyond the changed services |
+| P0 RAG ACL/versioning | PARTIAL | ACL/version implementation and negative retrieval tests |
+| P0 agent intent/verification | PARTIAL | Typed classifier and evaluated claim verification |
+| P0 transactional outbox | PARTIAL | All required domain transactions/events |
+| P0 coverage >=80% | PARTIAL | Actual measured threshold, unchanged |
+| P1 payment/RAG/CRM/notifications/admin/storage/browser/security | PARTIAL | Remaining implementation and acceptance from the follow-up specification |
+| P2 telephony/streaming/AI/UX/load/deployment | PARTIAL | Remaining implementation and measured acceptance |
+| Live SMTP/OAuth/telephony deployment acceptance | BLOCKED | Actual configured service credentials and target deployment |

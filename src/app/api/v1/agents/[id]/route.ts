@@ -1,8 +1,9 @@
+import { inventoryQuota } from "@/lib/services/quotas";
 import { and, eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/db";
-import { agents, agentVersions } from "@/db/schema";
+import { businesses, agents, agentVersions } from "@/db/schema";
 import { ApiError, ok, parseJson } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
 import { normalizePersianText } from "@/lib/normalization";
@@ -71,9 +72,11 @@ export async function PUT(req: NextRequest, ctx: Ctx) {
     }
 
     const updated = await db.transaction(async (tx) => {
+      await tx.select({ id: businesses.id }).from(businesses).where(eq(businesses.id, auth.businessId)).for("update");
       const [current] = await tx.select().from(agents).where(and(eq(agents.id, id), eq(agents.businessId, auth.businessId))).for("update").limit(1);
       if (!current) throw new ApiError(404, "AGENT_NOT_FOUND", "Agent not found");
       if (current.updatedAt.getTime() !== existing.updatedAt.getTime()) throw new ApiError(409, "CONFLICT", "Agent was changed by another request; reload and retry");
+      if (parsed.isActive === true && !current.isActive) await inventoryQuota(tx, auth.businessId, "active_agents", 1);
       await tx.insert(agentVersions).values({ businessId: auth.businessId, agentId: id, createdBy: auth.userId, snapshot: JSON.parse(JSON.stringify(current)) });
     const [updated] = await tx
       .update(agents)

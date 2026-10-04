@@ -1,3 +1,4 @@
+import { inventoryQuota } from "@/lib/services/quotas";
 import { z } from "zod";
 import { AgentConfigSchema } from "@/lib/services/agent";
 import { desc, eq } from "drizzle-orm";
@@ -37,7 +38,9 @@ export async function POST(req: NextRequest) {
       language: z.string().max(20).optional(), configuration: AgentConfigSchema.optional(),
     }));
 
-    const [created] = await db
+    const created = await db.transaction(async (tx) => {
+      await inventoryQuota(tx, auth.businessId, "active_agents", 1);
+      const [created] = await tx
       .insert(agents)
       .values({
         businessId: auth.businessId,
@@ -50,6 +53,8 @@ export async function POST(req: NextRequest) {
       })
       .returning();
 
+      return created;
+    });
     return ok(created, 201);
   });
 }

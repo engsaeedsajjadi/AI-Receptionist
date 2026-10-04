@@ -41,3 +41,7 @@ Review SQL migrations rather than using db:push in production. Custom deferred c
 ## Billing migration 0012
 
 `subscriptions` has one row per business; `billing_invoices` stores immutable plan/price/issuer/customer snapshots scoped by business. Invoice request keys are unique per business; payment references are globally unique to prevent reuse. Positive amounts, supported plan/currency/status values, paid-field consistency and valid subscription periods are migration-owned CHECK constraints. Invoice UUID is the immutable invoice identifier. No existing tenant row or usage is deleted/backfilled into a paid plan. There are now 27 tables.
+
+## Quota migration 0013
+
+Adds `quota_overrides`, `quota_buckets` and `quota_reservations`, all with required business_id. Unique constraints isolate override ownership, per-meter/per-window counters, and request keys per tenant. Existing metered monthly usage is backfilled before admission begins. Active agent/user inventory remains authoritative in its existing tables. This brings the schema to 30 tables; custom nonnegative/status checks are migration-owned.

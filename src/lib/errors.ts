@@ -6,6 +6,7 @@
  */
 
 export type ErrorCode =
+  | "QUOTA_EXCEEDED"
   | "BAD_REQUEST"
   | "INVALID_PAYLOAD"
   | "INVALID_JSON"

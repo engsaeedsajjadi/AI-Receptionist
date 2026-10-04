@@ -698,3 +698,28 @@ export const billingInvoices = pgTable("billing_invoices", {
 }, (t) => ({ tenantKey: uniqueIndex("billing_invoices_tenant_key").on(t.businessId, t.idempotencyKey),
   referenceUnique: uniqueIndex("billing_invoices_payment_reference").on(t.paymentReference),
   tenantCreated: index("billing_invoices_tenant_created").on(t.businessId, t.createdAt) }));
+
+export const quotaOverrides = pgTable("quota_overrides", {
+  businessId: uuid("business_id").primaryKey().references(() => businesses.id, { onDelete: "cascade" }),
+  policy: jsonb("policy").$type<Record<string, { hard: number | null; soft: number | null; grace: number }>>().notNull().default({}),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+export const quotaBuckets = pgTable("quota_buckets", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+  meter: varchar("meter", { length: 40 }).notNull(),
+  windowStart: timestamp("window_start", { withTimezone: true }).notNull(),
+  consumed: numeric("consumed", { precision: 24, scale: 4 }).notNull().default("0"),
+  reserved: numeric("reserved", { precision: 24, scale: 4 }).notNull().default("0"),
+}, (t) => ({ meterWindow: uniqueIndex("quota_buckets_meter_window").on(t.businessId, t.meter, t.windowStart) }));
+export const quotaReservations = pgTable("quota_reservations", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+  idempotencyKey: varchar("idempotency_key", { length: 255 }).notNull(),
+  amounts: jsonb("amounts").$type<Record<string, string>>().notNull(),
+  settledAmounts: jsonb("settled_amounts").$type<Record<string, string>>(),
+  windows: jsonb("windows").$type<Record<string, string>>().notNull(),
+  status: varchar("status", { length: 20 }).notNull().default("reserved"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+}, (t) => ({ tenantKey: uniqueIndex("quota_reservations_tenant_key").on(t.businessId, t.idempotencyKey), pending: index("quota_reservations_pending").on(t.businessId, t.status, t.createdAt) }));

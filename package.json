@@ -17,7 +17,8 @@
     "media:server": "tsx scripts/media-server.ts",
     "maintenance": "tsx scripts/maintenance.ts",
     "test:coverage": "vitest run --coverage",
-    "worker": "tsx scripts/worker.ts"
+    "worker": "tsx scripts/worker.ts",
+    "test:live:ai": "vitest run --config vitest.live.config.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.936.0",
