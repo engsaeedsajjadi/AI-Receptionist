@@ -24,7 +24,7 @@ export async function POST(req: NextRequest) {
     const auth = await getAuthContext(req);
     if (!hasPermission(auth.role, "knowledge:write")) throw new ApiError(403, "FORBIDDEN", "Insufficient permissions");
 
-    const body = await parseJsonWith(req, reindexSchema).catch(() => ({ documentId: undefined as string | undefined }));
+    const body = await parseJsonWith(req, reindexSchema);
 
     if (body.documentId) {
       const result = await reindexDocument(auth.businessId, body.documentId, { requestId: rid });

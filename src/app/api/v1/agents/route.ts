@@ -1,9 +1,10 @@
+import { z } from "zod";
 import { AgentConfigSchema } from "@/lib/services/agent";
 import { desc, eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
-import { ApiError, ok, parseJson } from "@/lib/api";
+import { ApiError, ok, parseJsonWith } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
 import { normalizePersianText } from "@/lib/normalization";
 import { hasPermission } from "@/lib/permissions";
@@ -30,18 +31,11 @@ export async function POST(req: NextRequest) {
     const auth = await getAuthContext(req);
     if (!hasPermission(auth.role, "agents:write")) throw new ApiError(403, "FORBIDDEN", "Insufficient permissions");
 
-    const body = await parseJson<{
-      name: string;
-      systemPrompt?: string;
-      voiceProvider?: string;
-      voiceId?: string;
-      language?: string;
-      configuration?: Record<string, unknown>;
-    }>(req);
-
-    if (body.voiceProvider !== undefined && body.voiceProvider !== "generic") {
-      throw new ApiError(400, "VALIDATION_ERROR", "Unknown voice provider (expected \"generic\")");
-    }
+    const body = await parseJsonWith(req, z.object({
+      name: z.string().min(1).max(150), systemPrompt: z.string().max(8000).optional(),
+      voiceProvider: z.enum(["generic"]).optional(), voiceId: z.string().max(100).optional(),
+      language: z.string().max(20).optional(), configuration: AgentConfigSchema.optional(),
+    }));
 
     const [created] = await db
       .insert(agents)

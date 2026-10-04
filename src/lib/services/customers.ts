@@ -43,10 +43,11 @@ export async function findOrCreateCustomer(input: CustomerInput) {
       needsUpdate = true;
     }
     if (!needsUpdate) return existing;
+    assertTenantScope(input.businessId);
     const [updated] = await db
       .update(customers)
       .set(patch)
-      .where(eq(customers.id, existing.id))
+      .where(and(eq(customers.id, existing.id), eq(customers.businessId, input.businessId)))
       .returning();
     return updated ?? existing;
   }
@@ -91,6 +92,7 @@ export async function updateCustomer(
   customerId: string,
   patch: { name?: string; email?: string | null; metadata?: Record<string, unknown> },
 ) {
+  assertTenantScope(businessId);
   const [updated] = await db
     .update(customers)
     .set({

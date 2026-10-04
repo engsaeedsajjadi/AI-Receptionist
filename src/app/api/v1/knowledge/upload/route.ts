@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { ApiError } from "@/lib/api";
-import { ok } from "@/lib/api";
+import { ok, parseJsonWith } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
 import { hasPermission } from "@/lib/permissions";
 import { enforceRateLimit } from "@/lib/rate-limit";
@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
       return ok({ document: result.document, chunks: result.chunks }, 201);
     }
 
-    const body = jsonSchema.parse(await req.json());
+    const body = await parseJsonWith(req, jsonSchema);
     const result = await ingestContent({
       businessId: auth.businessId,
       title: body.title,

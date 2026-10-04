@@ -2,7 +2,7 @@ import { requireTenantFeature, type TenantFeatures } from "@/lib/tenant-config";
 import { bindTenantContext } from "@/lib/request-context";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
-import { compare, hash } from "bcryptjs";
+import { compare } from "bcryptjs";
 import { jwtVerify, SignJWT } from "jose";
 import { and, eq, isNull, lt, sql } from "drizzle-orm";
 import { NextRequest } from "next/server";
@@ -96,13 +96,7 @@ function refreshSecret(): Uint8Array {
 // Passwords
 // ---------------------------------------------------------------------------
 
-export async function hashPassword(password: string) {
-  return hash(password, 12);
-}
-
-export async function verifyPassword(password: string, passwordHash: string) {
-  return compare(password, passwordHash);
-}
+export { hashPassword, verifyPassword } from "@/lib/passwords";
 
 /**
  * Password policy: 8–128 chars, must include at least one letter and one

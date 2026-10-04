@@ -15,15 +15,15 @@ This branch is an implementation in progress, **not an approved production relea
 
 ## Evidence
 
-- Latest local lint and TypeScript checks passed.
-- Latest local unit run: 186 passed, 21 files, zero failed (2026-10-04).
-- Next.js production compilation succeeded during the previous implementation session; revalidation after subsequent changes is required.
-- Previous PostgreSQL-compatible embedded run: 310 passed and one webhook tool-call test did not complete successfully. Embedded multiplexing cannot qualify production concurrent connections.
-- Migrations through 0011 were started in the previous session, but its final test output was lost when the transient runtime restarted. Do not treat that run as a pass.
-- Redis integration, external OAuth/SMTP/voice/payment, Docker deployment, browser accessibility and backup restore acceptance are not established by the unit run.
+- GitHub Actions run 37171619155 on commit 25a9359: 325 tests passed across 43 files, zero skipped, including PostgreSQL, Redis, tenant isolation, concurrent refresh, CRM, MFA and agent memory. Both migration runs and production build passed.
+- Coverage on that run: lines/statements 63.02%, branches 70.06%, functions 70.32%. The 80% gate correctly failed; it has not been lowered or narrowed.
+- Dependency scanning found vulnerable baseline versions. Next.js was upgraded within version 16 to 16.3.8; Nodemailer to 10.0.14 and PostCSS to 8.5.23. A subsequent local production dependency audit reports zero known vulnerabilities. Current CI must revalidate the upgraded dependency set.
+- New passwords use full-input scrypt; legacy bcrypt remains readable. Long Persian passwords and malformed hash parameter rejection have dedicated tests.
+- Prometheus endpoint, Grafana provisioning, OTLP trace export and optional rolling/customer memory are implemented. Dashboard configuration exposes model/temperature/tool/retrieval/memory settings. Live deployed telemetry/provider acceptance is still pending.
+- Further dashboard API contracts and input-size limits are being validated in the next CI run. See ENTERPRISE-TEST-REPORT.md for the final recorded run.
 
 ## Outstanding release requirements
 
-Subscriptions/invoices/atomic quota reservation; complete agent intent/memory pipeline; document ACL/versioning/metadata/reranking/analytics; native telephony connectors and real streaming/cloning acceptance; configurable follow-up rules; notification scheduling/templates/WhatsApp; platform tenant administration; OpenTelemetry/Prometheus/Grafana; complete UX and browser E2E; measured 80% coverage; deployment/restore drills.
+Subscriptions/invoices/atomic quota reservation; full agent intent classification and evaluated verification; document ACL/versioning/metadata/reranking/analytics; native telephony connectors and real streaming/cloning acceptance; configurable follow-up rules; notification scheduling/templates/WhatsApp; platform tenant administration; complete UX and browser E2E; measured 80% coverage; deployed telemetry, deployment/restore drills and live provider acceptance.
 
-No placeholder payment success, synthetic provider success or fabricated analytics is substituted for these capabilities. Do not merge/deploy solely because compilation succeeds.
+No placeholder payment success, synthetic provider success or fabricated analytics is substituted for these capabilities. This is not completion of all twenty requirements. Do not merge/deploy solely because compilation and functional tests succeed.

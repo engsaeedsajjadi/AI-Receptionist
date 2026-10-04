@@ -56,16 +56,17 @@ export async function PUT(req: NextRequest, ctx: Ctx) {
       .set({
         title: body.title ? normalizePersianText(body.title) : undefined,
         content: body.content,
+        status: body.content ? "indexing" : undefined,
         sourceUrl: body.sourceUrl,
         updatedAt: new Date(),
       })
-      .where(eq(knowledgeDocuments.id, id))
+      .where(and(eq(knowledgeDocuments.id, id), eq(knowledgeDocuments.businessId, auth.businessId)))
       .returning();
 
     // Content edits invalidate embeddings → reindex with the real pipeline.
     if (body.content) {
       await reindexDocument(auth.businessId, id, { requestId: rid });
-      const [doc] = await db.select().from(knowledgeDocuments).where(eq(knowledgeDocuments.id, id)).limit(1);
+      const [doc] = await db.select().from(knowledgeDocuments).where(and(eq(knowledgeDocuments.id, id), eq(knowledgeDocuments.businessId, auth.businessId))).limit(1);
       return ok(doc);
     }
     return ok(updated);

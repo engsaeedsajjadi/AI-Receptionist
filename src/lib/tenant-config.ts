@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
@@ -15,7 +16,7 @@ export async function requireTenantFeature(businessId: string, feature: keyof Te
     .where(and(eq(businesses.id, businessId), eq(businesses.isActive, true))).limit(1);
   if (!business) throw new AppError(403, "FORBIDDEN", "Business is inactive");
   // Versioned cache keys prevent old flags being used after configuration changes.
-  const version = business.updatedAt.toISOString();
+  const version = business.updatedAt.toISOString() + ":" + createHash("sha256").update(JSON.stringify(business.settings.features ?? {})).digest("hex");
   let features = await readTenantCache<TenantFeatures>(businessId, "features", version);
   if (!features) {
     features = tenantFeaturesSchema.parse(business.settings.features ?? {});

@@ -69,7 +69,7 @@ export default function LoginPage() {
             {busy ? "در حال ورود…" : "ورود"}
           </button>
         </form>
-        <div className="mt-4 flex gap-3"><button type="button" className="rounded border p-2" onClick={() => window.location.assign("/api/v1/auth/oauth/google")}>ورود با Google</button><button type="button" className="rounded border p-2" onClick={() => window.location.assign("/api/v1/auth/oauth/microsoft")}>ورود با Microsoft</button></div>
+        <div className="mt-4 flex gap-3"><form method="get" action="/api/v1/auth/oauth/google"><button type="submit" className="rounded border p-2">ورود با Google</button></form><form method="get" action="/api/v1/auth/oauth/microsoft"><button type="submit" className="rounded border p-2">ورود با Microsoft</button></form></div>
       </div>
     </main>
   );
