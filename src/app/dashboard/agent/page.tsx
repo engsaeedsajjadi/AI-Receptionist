@@ -13,13 +13,20 @@ type Agent = {
   configuration: Record<string, unknown>;
 };
 
+function agentForm(agent?: Agent) {
+  const c = agent?.configuration ?? {};
+  return { greeting: String(c.greeting ?? ""), tone: String(c.tone ?? ""), businessInfo: String(c.businessInfo ?? ""), systemInstructions: String(c.systemInstructions ?? ""),
+    model: String(c.model ?? ""), temperature: Number(c.temperature ?? 0.2), allowedTools: Array.isArray(c.allowedTools) ? c.allowedTools.join(", ") : "*",
+    memoryEnabled: c.memoryEnabled === true, retrievalMode: c.retrievalMode === "automatic" ? "automatic" : "tools" };
+}
+
 type ChatMsg = { role: "user" | "assistant"; content: string };
 
 export default function AgentPage() {
   const { apiJson } = useAuth();
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [selected, setSelected] = useState<Agent | null>(null);
-  const [form, setForm] = useState({ greeting: "", tone: "", businessInfo: "", systemInstructions: "" });
+  const [form, setForm] = useState(agentForm());
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [chat, setChat] = useState<ChatMsg[]>([]);
@@ -35,13 +42,7 @@ export default function AgentPage() {
         const first = rows[0] ?? null;
         setSelected(first);
         if (first) {
-          const c = (first.configuration ?? {}) as Record<string, string>;
-          setForm({
-            greeting: String(c.greeting ?? ""),
-            tone: String(c.tone ?? ""),
-            businessInfo: String(c.businessInfo ?? ""),
-            systemInstructions: String(c.systemInstructions ?? ""),
-          });
+          setForm(agentForm(first));
         }
       })
       .catch(() => {
@@ -64,13 +65,7 @@ export default function AgentPage() {
             key={a.id}
             onClick={() => {
               setSelected(a);
-              const c = (a.configuration ?? {}) as Record<string, string>;
-              setForm({
-                greeting: String(c.greeting ?? ""),
-                tone: String(c.tone ?? ""),
-                businessInfo: String(c.businessInfo ?? ""),
-                systemInstructions: String(c.systemInstructions ?? ""),
-              });
+              setForm(agentForm(a));
               setChat([]);
             }}
             className={`rounded-full px-4 py-1.5 text-sm ${selected?.id === a.id ? "bg-slate-900 text-white" : "bg-white ring-1 ring-slate-200"}`}
@@ -91,7 +86,7 @@ export default function AgentPage() {
               apiJson(`/api/v1/agents/${selected.id}`, {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ configuration: form }),
+                body: JSON.stringify({ configuration: { ...form, model: form.model || null, allowedTools: form.allowedTools.trim() === "*" ? null : form.allowedTools.split(",").map((t) => t.trim()).filter(Boolean) } }),
               })
                 .then(() => setMessage("پیکربندی ذخیره شد."))
                 .catch((err: Error) => setMessage(err.message))
@@ -99,6 +94,12 @@ export default function AgentPage() {
             }}
           >
             <h2 className="text-sm font-semibold">پیکربندی <Badge>{selected.language}</Badge></h2>
+            <label className="block text-sm">مدل (خالی: مدل سرور)<input dir="ltr" value={form.model} onChange={(e) => setForm({ ...form, model: e.target.value })} className="mt-1 w-full rounded border p-2" /></label>
+            <label className="block text-sm">دمای مدل<input type="number" min="0" max="2" step="0.1" value={form.temperature} onChange={(e) => setForm({ ...form, temperature: Number(e.target.value) })} className="mt-1 w-full rounded border p-2" /></label>
+            <label className="block text-sm">ابزارهای مجاز (با ویرگول؛ * همه؛ خالی بدون ابزار)<input dir="ltr" value={form.allowedTools} onChange={(e) => setForm({ ...form, allowedTools: e.target.value })} className="mt-1 w-full rounded border p-2" /></label>
+            <label className="block text-sm">بازیابی دانش<select value={form.retrievalMode} onChange={(e) => setForm({ ...form, retrievalMode: e.target.value })} className="m-2 rounded border p-2"><option value="tools">با درخواست ابزار</option><option value="automatic">پیش از هر پاسخ</option></select></label>
+            <label className="flex gap-2 text-sm"><input type="checkbox" checked={form.memoryEnabled} onChange={(e) => setForm({ ...form, memoryEnabled: e.target.checked })} />حافظهٔ گفت‌وگو و خلاصهٔ تماس‌های قبلی مشتری</label>
+            <p className="text-xs text-slate-500">حافظه فقط در گفت‌وگوی دارای شناسه تماس استفاده می‌شود؛ خلاصه‌سازی مصرف مدل دارد.</p>
             {(
               [
                 ["greeting", "جمله خوش‌آمد"],

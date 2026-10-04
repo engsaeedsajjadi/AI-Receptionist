@@ -47,7 +47,7 @@ const createSchema = z.object({
   email: z.string().email().max(255),
   phone: z.string().max(30).optional(),
   password: z.string().min(8).max(128),
-  role: z.enum(["ADMIN", "MANAGER", "AGENT"]).default("AGENT"),
+  role: z.enum(["ADMIN", "MANAGER", "AGENT", "TENANT_ADMIN", "AGENT_OPERATOR", "CALL_OPERATOR", "VIEWER"]).default("AGENT"),
 });
 
 export async function POST(req: NextRequest) {

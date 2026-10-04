@@ -18,7 +18,7 @@ import {
 // Enums
 // ---------------------------------------------------------------------------
 
-export const userRoleEnum = pgEnum("user_role", ["ADMIN", "MANAGER", "AGENT"]);
+export const userRoleEnum = pgEnum("user_role", ["ADMIN", "MANAGER", "AGENT", "SUPER_ADMIN", "TENANT_ADMIN", "AGENT_OPERATOR", "CALL_OPERATOR", "VIEWER"]);
 export const leadStatusEnum = pgEnum("lead_status", [
   "NEW",
   "CONTACTED",
@@ -94,6 +94,12 @@ export const users = pgTable(
     email: varchar("email", { length: 255 }).notNull(),
     phone: varchar("phone", { length: 30 }),
     passwordHash: text("password_hash").notNull(),
+    emailVerifiedAt: timestamp("email_verified_at", { withTimezone: true }),
+    mfaSecret: text("mfa_secret"),
+    credentialVersion: integer("credential_version").notNull().default(0),
+    mfaEnabled: boolean("mfa_enabled").notNull().default(false),
+    mfaLastStep: integer("mfa_last_step").notNull().default(-1),
+    mfaRecoveryHashes: jsonb("mfa_recovery_hashes").$type<string[]>().notNull().default([]),
     role: userRoleEnum("role").notNull().default("AGENT"),
     isActive: boolean("is_active").notNull().default(true),
     lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
@@ -252,6 +258,7 @@ export const callMessages = pgTable(
   "call_messages",
   {
     id: uuid("id").defaultRandom().primaryKey(),
+    businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
     callId: uuid("call_id")
       .notNull()
       .references(() => calls.id, { onDelete: "cascade" }),
@@ -473,6 +480,7 @@ export const refreshTokens = pgTable(
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
     revokedReason: varchar("revoked_reason", { length: 50 }),
     rotatedFromId: uuid("rotated_from_id"),
+    userAgent: varchar("user_agent", { length: 512 }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
@@ -582,3 +590,83 @@ export type UsageRecord = typeof usageRecords.$inferSelect;
 export type Property = typeof properties.$inferSelect;
 export type AuditLog = typeof auditLogs.$inferSelect;
 export type WebhookEvent = typeof webhookEvents.$inferSelect;
+
+export const identityTokens = pgTable("identity_tokens", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  purpose: varchar("purpose", { length: 30 }).notNull(),
+  tokenHash: varchar("token_hash", { length: 64 }).notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({ tokenIdx: uniqueIndex("identity_tokens_hash_idx").on(t.tokenHash), tenantIdx: index("identity_tokens_tenant_idx").on(t.businessId, t.userId) }));
+
+export const agentVersions = pgTable("agent_versions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+  agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+  snapshot: jsonb("snapshot").$type<Record<string, unknown>>().notNull(),
+  createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({ tenantIdx: index("agent_versions_tenant_idx").on(t.businessId, t.agentId, t.createdAt) }));
+
+export const automationJobs = pgTable("automation_jobs", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+  event: varchar("event", { length: 50 }).notNull(),
+  idempotencyKey: varchar("idempotency_key", { length: 255 }).notNull(),
+  payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+  status: varchar("status", { length: 20 }).notNull().default("pending"),
+  attempts: integer("attempts").notNull().default(0),
+  availableAt: timestamp("available_at", { withTimezone: true }).notNull().defaultNow(),
+  leaseUntil: timestamp("lease_until", { withTimezone: true }),
+  claimId: uuid("claim_id"),
+  lastError: text("last_error"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({ dedupIdx: uniqueIndex("automation_jobs_dedup_idx").on(t.businessId, t.idempotencyKey), pendingIdx: index("automation_jobs_pending_idx").on(t.status, t.availableAt), tenantIdx: index("automation_jobs_tenant_idx").on(t.businessId, t.createdAt) }));
+
+export const oauthAccounts = pgTable("oauth_accounts", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  provider: varchar("provider", { length: 20 }).notNull(),
+  subject: varchar("subject", { length: 255 }).notNull(),
+  issuer: varchar("issuer", { length: 255 }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({ subjectIdx: uniqueIndex("oauth_accounts_subject_idx").on(t.issuer, t.subject), userIdx: uniqueIndex("oauth_accounts_user_provider_idx").on(t.userId, t.provider), tenantIdx: index("oauth_accounts_tenant_idx").on(t.businessId, t.userId) }));
+
+export const crmPipelines = pgTable("crm_pipelines", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 150 }).notNull(),
+  stages: jsonb("stages").$type<string[]>().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({ nameIdx: uniqueIndex("crm_pipelines_name_idx").on(t.businessId, t.name), tenantIdIdx: uniqueIndex("crm_pipelines_tenant_id_idx").on(t.businessId, t.id) }));
+export const crmOpportunities = pgTable("crm_opportunities", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+  pipelineId: uuid("pipeline_id").notNull().references(() => crmPipelines.id, { onDelete: "restrict" }),
+  leadId: uuid("lead_id").references(() => leads.id, { onDelete: "set null" }),
+  title: varchar("title", { length: 255 }).notNull(),
+  stage: varchar("stage", { length: 100 }).notNull(),
+  value: numeric("value", { precision: 20, scale: 2 }).notNull().default("0"),
+  currency: varchar("currency", { length: 10 }).notNull().default("TOMAN"),
+  notes: text("notes").notNull().default(""),
+  tags: jsonb("tags").$type<string[]>().notNull().default([]),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({ stageIdx: index("crm_opportunities_stage_idx").on(t.businessId, t.pipelineId, t.stage) }));
+export const crmTasks = pgTable("crm_tasks", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+  leadId: uuid("lead_id").references(() => leads.id, { onDelete: "set null" }),
+  assignedUserId: uuid("assigned_user_id").references(() => users.id, { onDelete: "set null" }),
+  title: varchar("title", { length: 255 }).notNull(),
+  notes: text("notes").notNull().default(""),
+  status: varchar("status", { length: 20 }).notNull().default("OPEN"),
+  dueAt: timestamp("due_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({ dueIdx: index("crm_tasks_due_idx").on(t.businessId, t.status, t.dueAt) }));

@@ -1,3 +1,4 @@
+import { assertTenantScope } from "@/lib/request-context";
 import { and, eq, gte, ilike, lte, or, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
@@ -63,6 +64,7 @@ function escapeLike(pattern: string): string {
  * The AI may ONLY mention properties returned by this search.
  */
 export async function searchProperties(businessId: string, raw: unknown) {
+  assertTenantScope(businessId);
   const filters = PropertySearchSchema.parse(raw);
   const conditions: SQL[] = [eq(properties.businessId, businessId), eq(properties.isAvailable, true)];
 
@@ -130,6 +132,7 @@ export async function searchProperties(businessId: string, raw: unknown) {
 }
 
 export async function createProperty(businessId: string, raw: unknown) {
+  assertTenantScope(businessId);
   const input = PropertyUpsertSchema.parse(raw);
   const price = parsePrice(input.price)?.amountToman;
   const area = parseArea(input.area);
@@ -164,6 +167,7 @@ export async function createProperty(businessId: string, raw: unknown) {
 }
 
 export async function getProperty(businessId: string, propertyId: string) {
+  assertTenantScope(businessId);
   const [row] = await db
     .select()
     .from(properties)
@@ -174,6 +178,7 @@ export async function getProperty(businessId: string, propertyId: string) {
 }
 
 export async function updateProperty(businessId: string, propertyId: string, raw: unknown) {
+  assertTenantScope(businessId);
   const input = PropertyUpsertSchema.partial().parse(raw);
   const patch: Partial<typeof properties.$inferInsert> = { updatedAt: new Date() };
   if (input.title !== undefined) patch.title = normalizePersianText(input.title);

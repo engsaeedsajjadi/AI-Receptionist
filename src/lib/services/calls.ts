@@ -1,11 +1,12 @@
+import { assertTenantScope } from "@/lib/request-context";
 import { and, eq, inArray, lt, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { businesses, callMessages, calls } from "@/db/schema";
+import { automationJobs, businesses, callMessages, calls } from "@/db/schema";
 import { AppError } from "@/lib/errors";
 import { logInfo, logWarn } from "@/lib/logger";
 import { normalizePhone } from "@/lib/normalization";
 import { getVoiceProvider } from "@/lib/providers/voice";
-import { emitAutomationEvent } from "@/lib/services/n8n";
+import { enqueueAutomationEvent as emitAutomationEvent, prepareAutomationEvent } from "@/lib/services/jobs";
 import { notifyCallbackRequested, notifyHumanHandoff } from "@/lib/services/notifications";
 
 export type CallStatus = typeof calls.$inferSelect.status;
@@ -25,6 +26,7 @@ const TRANSITIONS: Record<CallStatus, CallStatus[]> = {
 };
 
 export async function getCall(businessId: string, callId: string) {
+  assertTenantScope(businessId);
   const [row] = await db
     .select()
     .from(calls)
@@ -81,7 +83,7 @@ export async function appendCallMessage(
   await getCall(businessId, callId);
   const [row] = await db
     .insert(callMessages)
-    .values({ callId, role: message.role, content: message.content.slice(0, 20000), metadata: message.metadata ?? {} })
+    .values({ businessId, callId, role: message.role, content: message.content.slice(0, 20000), metadata: message.metadata ?? {} })
     .returning();
   return row;
 }
@@ -97,6 +99,7 @@ export type TransferConfig = {
 };
 
 export async function getTransferConfig(businessId: string): Promise<TransferConfig> {
+  assertTenantScope(businessId);
   const [biz] = await db
     .select({ settings: businesses.settings, phone: businesses.phone })
     .from(businesses)
@@ -358,18 +361,22 @@ export async function completeCall(
   const call = await getCall(businessId, callId);
   const summary = opts?.summary?.trim() || call.summary || null;
 
-  const [updated] = await db
-    .update(calls)
-    .set({
-      status: call.status === "TRANSFERRED" ? "TRANSFERRED" : "COMPLETED",
-      endedAt: new Date(),
-      summary,
-      durationSeconds:
-        call.durationSeconds ??
-        (call.startedAt ? Math.max(0, Math.round((Date.now() - call.startedAt.getTime()) / 1000)) : null),
-    })
-    .where(eq(calls.id, callId))
-    .returning();
+  if (call.endedAt) return call;
+  const endedAt = new Date();
+  const durationSeconds = call.durationSeconds ?? (call.startedAt ? Math.max(0, Math.round((endedAt.getTime() - call.startedAt.getTime()) / 1000)) : null);
+  const event = await prepareAutomationEvent("call-completed", {
+    id: callId, businessId, callId, phone: call.phoneNumber, durationSeconds, summary,
+  }, { idempotencyKey: `call-completed:${callId}` });
+  const updated = await db.transaction(async (tx) => {
+    const [row] = await tx.update(calls).set({
+      status: call.status === "TRANSFERRED" ? "TRANSFERRED" : "COMPLETED", endedAt, summary, durationSeconds,
+    }).where(and(eq(calls.id, callId), eq(calls.businessId, businessId), sql`${calls.endedAt} IS NULL`)).returning();
+    if (!row) return null;
+    if (event) await tx.insert(automationJobs).values(event)
+      .onConflictDoNothing({ target: [automationJobs.businessId, automationJobs.idempotencyKey] });
+    return row;
+  });
+  if (!updated) return getCall(businessId, callId);
 
   const { notifyCallCompleted } = await import("@/lib/services/notifications");
   await notifyCallCompleted({
@@ -379,18 +386,6 @@ export async function completeCall(
     durationSeconds: updated.durationSeconds,
     requestId: opts?.requestId,
   });
-  await emitAutomationEvent(
-    "call-completed",
-    {
-      id: callId,
-      businessId,
-      callId,
-      phone: call.phoneNumber,
-      durationSeconds: updated.durationSeconds,
-      summary,
-    },
-    { idempotencyKey: `call-completed:${callId}` },
-  );
   return updated;
 }
 

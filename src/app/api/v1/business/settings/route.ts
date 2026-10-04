@@ -1,3 +1,4 @@
+import { tenantFeaturesSchema } from "@/lib/tenant-config";
 import { eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { z } from "zod";
@@ -19,6 +20,7 @@ const transferSchema = z.object({
 const settingsSchema = z.object({
   settings: z
     .object({
+      features: tenantFeaturesSchema.optional(),
       recording_enabled: z.boolean().optional(),
       transcription_enabled: z.boolean().optional(),
       retention_days: z.number().int().min(1).max(3650).optional(),

@@ -1,9 +1,9 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { ApiError } from "@/lib/api";
-import { ok } from "@/lib/api";
+import { ok, parseJsonWith } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
-import { hasRole } from "@/lib/permissions";
+import { hasPermission } from "@/lib/permissions";
 import { enforceRateLimit } from "@/lib/rate-limit";
 import { ingestContent, ingestFile } from "@/lib/services/knowledge";
 import { withApiHandling } from "@/lib/server-core";
@@ -24,7 +24,7 @@ export async function POST(req: NextRequest) {
   return withApiHandling(async (rid) => {
     await enforceRateLimit(req, "upload");
     const auth = await getAuthContext(req);
-    if (!hasRole(auth.role, "MANAGER")) throw new ApiError(403, "FORBIDDEN", "Insufficient permissions");
+    if (!hasPermission(auth.role, "knowledge:write")) throw new ApiError(403, "FORBIDDEN", "Insufficient permissions");
 
     const contentType = req.headers.get("content-type") ?? "";
     if (contentType.includes("multipart/form-data")) {
@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
       return ok({ document: result.document, chunks: result.chunks }, 201);
     }
 
-    const body = jsonSchema.parse(await req.json());
+    const body = await parseJsonWith(req, jsonSchema);
     const result = await ingestContent({
       businessId: auth.businessId,
       title: body.title,

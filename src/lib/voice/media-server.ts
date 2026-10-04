@@ -352,7 +352,7 @@ export class MediaSession {
       this.sendError("NOT_STARTED", "First message must be a valid start frame");
       return;
     }
-    const maxFrame = this.opts.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES;
+    const maxFrame = Math.min(this.opts.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES, this.opts.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES);
     if (chunk.length > maxFrame) {
       this.sendError("FRAME_TOO_LARGE", `Audio frame exceeds ${maxFrame} bytes`);
       return;

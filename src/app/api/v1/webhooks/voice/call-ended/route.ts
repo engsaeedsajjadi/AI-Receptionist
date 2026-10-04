@@ -26,6 +26,7 @@ export async function POST(req: NextRequest) {
     await enforceRateLimit(req, "publicWebhook");
     const { payload, idempotencyKey } = await verifyWebhookRequest(req, {
       secret: env.webhookSecret,
+      previousSecrets: env.previousWebhookSecrets,
       scope: "voice:call-ended",
     });
     const body = parseWith(payloadSchema, payload);

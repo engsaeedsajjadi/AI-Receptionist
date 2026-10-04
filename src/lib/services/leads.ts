@@ -1,3 +1,4 @@
+import { assertTenantScope } from "@/lib/request-context";
 import { and, desc, eq, notInArray } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
@@ -95,6 +96,7 @@ const CLOSED_STATUSES = ["WON", "LOST"] as const;
 export type LeadOutcome = "created" | "updated_open" | "reopened" | "existing_customer_new_lead";
 
 export async function findOpenLead(businessId: string, customerId: string) {
+  assertTenantScope(businessId);
   const [row] = await db
     .select()
     .from(leads)
@@ -124,6 +126,7 @@ export async function createOrUpdateLead(input: {
   source?: string;
   callId?: string;
 }): Promise<{ lead: typeof leads.$inferSelect; outcome: LeadOutcome }> {
+  assertTenantScope(input.businessId);
   return db.transaction(async (tx) => {
     // Serialize concurrent upserts for the same customer: without this, two
     // simultaneous calls both see "no open lead" and insert duplicates.
@@ -202,6 +205,7 @@ export async function intakeLeadFromCall(input: {
   callId?: string;
   source?: string;
 }) {
+  assertTenantScope(input.businessId);
   const phone = input.extraction.phone ?? normalizePhone(input.callerPhone);
   if (!phone) throw new AppError(400, "VALIDATION_ERROR", "A valid caller phone number is required");
 
@@ -221,6 +225,7 @@ export async function intakeLeadFromCall(input: {
 }
 
 export async function getLead(businessId: string, leadId: string) {
+  assertTenantScope(businessId);
   const [row] = await db
     .select()
     .from(leads)

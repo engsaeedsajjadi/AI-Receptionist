@@ -1,3 +1,4 @@
+import { assertTenantScope } from "@/lib/request-context";
 import { and, eq, gte, inArray, lt, ne } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
@@ -43,6 +44,7 @@ const DEFAULT_CONFIG: SchedulingConfig = {
 };
 
 export async function getSchedulingConfig(businessId: string): Promise<{ config: SchedulingConfig; timezone: string }> {
+  assertTenantScope(businessId);
   const [biz] = await db
     .select({ settings: businesses.settings, timezone: businesses.timezone })
     .from(businesses)
@@ -55,6 +57,7 @@ export async function getSchedulingConfig(businessId: string): Promise<{ config:
 }
 
 export async function updateSchedulingConfig(businessId: string, raw: unknown): Promise<SchedulingConfig> {
+  assertTenantScope(businessId);
   const config = SchedulingConfigSchema.parse(raw);
   const [biz] = await db
     .select({ settings: businesses.settings })
@@ -119,6 +122,7 @@ export async function checkAvailability(input: {
   durationMinutes?: number;
   assignedUserId?: string;
 }): Promise<{ date: string; timezone: string; slots: AvailabilitySlot[] }> {
+  assertTenantScope(input.businessId);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date)) {
     throw new AppError(400, "VALIDATION_ERROR", "date must be YYYY-MM-DD");
   }
@@ -318,6 +322,7 @@ async function assertAppointmentRefsInBusiness(
 }
 
 export async function createAppointment(businessId: string, raw: unknown, opts?: { requestId?: string }) {
+  assertTenantScope(businessId);
   void opts;
   const input = CreateAppointmentSchema.parse(raw);
   const start = new Date(input.scheduledAt);
@@ -354,6 +359,7 @@ export async function createAppointment(businessId: string, raw: unknown, opts?:
 }
 
 export async function rescheduleAppointment(businessId: string, appointmentId: string, raw: unknown) {
+  assertTenantScope(businessId);
   const input = z.object({ scheduledAt: z.string().datetime({ offset: true }), durationMinutes: z.number().int().min(10).max(480).optional() }).parse(raw);
   const [existing] = await db
     .select()
@@ -414,6 +420,7 @@ export async function rescheduleAppointment(businessId: string, appointmentId: s
 }
 
 export async function cancelAppointment(businessId: string, appointmentId: string) {
+  assertTenantScope(businessId);
   const [updated] = await db
     .update(appointments)
     .set({ status: "CANCELLED", updatedAt: new Date() })
@@ -424,6 +431,7 @@ export async function cancelAppointment(businessId: string, appointmentId: strin
 }
 
 export async function getAppointment(businessId: string, appointmentId: string) {
+  assertTenantScope(businessId);
   const [row] = await db
     .select()
     .from(appointments)

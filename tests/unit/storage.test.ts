@@ -78,7 +78,7 @@ describe("LocalStorageProvider", () => {
     expect(url.pathname).toContain("/api/v1/files/business/biz-1/tts/reply.mp3");
     expect(verifyLocalSignedUrl(key, expires, sig)).toBe(true);
     // Tampered signature / key / expiry all fail closed.
-    expect(verifyLocalSignedUrl(key, expires, `${sig.slice(0, -1)}0`)).toBe(false);
+    expect(verifyLocalSignedUrl(key, expires, `${sig.slice(0, -1)}${sig.endsWith("0") ? "1" : "0"}`)).toBe(false);
     expect(verifyLocalSignedUrl(tenantKey("biz-1", "tts", "other.mp3"), expires, sig)).toBe(false);
     expect(verifyLocalSignedUrl(key, "not-a-number", sig)).toBe(false);
     const expired = new URL(await provider.getSignedUrl(key, -10));
