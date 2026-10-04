@@ -15,7 +15,9 @@
     "db:migrate": "tsx scripts/migrate.ts",
     "db:seed": "tsx scripts/seed.ts",
     "media:server": "tsx scripts/media-server.ts",
-    "maintenance": "tsx scripts/maintenance.ts"
+    "maintenance": "tsx scripts/maintenance.ts",
+    "test:coverage": "vitest run --coverage",
+    "worker": "tsx scripts/worker.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.936.0",
@@ -30,6 +32,7 @@
     "next": "16.2.6",
     "nodemailer": "^7.0.12",
     "openai": "^6.17.0",
+    "openid-client": "^6.8.8",
     "pdf-parse": "^1.1.1",
     "pg": "8.20.0",
     "pino": "^10.3.0",
@@ -46,6 +49,7 @@
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "@types/ws": "^8.18.1",
+    "@vitest/coverage-v8": "3.2.7",
     "drizzle-kit": "0.31.10",
     "eslint": "9.39.4",
     "eslint-config-next": "16.2.6",

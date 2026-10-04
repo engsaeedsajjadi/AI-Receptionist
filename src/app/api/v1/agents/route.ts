@@ -5,7 +5,7 @@ import { agents } from "@/db/schema";
 import { ApiError, ok, parseJson } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
 import { normalizePersianText } from "@/lib/normalization";
-import { hasRole } from "@/lib/permissions";
+import { hasPermission } from "@/lib/permissions";
 import { checkGlobalPublicRateLimit, withApiHandling } from "@/lib/server-core";
 
 export async function GET(req: NextRequest) {
@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
   return withApiHandling(async () => {
     await checkGlobalPublicRateLimit(req);
     const auth = await getAuthContext(req);
-    if (!hasRole(auth.role, "ADMIN")) throw new ApiError(403, "FORBIDDEN", "Insufficient permissions");
+    if (!hasPermission(auth.role, "agents:write")) throw new ApiError(403, "FORBIDDEN", "Insufficient permissions");
 
     const body = await parseJson<{
       name: string;

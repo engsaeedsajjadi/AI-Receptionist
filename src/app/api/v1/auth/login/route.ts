@@ -1,3 +1,4 @@
+import { verifyMfaLogin } from "@/lib/services/identity";
 import { eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { z } from "zod";
@@ -18,6 +19,7 @@ import { enforceRateLimit } from "@/lib/rate-limit";
 import { withApiHandling } from "@/lib/server-core";
 
 const loginSchema = z.object({
+  code: z.string().max(100).optional(),
   email: z.string().email().max(255),
   password: z.string().min(1).max(256),
 });
@@ -41,8 +43,12 @@ export async function POST(req: NextRequest) {
       throw new AppError(401, "INVALID_CREDENTIALS", "Invalid credentials");
     }
 
+    try { await verifyMfaLogin(user.id, body.code); }
+    catch (error) { await recordFailedLogin(user.id, user.failedLoginCount); throw error; }
     await recordSuccessfulLogin(user.id);
     const tokens = await issueAuthTokens({
+      credentialVersion: user.credentialVersion,
+      userAgent: req.headers.get("user-agent") ?? undefined,
       userId: user.id,
       businessId: user.businessId,
       role: user.role as UserRole,

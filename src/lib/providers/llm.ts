@@ -24,6 +24,7 @@ export type LlmToolDefinition = {
 };
 
 export type LlmToolCall = {
+  thoughtSignature?: string;
   id: string;
   name: string;
   arguments: Record<string, unknown>;

@@ -5,7 +5,7 @@ import { db } from "@/db";
 import { knowledgeDocuments } from "@/db/schema";
 import { ApiError, ok, parseJsonWith } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
-import { hasRole } from "@/lib/permissions";
+import { hasPermission } from "@/lib/permissions";
 import { enforceRateLimit } from "@/lib/rate-limit";
 import { reindexDocument } from "@/lib/services/knowledge";
 import { withApiHandling } from "@/lib/server-core";
@@ -22,7 +22,7 @@ export async function POST(req: NextRequest) {
   return withApiHandling(async (rid) => {
     await enforceRateLimit(req, "upload");
     const auth = await getAuthContext(req);
-    if (!hasRole(auth.role, "MANAGER")) throw new ApiError(403, "FORBIDDEN", "Insufficient permissions");
+    if (!hasPermission(auth.role, "knowledge:write")) throw new ApiError(403, "FORBIDDEN", "Insufficient permissions");
 
     const body = await parseJsonWith(req, reindexSchema).catch(() => ({ documentId: undefined as string | undefined }));
 

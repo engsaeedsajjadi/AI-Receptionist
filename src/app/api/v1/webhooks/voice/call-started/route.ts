@@ -30,6 +30,7 @@ export async function POST(req: NextRequest) {
     // must never burn a key).
     const { payload, idempotencyKey } = await verifyWebhookRequest(req, {
       secret: env.webhookSecret,
+      previousSecrets: env.previousWebhookSecrets,
       scope: "voice:call-started",
     });
     const body = parseWith(payloadSchema, payload);

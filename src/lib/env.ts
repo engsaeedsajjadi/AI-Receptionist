@@ -31,6 +31,13 @@ const envSchema = z.object({
     .default("false")
     .transform((v) => v === "true"),
 
+  IDENTITY_ENCRYPTION_KEY: z.string().regex(/^(?:[a-fA-F0-9]{64})?$/).default(""),
+  GOOGLE_CLIENT_ID: z.string().default(""),
+  GOOGLE_CLIENT_SECRET: z.string().default(""),
+  MICROSOFT_CLIENT_ID: z.string().default(""),
+  MICROSOFT_CLIENT_SECRET: z.string().default(""),
+  MICROSOFT_TENANT_ID: z.string().default(""),
+  VOICE_WEBHOOK_PREVIOUS_SECRET: z.string().default(""),
   VOICE_WEBHOOK_SECRET: z.string().default(""),
   N8N_WEBHOOK_SECRET: z.string().default(""),
 
@@ -211,6 +218,9 @@ export const env = {
   },
   get webhookSecret() {
     return getEnv().VOICE_WEBHOOK_SECRET || "dev-webhook-secret";
+  },
+  get previousWebhookSecrets() {
+    return [getEnv().VOICE_WEBHOOK_PREVIOUS_SECRET].filter(Boolean);
   },
   get n8nWebhookSecret() {
     return getEnv().N8N_WEBHOOK_SECRET || "dev-webhook-secret";

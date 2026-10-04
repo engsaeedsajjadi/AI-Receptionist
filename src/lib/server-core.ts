@@ -1,3 +1,4 @@
+import { requestContext } from "@/lib/request-context";
 import { NextRequest } from "next/server";
 import { handleApiError, requestId } from "@/lib/api";
 import { enforceRateLimit, type RateLimitPreset } from "@/lib/rate-limit";
@@ -22,9 +23,13 @@ export async function checkGlobalPublicRateLimit(req: NextRequest) {
  */
 export async function withApiHandling(fn: (requestId: string) => Promise<Response>) {
   const rid = requestId();
-  try {
-    return await fn(rid);
-  } catch (err) {
-    return handleApiError(err, rid);
-  }
+  return requestContext.run({ requestId: rid, traceId: crypto.randomUUID().replaceAll("-", "") }, async () => {
+    let response: Response;
+    try { response = await fn(rid); }
+    catch (err) { response = await handleApiError(err, rid, requestContext.getStore()); }
+    response.headers.set("x-request-id", rid);
+    response.headers.set("x-trace-id", requestContext.getStore()!.traceId);
+    response.headers.set("Cache-Control", "no-store");
+    return response;
+  });
 }

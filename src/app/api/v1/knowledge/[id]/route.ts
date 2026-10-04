@@ -6,7 +6,7 @@ import { knowledgeDocuments } from "@/db/schema";
 import { ApiError, ok, parseJsonWith } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
 import { normalizePersianText } from "@/lib/normalization";
-import { hasRole } from "@/lib/permissions";
+import { hasPermission } from "@/lib/permissions";
 import { checkGlobalPublicRateLimit, withApiHandling } from "@/lib/server-core";
 import { deleteDocument, reindexDocument } from "@/lib/services/knowledge";
 
@@ -39,7 +39,7 @@ export async function PUT(req: NextRequest, ctx: Ctx) {
   return withApiHandling(async (rid) => {
     await checkGlobalPublicRateLimit(req);
     const auth = await getAuthContext(req);
-    if (!hasRole(auth.role, "MANAGER")) throw new ApiError(403, "FORBIDDEN", "Insufficient permissions");
+    if (!hasPermission(auth.role, "knowledge:write")) throw new ApiError(403, "FORBIDDEN", "Insufficient permissions");
 
     const { id } = await ctx.params;
     const body = await parseJsonWith(req, updateSchema);
@@ -76,7 +76,7 @@ export async function DELETE(req: NextRequest, ctx: Ctx) {
   return withApiHandling(async () => {
     await checkGlobalPublicRateLimit(req);
     const auth = await getAuthContext(req);
-    if (!hasRole(auth.role, "MANAGER")) throw new ApiError(403, "FORBIDDEN", "Insufficient permissions");
+    if (!hasPermission(auth.role, "knowledge:write")) throw new ApiError(403, "FORBIDDEN", "Insufficient permissions");
 
     const { id } = await ctx.params;
     await deleteDocument(auth.businessId, id);

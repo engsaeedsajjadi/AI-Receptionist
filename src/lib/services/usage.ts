@@ -1,3 +1,4 @@
+import { assertTenantScope } from "@/lib/request-context";
 import { db } from "@/db";
 import { usageRecords } from "@/db/schema";
 import { estimateCost } from "@/lib/pricing";
@@ -35,6 +36,7 @@ function toQuantityString(quantity: number): string {
  * Provider-reported quantities are stored verbatim; cost is an estimate.
  */
 export async function recordUsage(input: RecordUsageInput): Promise<{ recorded: boolean; costUsd: number | null }> {
+  assertTenantScope(input.businessId);
   const cost = estimateCost(input.type, input.quantity);
   const values = {
     businessId: input.businessId,
@@ -70,6 +72,7 @@ export async function recordLlmUsage(input: {
   idempotencyKey?: string;
   metadata?: Record<string, unknown>;
 }): Promise<void> {
+  assertTenantScope(input.businessId);
   const meta = { ...(input.metadata ?? {}), model: input.model };
   if (input.usage.inputTokens) {
     await recordUsage({
@@ -104,6 +107,7 @@ export async function recordEmbeddingUsage(input: {
   idempotencyKey?: string;
   metadata?: Record<string, unknown>;
 }): Promise<void> {
+  assertTenantScope(input.businessId);
   if (!input.tokens) return;
   await recordUsage({
     businessId: input.businessId,

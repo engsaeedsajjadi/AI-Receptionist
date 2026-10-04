@@ -42,15 +42,22 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    environment:
+    environment: &app-environment
       NODE_ENV: production
       PORT: 3000
       APP_URL: ${APP_URL:?APP_URL is required}
       DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
       REDIS_URL: ${REDIS_URL:?REDIS_URL is required}
+      IDENTITY_ENCRYPTION_KEY: ${IDENTITY_ENCRYPTION_KEY:?IDENTITY_ENCRYPTION_KEY is required}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:-}
+      MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET:-}
+      MICROSOFT_TENANT_ID: ${MICROSOFT_TENANT_ID:-}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET is required}
       VOICE_WEBHOOK_SECRET: ${VOICE_WEBHOOK_SECRET:?VOICE_WEBHOOK_SECRET is required}
+      VOICE_WEBHOOK_PREVIOUS_SECRET: ${VOICE_WEBHOOK_PREVIOUS_SECRET:-}
       N8N_WEBHOOK_SECRET: ${N8N_WEBHOOK_SECRET:?N8N_WEBHOOK_SECRET is required}
       LLM_PROVIDER: ${LLM_PROVIDER:-openai}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -62,6 +69,8 @@ services:
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-openai}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
       EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1536}
+      VOICE_MEDIA_PUBLIC_URL: ${VOICE_MEDIA_PUBLIC_URL:?VOICE_MEDIA_PUBLIC_URL is required}
+      VOICE_MEDIA_TOKEN: ${VOICE_MEDIA_TOKEN:?VOICE_MEDIA_TOKEN is required}
       VOICE_PROVIDER: ${VOICE_PROVIDER:-generic}
       VOICE_API_BASE_URL: ${VOICE_API_BASE_URL:-}
       VOICE_API_KEY: ${VOICE_API_KEY:-}
@@ -104,6 +113,22 @@ services:
     networks:
       - backend
       - frontend
+
+  worker:
+    build: .
+    restart: always
+    command: ["node", "--import", "tsx", "scripts/worker.ts"]
+    environment:
+      <<: *app-environment
+      RUN_MIGRATIONS: "false"
+    depends_on:
+      app:
+        condition: service_healthy
+    stop_grace_period: 90s
+    healthcheck:
+      disable: true
+    networks:
+      - backend
 
   n8n:
     image: n8nio/n8n:1.x
@@ -148,6 +173,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET is required}
       VOICE_WEBHOOK_SECRET: ${VOICE_WEBHOOK_SECRET:?VOICE_WEBHOOK_SECRET is required}
+      VOICE_WEBHOOK_PREVIOUS_SECRET: ${VOICE_WEBHOOK_PREVIOUS_SECRET:-}
       N8N_WEBHOOK_SECRET: ${N8N_WEBHOOK_SECRET:?N8N_WEBHOOK_SECRET is required}
       VOICE_MEDIA_TOKEN: ${VOICE_MEDIA_TOKEN:?VOICE_MEDIA_TOKEN is required}
       VOICE_MEDIA_PORT: 3001

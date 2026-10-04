@@ -53,6 +53,7 @@ let dbReady: boolean | null = null;
 export async function ensureDbReady(): Promise<boolean> {
   if (dbReady !== null) return dbReady;
   dbReady = hasTestDatabase() && (await canConnect());
+  if (!dbReady && process.env.REQUIRE_INTEGRATION_TESTS === "1") throw new Error("Required test database is unavailable");
   return dbReady;
 }
 

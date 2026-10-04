@@ -1,4 +1,5 @@
 "use client";
+import type { UserRole } from "@/lib/permissions";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
@@ -7,14 +8,14 @@ export type DashboardUser = {
   businessId: string;
   name: string;
   email: string;
-  role: "ADMIN" | "MANAGER" | "AGENT";
+  role: UserRole;
 };
 
 type AuthContextValue = {
   user: DashboardUser | null;
   businessName: string | null;
   loading: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string, code?: string) => Promise<void>;
   logout: () => Promise<void>;
   /** Authenticated fetch (access token from memory, auto-refresh on 401). */
   api: (path: string, init?: RequestInit) => Promise<Response>;
@@ -40,7 +41,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [businessName, setBusinessName] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const refresh = useCallback(async (): Promise<string | null> => {
+  const refreshInFlight = useRef<Promise<string | null> | null>(null);
+  const doRefresh = useCallback(async (): Promise<string | null> => {
     try {
       const res = await fetch("/api/v1/auth/refresh", {
         method: "POST",
@@ -55,6 +57,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return null;
     }
   }, []);
+
+  const refresh = useCallback((): Promise<string | null> => {
+    if (!refreshInFlight.current) {
+      refreshInFlight.current = doRefresh().finally(() => { refreshInFlight.current = null; });
+    }
+    return refreshInFlight.current;
+  }, [doRefresh]);
 
   const fetchMe = useCallback(async (token: string) => {
     const res = await fetch("/api/v1/auth/me", {
@@ -85,11 +94,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [refresh, fetchMe]);
 
   const login = useCallback(
-    async (email: string, password: string) => {
+    async (email: string, password: string, code?: string) => {
       const res = await fetch("/api/v1/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ email, password, code }),
       });
       if (!res.ok) throw await parseError(res);
       const body = (await res.json()) as { accessToken: string };

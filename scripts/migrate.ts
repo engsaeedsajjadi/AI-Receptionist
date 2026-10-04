@@ -15,7 +15,8 @@ async function main() {
   if (!databaseUrl) throw new Error("DATABASE_URL is required");
 
   const pool = new Pool({ connectionString: databaseUrl });
-  const db = drizzle(pool);
+  const connection = await pool.connect();
+  const db = drizzle(connection);
   try {
     // Serialize concurrent boots (multi-replica deploys): only one migrator
     // runs DDL at a time; the lock releases automatically on disconnect.
@@ -38,7 +39,8 @@ async function main() {
     );
     console.log("[migrate] done");
   } finally {
-    await pool.end();
+    try { await connection.query("SELECT pg_advisory_unlock(918273645)"); }
+    finally { connection.release(); await pool.end(); }
   }
 }
 

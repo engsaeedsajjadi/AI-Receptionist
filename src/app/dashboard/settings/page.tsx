@@ -5,6 +5,7 @@ import { useAuth } from "@/components/dashboard/auth";
 import { LoadingState, PageHeader } from "@/components/dashboard/ui";
 
 type Settings = {
+  features?: { agent?: boolean; knowledge?: boolean; voice?: boolean; crm?: boolean; automation?: boolean };
   recording_enabled?: boolean;
   transcription_enabled?: boolean;
   retention_days?: number;
@@ -47,6 +48,7 @@ export default function SettingsPage() {
   return (
     <div>
       <PageHeader title="تنظیمات" desc="مشخصات کسب‌وکار، ساعات کاری و انتقال تماس" />
+      <section className="mb-4 rounded-2xl border bg-white p-4"><h2 className="mb-3 font-semibold">قابلیت‌های فضای کاری</h2><div className="flex flex-wrap gap-4">{([['agent', 'منشی'], ['knowledge', 'دانش'], ['voice', 'صوت'], ['crm', 'ارتباط مشتری'], ['automation', 'اتوماسیون']] as const).map(([key, label]) => <label key={key}><input type="checkbox" checked={settings.features?.[key] !== false} onChange={(e) => { const features = { ...settings.features, [key]: e.target.checked }; setSettings({ ...settings, features }); void apiJson("/api/v1/business/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ settings: { features } }) }).then(() => setMessage("قابلیت‌ها ذخیره شدند.")).catch((error: Error) => setMessage(error.message)); }} /> {label}</label>)}</div></section>
       <div className="grid gap-4 lg:grid-cols-2">
         <form
           className="space-y-3 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200"

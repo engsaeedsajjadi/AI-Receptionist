@@ -1,3 +1,4 @@
+import { assertTenantScope } from "@/lib/request-context";
 import { and, eq, lt } from "drizzle-orm";
 import { db } from "@/db";
 import { automationDispatches, businesses, notifications } from "@/db/schema";
@@ -33,6 +34,7 @@ export type NotifyResult = { id: string; delivered: boolean; duplicate: boolean 
  * 3. Update row to SENT/FAILED + record usage.
  */
 export async function notify(input: NotifyInput): Promise<NotifyResult> {
+  assertTenantScope(input.businessId);
   const channel: NotificationChannel = input.channel ?? getEnv().NOTIFICATION_DEFAULT_CHANNEL;
 
   if (input.idempotencyKey) {
@@ -269,6 +271,7 @@ export async function notifyNewLead(input: {
   assignedUserId?: string | null;
   requestId?: string;
 }): Promise<NotifyResult> {
+  assertTenantScope(input.businessId);
   return notify({
     businessId: input.businessId,
     userId: input.assignedUserId ?? null,
@@ -288,6 +291,7 @@ export async function notifyCallCompleted(input: {
   durationSeconds?: number | null;
   requestId?: string;
 }): Promise<NotifyResult> {
+  assertTenantScope(input.businessId);
   return notify({
     businessId: input.businessId,
     type: "call_completed",
@@ -306,6 +310,7 @@ export async function notifyAppointment(input: {
   action: "created" | "changed" | "cancelled";
   requestId?: string;
 }): Promise<NotifyResult> {
+  assertTenantScope(input.businessId);
   const titles = { created: "نوبت جدید", changed: "تغییر نوبت", cancelled: "لغو نوبت" } as const;
   return notify({
     businessId: input.businessId,
@@ -325,6 +330,7 @@ export async function notifyHumanHandoff(input: {
   reason?: string;
   requestId?: string;
 }): Promise<NotifyResult> {
+  assertTenantScope(input.businessId);
   return notify({
     businessId: input.businessId,
     type: "human_handoff",
@@ -390,6 +396,7 @@ export interface DispatchAutomationResult {
 export async function dispatchAutomationEvent(
   input: DispatchAutomationInput,
 ): Promise<DispatchAutomationResult> {
+  assertTenantScope(input.businessId);
   const [business] = await db
     .select({ id: businesses.id })
     .from(businesses)
