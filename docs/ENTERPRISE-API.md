@@ -46,3 +46,7 @@ GET `/api/v1/automation/jobs` lists tenant jobs for a manager/admin. POST `{id}`
 GET `/api/metrics` uses a separate `METRICS_TOKEN` bearer credential. It exposes process-wide metrics and is not a tenant API. Do not share this token with tenant users. Liveness/readiness remain `/api/health/live` and `/api/health/ready`.
 
 The accompanying API inventory lists every route/method present in the source. It is an inventory, not a generated complete OpenAPI request schema or proof of live provider acceptance.
+
+## Platform tenant administration
+
+`GET /api/v1/platform/tenants?limit=30&after=<uuid>` returns `{tenants,nextCursor}` with a safe projection (id, name, slug, active state, creation date), maximum 100 rows. `PATCH` accepts `{id,isActive,reason}`; reason must contain 10–1000 characters. Both require a live, active `SUPER_ADMIN` with enrolled MFA. Tenant roles cannot use these endpoints. The service independently revalidates database privileges. Own-tenant state changes return 409. Suspension atomically changes tenant state, increments every user's credential version, revokes sessions, and writes an audit event in the affected tenant. Repeating the same state is a no-op. Reactivation requires new login; it never resurrects revoked sessions. This is a deliberate, narrowly scoped control-plane exception to normal tenant-only reads. No impersonation or tenant data export is provided.

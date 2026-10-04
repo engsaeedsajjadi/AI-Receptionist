@@ -19,6 +19,7 @@ const NAV: Array<{ href: string; label: string; roles?: Array<UserRole> }> = [
   { href: "/dashboard/usage", label: "مصرف" },
   { href: "/dashboard/users", label: "کاربران", roles: ["ADMIN", "MANAGER"] },
   { href: "/dashboard/automation", label: "اتوماسیون", roles: ["MANAGER"] },
+  { href: "/dashboard/tenants", label: "مستأجرها", roles: ["SUPER_ADMIN"] },
   { href: "/dashboard/security", label: "امنیت حساب" },
   { href: "/dashboard/settings", label: "تنظیمات", roles: ["ADMIN"] },
 ];
