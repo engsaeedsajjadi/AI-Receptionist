@@ -44,3 +44,7 @@ Agent configuration supports `memoryEnabled` and `retrievalMode: tools|automatic
 ## Platform administrator bootstrap
 
 Use a dedicated operator tenant. Register a user, verify email through SMTP and enroll MFA first. An infrastructure operator with database access can run `npx tsx scripts/platform-admin.ts <user-uuid>` to promote this exact existing account. The command rejects inactive/unverified/non-MFA accounts, records an audit entry and invalidates existing sessions. Sign in again using MFA, then open `/dashboard/tenants`. No tenant-facing endpoint grants SUPER_ADMIN. Keep database/operator access restricted. The panel supports tenant listing and suspension/reactivation; provisioning still uses the existing registration flow. Suspension blocks new authenticated requests and revokes credentials; it does not cancel already-running provider calls or delete retained data. Coordinate active call termination separately.
+
+## Explicit live AI acceptance
+
+`npm run test:live:ai` requires a separate disposable `TEST_DATABASE_URL`, `LIVE_TEST_CONFIRM_RESET=yes` and configured real LLM credentials. It resets that test database. The live configuration forces DATABASE_URL to the explicitly designated test database before imports. Never point this command at a production database. Missing credentials fail the acceptance command; these external tests are not counted as normal CI passes.

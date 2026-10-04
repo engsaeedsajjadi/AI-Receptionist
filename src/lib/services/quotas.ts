@@ -1,3 +1,4 @@
+import { metrics } from "@/lib/telemetry";
 import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
@@ -22,7 +23,7 @@ function normalize(input: Amounts): Record<string, string> {
   return Object.fromEntries(Object.entries(AmountsSchema.parse(input)).sort(([a], [b]) => a.localeCompare(b)).map(([meter, quantity]) => [meter, decimal(units(quantity!))]));
 }
 function same(a: Record<string, string>, b: Record<string, string>) { return JSON.stringify(Object.entries(a).sort()) === JSON.stringify(Object.entries(b).sort()); }
-function exceeded(meter: string) { return new AppError(402, "QUOTA_EXCEEDED", "Tenant usage limit reached", { meter }); }
+function exceeded(meter: string) { metrics().quotaRejections.inc({ meter }); return new AppError(402, "QUOTA_EXCEEDED", "Tenant usage limit reached", { meter }); }
 export async function reserveUsage(businessId: string, key: string, input: Amounts, now = new Date()) {
   assertTenantScope(businessId); z.string().min(1).max(255).parse(key);
   const amounts = normalize(input);

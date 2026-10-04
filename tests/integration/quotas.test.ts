@@ -1,3 +1,4 @@
+import { metrics } from "@/lib/telemetry";
 import { beforeAll, afterAll, describe, expect, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { eq } from "drizzle-orm";
@@ -27,6 +28,8 @@ describe.skipIf(!hasTestDatabase())("quota admission and settlement", () => {
     expect(results.filter(result => result.status === "rejected")).toHaveLength(8);
     const meter = (await getQuotaStatus(id)).meters.find(m => m.meter === "tts_characters")!;
     expect(meter.reserved).toBe("12.0000"); expect(meter.warning).toBe(true);
+    const counter = await metrics().quotaRejections.get();
+    expect(counter.values.some(value => value.labels.meter === "tts_characters" && value.value >= 8)).toBe(true);
   });
   itDb("multi-meter rejection rolls back every preceding allocation", async () => {
     const id = await tenant({ llm_input_tokens: limit(100), llm_output_tokens: limit(0) });
