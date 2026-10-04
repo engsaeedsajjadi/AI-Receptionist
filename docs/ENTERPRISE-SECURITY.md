@@ -25,7 +25,7 @@ Primary references: https://github.com/vercel/next.js/releases/tag/v16.3.8 ; htt
 ## Remaining risks / required evidence
 
 - No PostgreSQL RLS rollout; table-by-table service/route review and complete relationship coverage still required. Webhook infrastructure ledger retains nullable tenant identity.
-- SUPER_ADMIN is currently a tenant-bound role; a complete audited platform-administration control plane is not implemented.
+- SUPER_ADMIN tenant listing and state changes now use a dedicated MFA-gated control plane with live database privilege checks, row locks and transactional audit/session revocation. Own-tenant state changes are prohibited. Provisioning and broader platform operations remain incomplete. Suspension does not cancel already-running provider requests.
 - Real Google/Microsoft/SMTP acceptance and OIDC negative cryptographic protocol tests remain required; unit tests alone are insufficient.
 - Strict refresh replay revokes all sessions. Multi-tab refresh coordination beyond the current single-tab single-flight client still needs implementation/acceptance.
 - Provider tool execution is not exactly once across crashes. Stable event keys and queue acknowledgement protect selected paths; complete transactional outbox/notification coverage remains outstanding.

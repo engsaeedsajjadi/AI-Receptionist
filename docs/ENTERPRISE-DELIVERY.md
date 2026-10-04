@@ -24,8 +24,10 @@ This branch is an implementation in progress, **not an approved production relea
 
 ## Outstanding release requirements
 
-Subscriptions/invoices/atomic quota reservation; full agent intent classification and evaluated verification; document ACL/versioning/metadata/reranking/analytics; native telephony connectors and real streaming/cloning acceptance; configurable follow-up rules; notification scheduling/templates/WhatsApp; platform provisioning and expanded administration; complete UX and browser E2E; measured 80% coverage; deployed telemetry, deployment/restore drills and live provider acceptance.
+Automatic payment gateway, recurring collection and atomic quota reservation; full agent intent classification and evaluated verification; document ACL/versioning/metadata/reranking/analytics; native telephony connectors and real streaming/cloning acceptance; configurable follow-up rules; notification scheduling/templates/WhatsApp; platform provisioning and expanded administration; complete UX and browser E2E; measured 80% coverage; deployed telemetry, deployment/restore drills and live provider acceptance.
 
 No placeholder payment success, synthetic provider success or fabricated analytics is substituted for these capabilities. This is not completion of all twenty requirements. Do not merge/deploy solely because compilation and functional tests succeed.
 
 Platform tenant listing and suspension/reactivation with MFA-gated SUPER_ADMIN access, atomic session revocation and audit records are now implemented, pending the next remote integration run. See deployment documentation for audited bootstrap. Subscription/invoice/quota work remains outstanding.
+
+Manual invoice billing now provides configured plan pricing, immutable invoice snapshots, tenant invoice management, MFA-protected operator settlement with globally unique payment references, atomic monthly subscription activation/renewal and cancellation. Billing limits are not yet enforced. This is a manual-invoice workflow, not a payment processor integration. See ENTERPRISE-BILLING.md.

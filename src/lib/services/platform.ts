@@ -11,7 +11,7 @@ export const TenantStateSchema = z.object({
 const PageSchema = z.object({ after: z.string().uuid().optional(), limit: z.coerce.number().int().min(1).max(100).default(30) });
 type Executor = Pick<typeof db, "select">;
 // Deliberate control-plane exception: check live identity before any cross-tenant query.
-async function requirePlatformAdmin(executor: Executor, actorId: string, lock = false) {
+export async function requirePlatformAdmin(executor: Executor, actorId: string, lock = false) {
   z.string().uuid().parse(actorId);
   const query = executor.select({ id: users.id, businessId: users.businessId })
     .from(users).innerJoin(businesses, eq(users.businessId, businesses.id))

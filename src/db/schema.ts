@@ -670,3 +670,31 @@ export const crmTasks = pgTable("crm_tasks", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({ dueIdx: index("crm_tasks_due_idx").on(t.businessId, t.status, t.dueAt) }));
+
+// Manual-invoice subscriptions. Payment is recorded by an MFA-protected platform operator.
+export const subscriptions = pgTable("subscriptions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+  plan: varchar("plan", { length: 20 }).notNull().default("FREE"),
+  periodStart: timestamp("period_start", { withTimezone: true }),
+  periodEnd: timestamp("period_end", { withTimezone: true }),
+  cancelAtPeriodEnd: boolean("cancel_at_period_end").notNull().default(false),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({ tenantUnique: uniqueIndex("subscriptions_business_unique").on(t.businessId) }));
+export const billingInvoices = pgTable("billing_invoices", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+  plan: varchar("plan", { length: 20 }).notNull(),
+  amountMinor: integer("amount_minor").notNull(),
+  currency: varchar("currency", { length: 3 }).notNull(),
+  status: varchar("status", { length: 20 }).notNull().default("open"),
+  idempotencyKey: uuid("idempotency_key").notNull(),
+  customerName: varchar("customer_name", { length: 255 }).notNull(),
+  issuer: text("issuer").notNull(),
+  paymentInstructions: text("payment_instructions").notNull(),
+  paymentReference: varchar("payment_reference", { length: 255 }),
+  paidAt: timestamp("paid_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({ tenantKey: uniqueIndex("billing_invoices_tenant_key").on(t.businessId, t.idempotencyKey),
+  referenceUnique: uniqueIndex("billing_invoices_payment_reference").on(t.paymentReference),
+  tenantCreated: index("billing_invoices_tenant_created").on(t.businessId, t.createdAt) }));

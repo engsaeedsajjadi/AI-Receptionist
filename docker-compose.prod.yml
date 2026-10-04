@@ -43,6 +43,7 @@ services:
       redis:
         condition: service_healthy
     environment: &app-environment
+      BILLING_CATALOG_JSON: ${BILLING_CATALOG_JSON:-}
       METRICS_TOKEN: ${METRICS_TOKEN:-}
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}
       OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}

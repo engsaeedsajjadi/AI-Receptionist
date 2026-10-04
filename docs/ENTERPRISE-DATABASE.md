@@ -37,3 +37,7 @@ Composite foreign keys reject cross-tenant relationships. Nullable links retain 
 The schema stores MFA secrets encrypted with AES-GCM and user-specific associated data; recovery/reset/refresh secrets are hashed. Encryption keys are not stored in the database. `agent_versions.snapshot` and call metadata/transcripts require the same access/retention controls as primary customer data.
 
 Review SQL migrations rather than using db:push in production. Custom deferred constraints are intentionally migration-owned. The migration runner pins its advisory-lock connection; migrations are serialized. Back up before migrating and test restore/upgrade against historical records. Tests truncate tables and must use isolated test databases.
+
+## Billing migration 0012
+
+`subscriptions` has one row per business; `billing_invoices` stores immutable plan/price/issuer/customer snapshots scoped by business. Invoice request keys are unique per business; payment references are globally unique to prevent reuse. Positive amounts, supported plan/currency/status values, paid-field consistency and valid subscription periods are migration-owned CHECK constraints. Invoice UUID is the immutable invoice identifier. No existing tenant row or usage is deleted/backfilled into a paid plan. There are now 27 tables.

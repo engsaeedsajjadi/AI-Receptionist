@@ -64,3 +64,13 @@ Generated from source exports on 2026-10-04. Method-specific permissions and pay
 | `/api/v1/webhooks/voice/call-started` | POST |
 | `/api/v1/webhooks/voice/tool-call` | POST |
 | `/api/v1/webhooks/voice/transcript` | POST |
+
+## Platform additions
+
+- `GET /api/v1/platform/tenants`: MFA-gated SUPER_ADMIN listing with cursor pagination.
+- `PATCH /api/v1/platform/tenants`: audited suspension/reactivation; active sessions are revoked on suspension.
+
+## Billing additions
+
+- `GET, POST, PATCH, DELETE /api/v1/billing`: tenant-admin subscription/invoice management.
+- `GET, POST /api/v1/platform/billing`: MFA-gated platform open invoices and payment reconciliation.
