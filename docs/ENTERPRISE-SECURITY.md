@@ -16,6 +16,8 @@ Status: release blocked pending the outstanding items below. This is an engineer
 - New JSON parser bounds body bytes before parsing. Invalid reindex input no longer escalates into reindexing all documents.
 - Operational metrics require a distinct bearer credential; no customer/tenant metric labels are exposed. Trace bodies do not contain prompts or transcripts.
 
+- Manual invoice settlement requires an active MFA-enabled SUPER_ADMIN. Tenant admins cannot mark invoices paid. Tenant/invoice locks, exact amount/currency comparison and a globally unique payment reference protect concurrent/idempotent settlement. Subscription updates roll back when payment-reference uniqueness fails. No bank verification or quota enforcement is implied.
+
 ## Dependency review
 
 The original locked Next.js/Nodemailer/PostCSS/sharp dependency graph had high/critical advisories. Upgraded to patched versions and reran `npm audit --omit=dev --audit-level=high`: zero known production dependency vulnerabilities on this date. This does not establish container-image or application security. Run dependency and image scans continuously.
