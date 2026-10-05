@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, type ReactNode } from "react";
 import { useAuth } from "@/components/dashboard/auth";
+import { useTenantBranding } from "@/components/dashboard/branding";
 import { LoadingState } from "@/components/dashboard/ui";
 
 const NAV: Array<{ href: string; label: string; roles?: Array<UserRole> }> = [
@@ -32,6 +33,7 @@ export function DashboardShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { user, businessName, loading, logout } = useAuth();
+  const { branding } = useTenantBranding();
 
   const isLoginPage = pathname === "/dashboard/login";
 
@@ -60,8 +62,15 @@ export function DashboardShell({ children }: { children: ReactNode }) {
   return (
     <div className="mx-auto flex min-h-screen w-full max-w-7xl gap-4 px-4 py-6 sm:px-6">
       <aside className="hidden w-56 shrink-0 md:block">
-        <div className="sticky top-6 rounded-2xl bg-slate-900 p-4 text-white">
+        <div className="sticky top-6 rounded-2xl p-4 text-white" style={{ backgroundColor: branding.accentColor }}>
+          {branding.logoUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element -- tenant-provided https logo, size unknown
+            <img src={branding.logoUrl} alt={businessName ?? branding.productName} className="mb-2 h-8 max-w-full object-contain" />
+          ) : null}
           <p className="truncate text-sm font-bold">{businessName ?? "داشبورد"}</p>
+          {branding.hidePlatformBranding ? null : (
+            <p className="mt-1 truncate text-[10px] text-white/60">{branding.productName}</p>
+          )}
           <p className="mt-1 truncate text-xs text-slate-300">
             {user.name} — {user.role}
           </p>
