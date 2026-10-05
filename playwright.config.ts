@@ -28,7 +28,11 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   retries: process.env.CI ? 1 : 0,
-  reporter: process.env.CI ? [["list"], ["json", { outputFile: "test-results/browser.json" }]] : [["list"]],
+  // The `github` reporter turns failures into check-run annotations, so a red
+  // browser job is diagnosable from the pull request itself.
+  reporter: process.env.CI
+    ? [["list"], ["github"], ["json", { outputFile: "test-results/browser.json" }]]
+    : [["list"]],
   globalSetup: "./tests/browser/global-setup.ts",
   use: {
     baseURL: BASE_URL,

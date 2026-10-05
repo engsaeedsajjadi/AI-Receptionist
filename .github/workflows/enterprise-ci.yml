@@ -170,7 +170,7 @@ jobs:
       - run: bash scripts/ci/restore-drill.sh
       - run: docker build -t ai-receptionist:ci .
       - name: Container image vulnerability scan (Trivy)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           image-ref: ai-receptionist:ci
           format: table
