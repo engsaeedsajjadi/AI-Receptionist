@@ -6,6 +6,7 @@ import { agents, businesses, calls, usageRecords, webhookEvents } from "@/db/sch
 import { AppError } from "@/lib/errors";
 import { assertTenantScope } from "@/lib/request-context";
 import { tenantFeaturesSchema } from "@/lib/tenant-config";
+import { tenantServingState } from "@/lib/tenant-lifecycle";
 import { consumeUsageInTransaction } from "@/lib/services/quotas";
 import { reserveCallQuota } from "@/lib/services/voice-usage";
 export async function registerInboundCall(input: {
@@ -18,7 +19,8 @@ export async function registerInboundCall(input: {
   return db.transaction(async tx => {
     const [business] = await tx.select().from(businesses).where(eq(businesses.id, input.businessId)).for("update");
     if (!business) throw new AppError(404, "BUSINESS_NOT_FOUND", "Business not found");
-    if (!business.isActive) throw new AppError(403, "FORBIDDEN", "Business is inactive");
+    const serving = tenantServingState(business);
+    if (!serving.serving) throw new AppError(403, "FORBIDDEN", "Business is inactive");
     if (!tenantFeaturesSchema.parse(business.settings.features ?? {}).voice) throw new AppError(403, "FORBIDDEN", "Voice is disabled for this tenant");
     if (input.agentId) {
       const [agent] = await tx.select({ id: agents.id }).from(agents).where(and(eq(agents.id, input.agentId), eq(agents.businessId, input.businessId), eq(agents.isActive, true)));
