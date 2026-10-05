@@ -2,7 +2,106 @@
 
 import { useEffect, useState } from "react";
 import { useAuth } from "@/components/dashboard/auth";
-import { Badge, EmptyState, LoadingState, PageHeader } from "@/components/dashboard/ui";
+import { Badge, Card, EmptyState, LoadingState, PageHeader } from "@/components/dashboard/ui";
+
+type IntentReport = {
+  window: { days: number; since: string };
+  calls: number;
+  turns: number;
+  withSlots: number;
+  total: number;
+  unknownRate: number | null;
+  clarificationRate: number | null;
+  byIntent: Array<{ intent: string; count: number }>;
+  unactionableByIntent: Array<{ intent: string; count: number }>;
+};
+
+const pct = (value: number | null) => (value === null ? "—" : `${Math.round(value * 100)}%`);
+
+/** How well the assistant understood callers in the last 30 days. */
+function IntentQualityPanel() {
+  const { apiJson } = useAuth();
+  const [report, setReport] = useState<IntentReport | null>(null);
+  const [days, setDays] = useState(30);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiJson<IntentReport>(`/api/v1/analytics/intent?days=${days}`)
+      .then((data) => {
+        if (!cancelled) setReport(data);
+      })
+      .catch((err: Error) => {
+        if (!cancelled) setError(err.message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [apiJson, days]);
+
+  return (
+    <div className="mb-4 rounded-xl bg-white p-4 ring-1 ring-slate-200">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <p className="font-medium">کیفیت درک تماس‌گیرنده</p>
+        <select
+          value={days}
+          onChange={(e) => {
+            // Reset the error in the handler (not in the effect) so the panel
+            // never sets state synchronously during render/effects.
+            setError(null);
+            setReport(null);
+            setDays(Number(e.target.value));
+          }}
+          className="rounded-lg border border-slate-200 px-2 py-1 text-xs"
+        >
+          {[7, 30, 90].map((d) => (
+            <option key={d} value={d}>
+              {d} روز گذشته
+            </option>
+          ))}
+        </select>
+      </div>
+      {error ? <p className="text-xs text-rose-700">{error}</p> : null}
+      {!report && !error ? <p className="text-xs text-slate-500">در حال بارگذاری…</p> : null}
+      {report ? (
+        <>
+          <div className="grid gap-3 sm:grid-cols-4">
+            <Card title="تماس‌های بررسی‌شده" value={report.calls} sub={`${report.turns} نوبت گفت‌وگو`} />
+            <Card title="قصد نامشخص" value={pct(report.unknownRate)} sub="نیاز به پرسش روشن‌سازی" />
+            <Card title="غیرقابل‌اقدام" value={pct(report.clarificationRate)} sub="نیاز به تأیید پیش از اقدام" />
+            <Card title="با اطلاعات کامل" value={pct(report.turns ? report.withSlots / report.turns : null)} sub="شماره/نام/بازدید ثبت‌شده" />
+          </div>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <div>
+              <p className="mb-1 text-xs font-medium text-slate-600">پرکاربردترین قصدها</p>
+              <ul className="space-y-1 text-xs">
+                {report.byIntent.slice(0, 6).map((entry) => (
+                  <li key={entry.intent} className="flex items-center justify-between gap-2">
+                    <span dir="ltr" className="text-slate-700">{entry.intent}</span>
+                    <span className="text-slate-500">{entry.count}</span>
+                  </li>
+                ))}
+                {report.byIntent.length === 0 ? <li className="text-slate-500">داده‌ای در این بازه ثبت نشده است.</li> : null}
+              </ul>
+            </div>
+            <div>
+              <p className="mb-1 text-xs font-medium text-slate-600">قصدهایی که منشی نتوانست روی آن‌ها اقدام کند</p>
+              <ul className="space-y-1 text-xs">
+                {report.unactionableByIntent.slice(0, 6).map((entry) => (
+                  <li key={entry.intent} className="flex items-center justify-between gap-2">
+                    <span dir="ltr" className="text-slate-700">{entry.intent}</span>
+                    <Badge tone="amber">{entry.count}</Badge>
+                  </li>
+                ))}
+                {report.unactionableByIntent.length === 0 ? <li className="text-slate-500">موردی ثبت نشده است.</li> : null}
+              </ul>
+            </div>
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
 
 type Agent = {
   id: string;
@@ -59,6 +158,7 @@ export default function AgentPage() {
   return (
     <div>
       <PageHeader title="منشی هوشمند" desc="پیکربندی رفتار منشی و گفت‌وگوی آزمایشی" />
+      <IntentQualityPanel />
       <div className="mb-4 flex flex-wrap gap-2">
         {agents.map((a) => (
           <button

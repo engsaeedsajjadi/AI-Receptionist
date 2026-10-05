@@ -5,6 +5,18 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added — typed intent boundary on the live turn
+- `runAgentTurn` resolves the caller's intent deterministically before the model
+  sees the message, appends a bounded confirmation hint when a side-effecting
+  intent is not actionable, stores the decision (intent, confidence, reason,
+  slot *keys* — never the utterance or slot values) on the agent transcript row
+  and logs `intent.resolve`; the turn result exposes `intent`.
+- `GET /api/v1/analytics/intent` (tenant-scoped, `agents:read`, `days` ≤ 90):
+  turns/calls, unknown and clarification rates, per-intent counts and the
+  intents the assistant could not act on; documented in the OpenAPI document.
+- Dashboard: an intent-quality panel on the assistant page (7/30/90-day window).
+
+
 ### Fixed — retrieval ACL fail-open and unenforced grounding
 - `hybridSearch` accepted an optional ACL `scope`; when omitted the predicate
   became `TRUE`, silently removing every ROLE/AGENT/PRIVATE/CATEGORY
