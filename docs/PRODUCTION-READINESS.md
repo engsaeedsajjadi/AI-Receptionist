@@ -17,13 +17,13 @@ Node 22.
 | `npm ci` | pass |
 | `npx tsc --noEmit` (`npm run typecheck`) | pass, 0 errors |
 | `npx eslint .` (`npm run lint`) | pass, 0 problems |
-| `npx vitest run` | **786 tests / 93 files passed, 0 skipped, 0 failed** |
-| `npx vitest run --coverage` | **statements 92.19% · lines 92.19% · functions 93.81% · branches 81.58% (15961/17313, 849/905, 4602/5641)** — all four 80% thresholds pass, 0 skipped; see `docs/coverage-baseline.txt` |
+| `npx vitest run` | **798 tests / 95 files passed, 0 skipped, 0 failed** |
+| `npx vitest run --coverage` | **statements 92.30% · lines 92.30% · functions 94.03% · branches 81.88% (16048/17386, 852/906, 4665/5697)** — all four 80% thresholds pass, 0 skipped; see `docs/coverage-baseline.txt` |
 | `npm run db:migrate` (twice) | pass; migrations `0014`–`0018` apply cleanly on a fresh and on a restored database |
 | `node scripts/ci/check-migration-safety.mjs` | pass (no `db:push` in deploy paths, journal/snapshot coverage complete, destructive statements justified) |
 | `node scripts/ci/index-audit.mjs` | pass (50 tenant tables tenant-indexed, 181 public indexes, forced-index plans available, incl. the keyset pagination window) |
 | `node scripts/ci/pii-log-audit.mjs` | pass — every structured log call site is free of raw request bodies, credential keys and unmasked personal data (0 waivers) |
-| `node scripts/ci/check-test-results.mjs test-results/vitest.json` | pass — 270 suites / 786 tests, 0 skipped, all required integration + e2e files executed |
+| `node scripts/ci/check-test-results.mjs test-results/vitest.json` | pass — 274 suites / 798 tests, 0 skipped, all required integration + e2e files executed |
 | `bash scripts/ci/restore-drill.sh` | **pass** — backup → isolated restore → sentinel tenant round-trip → migrate ×2 → health checks |
 | `for s in llm embedding stt tts smtp oauth storage telephony; do node scripts/ci/check-live-suite-fails.mjs $s; done` | **8/8 suites fail loudly without credentials** (never skip-green) |
 | `npm run build` | pass (production build, 51 routes) |
@@ -74,7 +74,7 @@ Node 22.
 | Tenant data export | `/admin/exports` + `export.ready` outbox topic | data-governance suite | No production export | **PASS (source + tests)** | Large-tenant export timing |
 | Storage quotas / reconciliation | `storage-usage.ts`, maintenance reconciliation | quota-reconciliation | No production bucket | **PARTIAL** | Live bucket listing acceptance |
 | Retention policies | `data-governance.ts`, tenant `retention_days` setting, maintenance job | data-governance | No production run | **PASS (source + tests)** | — |
-| Malware scanning adapter | `MalwareScanner` interface + heuristic + HTTP engines, upload rejection policy | identity-provisioning tests | No real AV engine | **PARTIAL** | Real scanner endpoint |
+| Malware scanning adapter | **Wired into the only file-ingestion path** (`ingestFile` scans before extract/archive/index): heuristic engine + ClamAV-compatible HTTP adapter with honest `clean`/`infected`/`unavailable` verdicts; `infected` → 400 `MALWARE_DETECTED` with the file quarantined (metered) and the document recorded `failed` (never `indexed`, so never searchable); `unavailable` follows `MALWARE_SCAN_STRICT` (production default = reject 503 `SCANNER_UNAVAILABLE`, never treated as clean) and is stamped on the document when lenient | `knowledge-upload` (7: missing field, role denial, 415/400/413, MIME/extension mismatch, magic-byte spoofing, clean verdict persisted, EICAR → quarantine + unsearchable, strict/lenient unavailable, honest 503 without embeddings), identity-provisioning | No real AV engine endpoint | **PASS (source + tests)** | **BLOCKED — real ClamAV endpoint (`MALWARE_SCAN_URL`) acceptance** |
 | Notification templates + scheduling | `notifications.ts`, template/queue handling, outbox `notification.requested` | notifications-usage | SMTP live | **PARTIAL** | Live email + scheduling clock |
 | WhatsApp abstraction | `WhatsAppCloudProvider` (Meta Cloud API, template + text modes, digit-only recipient normalisation, timeout/abort, provider error surfaced verbatim); channel wired through notifications/automation dispatch; env schema + production validator | `tests/unit/whatsapp-notifications.test.ts` (10 cases) | No live WhatsApp Business account | **PASS (source + tests)** | **BLOCKED — Meta Cloud API credentials** |
 | CRM follow-up | `crm.ts` pipelines/opportunities/tasks + follow-up rules | crm/dashboard-contracts tests | n/a | **PASS (source + tests)** | — |

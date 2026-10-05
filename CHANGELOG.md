@@ -5,6 +5,23 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Fixed — malware scanning was never actually applied to uploads
+- `ingestFile` (the only file-ingestion path) now scans before extracting,
+  archiving or indexing: an infected file is rejected 400 `MALWARE_DETECTED`,
+  quarantined best-effort, recorded as `failed` (unsearchable) with the
+  signature; an unreachable scanner rejects 503 `SCANNER_UNAVAILABLE` under the
+  strict policy (production default) instead of passing as clean, and is stamped
+  on the document when the policy is lenient. Clean verdicts (engine +
+  strictness) are recorded in document metadata.
+- Covered by `tests/integration/knowledge-upload.test.ts` (7 cases).
+
+### Added — Sentry integration tests
+- `tests/unit/monitoring.test.ts` (5): disabled without a DSN (no SDK import),
+  idempotent init, header redaction in `beforeSend`, credential redaction of
+  captured context, request tags/user, SDK-init failure and env failure both
+  degrade to disabled without breaking the request path.
+
+
 ### Fixed / hardened — inbound telephony routing
 - One phone number belongs to one tenant: partial unique index on
   `businesses.phone` (migration 0018), canonical storage on
