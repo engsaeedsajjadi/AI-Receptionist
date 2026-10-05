@@ -1,0 +1,8 @@
+# Secret-scan false positives, recorded by fingerprint (commit:file:rule:line).
+#
+# tests/integration/provider-adapters.test.ts stubbed a signed-URL key with a
+# high-entropy placeholder, which the generic-api-key rule correctly treats as a
+# secret-pattern hit. It was never a credential, and the current revision uses a
+# low-entropy value; the historical commit stays inside pull-request ranges, so
+# its finding is recorded here.
+58e2d6c3bfe464ee7ec3b3df96dfb7d4fecbd67c:tests/integration/provider-adapters.test.ts:generic-api-key:201

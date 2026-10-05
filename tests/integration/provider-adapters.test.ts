@@ -198,7 +198,10 @@ describe("notification providers", () => {
 describe("storage providers", () => {
   beforeAll(async () => {
     await ensureDbReady();
-    stubEnv("JWT_SECRET", "test-jwt-secret-for-signed-urls-0123456789");
+    // Deliberately low-entropy (kept ≥32 chars to match the production rule):
+    // a high-entropy fake secret here is indistinguishable from a real leak to a
+    // secret scanner, and this value only signs test URLs.
+    stubEnv("JWT_SECRET", "test-jwt-secret-aaaaaaaaaaaaaaaa");
   });
   afterAll(async () => {
     vi.unstubAllEnvs();
