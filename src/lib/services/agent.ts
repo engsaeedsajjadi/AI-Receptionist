@@ -99,6 +99,8 @@ export type AgentTurnResult = {
   reply: string;
   toolCalls: Array<{ tool: string; status: string }>;
   agentId: string;
+  /** Tenant-configured voice for this agent (synthesis override; see voice-safety). */
+  voiceId: string;
   usage: { inputTokens: number; outputTokens: number };
 };
 
@@ -270,7 +272,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
     try { await summarizeConversation({ businessId: input.businessId, callId: input.callId, requestId: input.requestId, llm, model: config.model ?? undefined }); }
     catch (error) { logWarn("Conversation summary unavailable", { businessId: input.businessId, callId: input.callId, error: error instanceof Error ? error.message : String(error) }); }
   }
-  return { reply, toolCalls: executed, agentId: agent.id, usage: { inputTokens, outputTokens } };
+  return { reply, toolCalls: executed, agentId: agent.id, voiceId: agent.voiceId, usage: { inputTokens, outputTokens } };
 }
 
 /** Safe fallback reply when the LLM call itself fails. */

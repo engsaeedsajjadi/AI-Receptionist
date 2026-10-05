@@ -5,6 +5,7 @@ import { db } from "@/db";
 import { leads } from "@/db/schema";
 import { AppError } from "@/lib/errors";
 import { advisoryXactLock } from "@/lib/tx";
+import { enqueueOutbox } from "@/lib/services/outbox";
 import { findOrCreateCustomer } from "@/lib/services/customers";
 import {
   normalizePersianText,
@@ -168,6 +169,13 @@ export async function createOrUpdateLead(input: {
         .set({ ...patch, status: "NEW", source: input.source ?? latest.source, updatedAt: new Date() })
         .where(eq(leads.id, latest.id))
         .returning();
+      await enqueueOutbox(tx, {
+        businessId: input.businessId,
+        topic: "lead.created",
+        idempotencyKey: `lead.created:${reopened.id}:${reopened.updatedAt.toISOString()}`,
+        payload: { businessId: input.businessId, id: reopened.id, leadId: reopened.id, customerId: reopened.customerId,
+          status: reopened.status, source: reopened.source, outcome: "reopened", callId: input.callId ?? null },
+      });
       return { lead: reopened, outcome: "reopened" };
     }
 
@@ -190,6 +198,14 @@ export async function createOrUpdateLead(input: {
         summary: e.summary,
       })
       .returning();
+    await enqueueOutbox(tx, {
+      businessId: input.businessId,
+      topic: "lead.created",
+      idempotencyKey: `lead.created:${created.id}`,
+      payload: { businessId: input.businessId, id: created.id, leadId: created.id, customerId: created.customerId,
+        status: created.status, source: created.source, type: created.type, outcome: latest ? "existing_customer_new_lead" : "created",
+        callId: input.callId ?? null },
+    });
     return { lead: created, outcome: latest ? "existing_customer_new_lead" : "created" };
   });
 }
