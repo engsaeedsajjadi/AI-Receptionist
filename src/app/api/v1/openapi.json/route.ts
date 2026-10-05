@@ -110,6 +110,7 @@ export const DOCUMENTED_ROUTES: Array<{ path: string; file: string }> = [
   { path: "/api/v1/business/voice-consent", file: "src/app/api/v1/business/voice-consent/route.ts" },
   { path: "/api/v1/public/branding", file: "src/app/api/v1/public/branding/route.ts" },
   { path: "/api/v1/leads/{id}/score", file: "src/app/api/v1/leads/[id]/score/route.ts" },
+  { path: "/api/v1/analytics/intent", file: "src/app/api/v1/analytics/intent/route.ts" },
   { path: "/api/v1/notifications", file: "src/app/api/v1/notifications/route.ts" },
   { path: "/api/v1/platform/tenants", file: "src/app/api/v1/platform/tenants/route.ts" },
   { path: "/api/v1/platform/tenants/deletion", file: "src/app/api/v1/platform/tenants/deletion/route.ts" },
@@ -144,6 +145,14 @@ export function buildOpenApiDocument(baseUrl: string) {
     "/api/v1/billing/quotas": { get: { summary: "Quota usage and limits", security: SECURITY, responses: { "200": { description: "OK" } } } },
     "/api/v1/usage": list("Usage records (cursor pagination)"),
     "/api/v1/notifications": list("Notifications (cursor pagination)"),
+    "/api/v1/analytics/intent": {
+      get: {
+        summary: "AI quality: caller-intent report for the last N days",
+        security: SECURITY,
+        parameters: [{ name: "days", in: "query", schema: { type: "integer", minimum: 1, maximum: 90 } }, { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 2000 } }],
+        responses: { "200": { description: "OK" }, "403": { description: "agents:read required" } },
+      },
+    },
     "/api/v1/leads/{id}/score": {
       get: { summary: "Lead score with its stored rationale", security: SECURITY, responses: { "200": { description: "OK" }, "404": { description: "lead not found in this tenant" } } },
       post: { summary: "Recompute the lead score (audited, explains the change)", security: SECURITY, responses: { "200": { description: "OK" }, "403": { description: "crm:write required" } } },
