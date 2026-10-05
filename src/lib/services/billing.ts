@@ -16,7 +16,7 @@ export async function getBilling(businessId: string) {
   const invoices = await db.select().from(billingInvoices).where(eq(billingInvoices.businessId, businessId)).orderBy(desc(billingInvoices.createdAt)).limit(100);
   const catalog = billingCatalog();
   return { plan: effectivePlan(subscription), subscription: subscription ?? null, invoices,
-    availablePlans: catalog?.plans ?? [], paymentMode: "manual_invoice", quotasEnforced: false, enforcedQuotaMeters: ["llm_input_tokens", "llm_output_tokens", "embedding_tokens", "tts_characters", "active_agents", "tenant_users"] };
+    availablePlans: catalog?.plans ?? [], paymentMode: "manual_invoice", quotasEnforced: false, enforcedQuotaMeters: ["calls", "llm_input_tokens", "llm_output_tokens", "embedding_tokens", "tts_characters", "active_agents", "tenant_users"] };
 }
 export async function requestInvoice(businessId: string, input: unknown) {
   assertTenantScope(businessId);

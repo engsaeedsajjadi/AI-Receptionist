@@ -21,7 +21,8 @@ Concurrent exact-cap admission, atomic multi-meter rollback, tenant isolation, d
 - Embedding tokens: ingestion/reindex batches and vector query embedding; successful batches settle independently.
 - TTS characters: the voice-turn synthesis path.
 - Active agents / active tenant users: creation, registration, and API reactivation; database inventory is counted under the same tenant row lock as the mutation. Inactive entries do not occupy a seat.
-- Calls, voice minutes, STT minutes and stored-byte inventory are **not yet fully connected**. The dashboard/API explicitly marks them unconnected. They are not represented as enforced merely because meter definitions exist.
+- Call count: signed call-started webhook admission, call row, usage record, quota debit and tenant-scoped webhook key commit atomically. Concurrent duplicate deliveries count once. Quota rejection rolls the key back for same-key retry. Calls are counted when admitted, including calls whose subsequent external answer/stream setup fails.
+- Voice minutes, STT minutes and stored-byte inventory are **not yet fully connected**. The dashboard/API explicitly marks them unconnected. They are not represented as enforced merely because meter definitions exist.
 
 `GET /api/v1/billing/quotas` returns plan, each meter's consumed/reserved quantities, window, hard/soft/grace policy, warning and connected state. It requires tenant-admin permission. `PATCH /api/v1/platform/quotas` accepts `{businessId,policy,reason}` and merges explicitly supplied meter overrides; it requires live SUPER_ADMIN + MFA and writes before/after audit data. Tenant admins cannot edit caps through business settings. A `hard:null` override explicitly makes that meter unlimited.
 
@@ -30,3 +31,5 @@ Example **test-only** global configuration: `QUOTA_PLANS_JSON={"FREE":{"llm_inpu
 Do not release reservations automatically on process restart or explicit provider timeout. Definitive rejected provider execution releases the reservation. If settlement fails after provider success, the reservation remains held. Operators must investigate orphan/uncertain reservations; a safe reconciliation UI is still required. The system cannot reverse a charge already made by an external provider. Missing usage consumes the conservative bound; the quota ledger therefore differs from provider-reported cost estimates. Provider overruns are persisted/audited and return an error; finite input bounds must be validated against each supported model before claiming strict provider-billing guarantees.
 
 Quota admission failures export `receptionist_quota_rejections_total{meter}` with a bounded meter label and no tenant/customer identifiers.
+
+Disabled agents cannot execute through an explicit runtime agent ID or be assigned to new calls. This closes an active-agent entitlement bypass while retaining their editable configuration/history.

@@ -35,3 +35,7 @@ Primary references: https://github.com/vercel/next.js/releases/tag/v16.3.8 ; htt
 - RAG evidence and rolling memory are not guaranteed factual verification. Document ACLs, prompt-injection evaluation, provenance and retention controls need additional work.
 - Coverage gate is below 80%; live voice, browser accessibility, recovery/restore and load tests remain release gates.
 - MFA encryption-key rotation is an operational migration, not an automatic keyring; retain encrypted backups and the correct key securely.
+
+## Quota and webhook follow-up
+
+Tenant-row locks serialize multi-meter admission and active resource inventory writes. Platform quota overrides require live SUPER_ADMIN + MFA and audited reasons. Call-started uses the existing PostgreSQL webhook ledger with a tenant-scoped namespace and payload hash in the same transaction as call registration/usage/quota debit. Failed admission no longer burns a Redis key or returns a fake duplicate success. A repeated key with a changed payload returns 409. Explicit execution/assignment of inactive agents is denied. These changes do not establish complete replay/state guarantees for other webhook routes.

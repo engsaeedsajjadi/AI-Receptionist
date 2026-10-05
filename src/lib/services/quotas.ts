@@ -112,7 +112,7 @@ export async function getQuotaStatus(businessId: string) {
         consumed = decimal(units(count));
       }
       const reserved = bucket?.reserved ?? "0.0000", limit = policy[meter] ?? { hard: null, soft: null, grace: 0 };
-      meters.push({ meter, connected: ["llm_input_tokens", "llm_output_tokens", "embedding_tokens", "tts_characters", "active_agents", "tenant_users"].includes(meter), windowStart: start.toISOString(), consumed, reserved, ...limit, ...checkLimit(limit, storedUnits(consumed) + storedUnits(reserved)) });
+      meters.push({ meter, connected: ["calls", "llm_input_tokens", "llm_output_tokens", "embedding_tokens", "tts_characters", "active_agents", "tenant_users"].includes(meter), windowStart: start.toISOString(), consumed, reserved, ...limit, ...checkLimit(limit, storedUnits(consumed) + storedUnits(reserved)) });
     }
     return { plan, meters };
   });
@@ -129,4 +129,22 @@ export async function updateQuotaOverride(actorId: string, input: unknown) {
     await tx.insert(auditLogs).values({ businessId: body.businessId, actorType: "platform_admin", actorId, action: "quota.override_changed", entityType: "business", entityId: body.businessId, requestId: requestContext.getStore()?.requestId, metadata: { reason: body.reason, policy: merged, previousPolicy: previous?.policy ?? {} } });
     return { businessId: body.businessId, policy: merged };
   });
+}
+
+/** Only for database resources: the caller's resource write and debit share this transaction. */
+export async function consumeUsageInTransaction(tx: QuotaTx, businessId: string, meter: Meter, quantity: number, key: string) {
+  assertTenantScope(businessId); await lockTenant(tx, businessId);
+  const value = decimal(units(quantity)), now = new Date(), start = windowStart(meter, now);
+  const [existing] = await tx.select().from(quotaReservations).where(and(eq(quotaReservations.businessId, businessId), eq(quotaReservations.idempotencyKey, key)));
+  if (existing) {
+    if (existing.status !== "settled" || !same(existing.amounts, { [meter]: value })) throw new AppError(409, "CONFLICT", "Quota operation key conflict");
+    return;
+  }
+  const { policy } = await policyFor(tx, businessId, now);
+  await tx.insert(quotaBuckets).values({ businessId, meter, windowStart: start }).onConflictDoNothing();
+  const predicate = and(eq(quotaBuckets.businessId, businessId), eq(quotaBuckets.meter, meter), eq(quotaBuckets.windowStart, start));
+  const [bucket] = await tx.select().from(quotaBuckets).where(predicate);
+  if (checkLimit(policy[meter], storedUnits(bucket.consumed) + storedUnits(bucket.reserved) + storedUnits(value)).blocked) throw exceeded(meter);
+  await tx.update(quotaBuckets).set({ consumed: sql`${quotaBuckets.consumed} + ${value}::numeric` }).where(predicate);
+  await tx.insert(quotaReservations).values({ businessId, idempotencyKey: key, amounts: { [meter]: value }, settledAmounts: { [meter]: value }, windows: { [meter]: start.toISOString() }, status: "settled", completedAt: now });
 }

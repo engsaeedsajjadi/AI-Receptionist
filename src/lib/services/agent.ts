@@ -42,7 +42,7 @@ async function loadAgent(businessId: string, agentId?: string) {
     const [row] = await db
       .select()
       .from(agents)
-      .where(and(eq(agents.id, agentId), eq(agents.businessId, businessId)))
+      .where(and(eq(agents.id, agentId), eq(agents.businessId, businessId), eq(agents.isActive, true)))
       .limit(1);
     if (!row) throw new AppError(404, "AGENT_NOT_FOUND", "Agent not found");
     return row;

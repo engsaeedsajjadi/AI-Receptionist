@@ -3,7 +3,7 @@ import { beforeAll, afterAll, describe, expect, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { eq } from "drizzle-orm";
 import { closeDb, db } from "@/db";
-import { agents, auditLogs, businesses, quotaBuckets, quotaOverrides, quotaReservations, users } from "@/db/schema";
+import { agents, auditLogs, businesses, quotaBuckets, quotaOverrides, quotaReservations, subscriptions, users } from "@/db/schema";
 import { AppError } from "@/lib/errors";
 import { issueAuthTokens } from "@/lib/auth";
 import { reserveUsage, settleUsage, releaseUsage, getQuotaStatus, withUsageReservation, inventoryQuota } from "@/lib/services/quotas";
@@ -110,6 +110,21 @@ describe.skipIf(!hasTestDatabase())("quota admission and settlement", () => {
     const embedMany = vi.fn(async () => [{ embedding: [1], usage: { embeddingTokens: 2 }, model: "test", dimensions: 1 }]);
     await meteredEmbeddings(id, { name: "test", embed: vi.fn(), embedMany }, ["hello"]);
     expect((await getQuotaStatus(id)).meters.find(m => m.meter === "embedding_tokens")!.consumed).toBe("2.0000");
+  });
+  itDb("plan changes and expiry keep consumed allowance instead of resetting the month", async () => {
+    vi.stubEnv("QUOTA_PLANS_JSON", JSON.stringify({ FREE: { tts_characters: limit(1) }, STARTER: { tts_characters: limit(10) } }));
+    try {
+      const id = await tenant();
+      await expect(reserveUsage(id, "free-denied", { tts_characters: 3 })).rejects.toMatchObject({ status: 402 });
+      await db.insert(subscriptions).values({ businessId: id, plan: "STARTER", periodStart: new Date(), periodEnd: new Date(Date.now() + 86400_000) });
+      const reservation = await reserveUsage(id, "paid", { tts_characters: 3 });
+      await settleUsage(id, reservation.id, { tts_characters: 2 });
+      expect((await getQuotaStatus(id)).plan).toBe("STARTER");
+      await db.update(subscriptions).set({ periodStart: new Date("2020-01-01Z"), periodEnd: new Date("2020-02-01Z") }).where(eq(subscriptions.businessId, id));
+      expect((await getQuotaStatus(id)).plan).toBe("FREE");
+      await expect(reserveUsage(id, "expired", { tts_characters: 1 })).rejects.toMatchObject({ status: 402 });
+      expect((await getQuotaStatus(id)).meters.find(m => m.meter === "tts_characters")!.consumed).toBe("2.0000");
+    } finally { vi.unstubAllEnvs(); }
   });
   itDb("inactive tenants cannot reserve; settled in-flight usage can still finalize", async () => {
     const id = await tenant(); const reservation = await reserveUsage(id, "in-flight", { tts_characters: 2 });
