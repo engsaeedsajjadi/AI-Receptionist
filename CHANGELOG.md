@@ -5,6 +5,16 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Changed — container image hardening
+- The runtime image now installs **production dependencies only** (the build
+  toolchain `drizzle-kit` / `tsx` / `vitest` / `esbuild` no longer ships), runs the
+  migration, worker, media and operator scripts as pre-compiled CommonJS
+  (`npm run build:runtime` → `runtime/*.js`), and removes `npm`/`corepack` with
+  their bundled dependency trees. `CMD` and the worker/media compose commands use
+  `node` directly. Verified outside Docker: migrations, worker and the media
+  server all boot against a prod-only `node_modules`.
+
+
 ### Added — typed intent boundary on the live turn
 - `runAgentTurn` resolves the caller's intent deterministically before the model
   sees the message, appends a bounded confirmation hint when a side-effecting

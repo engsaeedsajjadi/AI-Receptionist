@@ -14,6 +14,7 @@ storage
 backups/
 playwright-report/
 .auth/
+runtime/
 blob-report/
 
 *.tsbuildinfo
