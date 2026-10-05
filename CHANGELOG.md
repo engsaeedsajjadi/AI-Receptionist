@@ -5,6 +5,18 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added — explainable lead scoring
+- Deterministic `lead-score/v1` rubric (`src/lib/scoring.ts`): every point is a
+  named factor with a reason; the same signals always produce the same score, an
+  empty extraction is the neutral 50/100 baseline, and `explainScoreChange`
+  reports factor-level diffs.
+- `leads.score_rationale` (migration 0017) stores rubric version, factors and
+  explanation beside `leads.score`; call intake keeps both in sync.
+- `GET/POST /api/v1/leads/{id}/score` — read the stored rationale, or rescore
+  explicitly (tenant bounded, `crm:write`, audited with from/delta/diff).
+- Dashboard lead detail explains the score factor by factor and reports the
+  delta on recompute; the lead list shows the score.
+
 
 ### Added
 
