@@ -99,6 +99,27 @@
       "when": 1791101212312,
       "tag": "0013_busy_mojo",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1791184501175,
+      "tag": "0014_massive_micromax",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1791200786708,
+      "tag": "0015_tenant_index_audit",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1791202294377,
+      "tag": "0016_white_label_domain",
+      "breakpoints": true
     }
   ]
 }

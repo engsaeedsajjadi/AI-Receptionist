@@ -1,5 +1,6 @@
 import {
   boolean,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -53,6 +54,18 @@ export const appointmentStatusEnum = pgEnum("appointment_status", [
 ]);
 export const notificationStatusEnum = pgEnum("notification_status", ["PENDING", "SENT", "FAILED"]);
 
+export const outboxStatusEnum = pgEnum("outbox_status", ["pending", "processing", "delivered", "dead"]);
+export const businessLifecycleEnum = pgEnum("business_lifecycle", ["ACTIVE", "SUSPENDED", "PENDING_DELETION", "DELETED"]);
+export const knowledgeStatusEnum = pgEnum("knowledge_status", ["DRAFT", "PROCESSING", "ACTIVE", "ARCHIVED", "FAILED"]);
+export const knowledgeVisibilityEnum = pgEnum("knowledge_visibility", ["TENANT", "ROLE", "AGENT", "CATEGORY", "PRIVATE"]);
+export const paymentAttemptStatusEnum = pgEnum("payment_attempt_status", [
+  "PENDING", "SUCCEEDED", "FAILED", "EXPIRED", "CANCELED",
+]);
+export const paymentTransactionKindEnum = pgEnum("payment_transaction_kind", ["CHARGE", "REFUND", "CREDIT"]);
+export const refundStatusEnum = pgEnum("refund_status", ["REQUESTED", "SUCCEEDED", "FAILED", "PARTIAL"]);
+export const webhookDeliveryStatusEnum = pgEnum("webhook_delivery_status", ["pending", "delivered", "failed", "dead"]);
+
+
 // ---------------------------------------------------------------------------
 // Businesses / users / agents
 // ---------------------------------------------------------------------------
@@ -69,6 +82,11 @@ export const businesses = pgTable(
     timezone: varchar("timezone", { length: 50 }).notNull().default("Asia/Tehran"),
     language: varchar("language", { length: 10 }).notNull().default("fa"),
     isActive: boolean("is_active").notNull().default(true),
+    status: businessLifecycleEnum("status").notNull().default("ACTIVE"),
+    customDomain: varchar("custom_domain", { length: 253 }),
+    deletionRequestedAt: timestamp("deletion_requested_at", { withTimezone: true }),
+    deletionScheduledFor: timestamp("deletion_scheduled_for", { withTimezone: true }),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
     settings: jsonb("settings").$type<Record<string, unknown>>().notNull().default({
       recording_enabled: true,
       transcription_enabled: true,
@@ -80,6 +98,7 @@ export const businesses = pgTable(
   },
   (table) => ({
     slugIdx: uniqueIndex("businesses_slug_idx").on(table.slug),
+    customDomainIdx: uniqueIndex("businesses_custom_domain_idx").on(table.customDomain),
   }),
 );
 
@@ -105,6 +124,8 @@ export const users = pgTable(
     lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
     failedLoginCount: integer("failed_login_count").notNull().default(0),
     lockedUntil: timestamp("locked_until", { withTimezone: true }),
+    invitedById: uuid("invited_by_id").references((): any => users.id, { onDelete: "set null" }),
+    locale: varchar("locale", { length: 10 }).notNull().default("fa"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -133,6 +154,7 @@ export const agents = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    tenantIdIdx: uniqueIndex("agents_tenant_id_idx").on(table.id, table.businessId),
     businessIdx: index("agents_business_idx").on(table.businessId),
     businessActiveIdx: index("agents_business_active_idx").on(table.businessId, table.isActive),
   }),
@@ -189,6 +211,7 @@ export const leads = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    tenantIdIdx: uniqueIndex("leads_tenant_id_idx").on(table.id, table.businessId),
     businessStatusIdx: index("leads_business_status_idx").on(table.businessId, table.status),
     businessCreatedIdx: index("leads_business_created_idx").on(table.businessId, table.createdAt),
     businessCustomerIdx: index("leads_business_customer_idx").on(table.businessId, table.customerId),
@@ -213,6 +236,11 @@ export const leadNotes = pgTable(
   (table) => ({
     leadCreatedIdx: index("lead_notes_lead_created_idx").on(table.leadId, table.createdAt),
     businessIdx: index("lead_notes_business_idx").on(table.businessId),
+    leadTenantFk: foreignKey({
+      name: "lead_notes_lead_tenant_fk",
+      columns: [table.leadId, table.businessId],
+      foreignColumns: [leads.id, leads.businessId],
+    }).onDelete("cascade"),
   }),
 );
 
@@ -247,6 +275,7 @@ export const calls = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    tenantIdIdx: uniqueIndex("calls_tenant_id_idx").on(table.id, table.businessId),
     businessExternalIdx: uniqueIndex("calls_business_external_idx").on(table.businessId, table.externalCallId),
     businessStatusIdx: index("calls_business_status_idx").on(table.businessId, table.status),
     businessCreatedIdx: index("calls_business_created_idx").on(table.businessId, table.createdAt),
@@ -276,6 +305,11 @@ export const callMessages = pgTable(
   (table) => ({
     callTimeIdx: index("call_messages_call_time_idx").on(table.callId, table.timestamp),
     callEventIdx: uniqueIndex("call_messages_call_event_idx").on(table.callId, table.eventId),
+    callTenantFk: foreignKey({
+      name: "call_messages_call_tenant_fk",
+      columns: [table.callId, table.businessId],
+      foreignColumns: [calls.id, calls.businessId],
+    }).onDelete("cascade"),
   }),
 );
 
@@ -298,6 +332,21 @@ export const knowledgeDocuments = pgTable(
     fileSize: integer("file_size"),
     storageKey: text("storage_key"),
     status: varchar("status", { length: 20 }).notNull().default("indexed"),
+    lifecycle: knowledgeStatusEnum("lifecycle").notNull().default("ACTIVE"),
+    version: integer("version").notNull().default(1),
+    supersedesDocumentId: uuid("supersedes_document_id"),
+    visibility: knowledgeVisibilityEnum("visibility").notNull().default("TENANT"),
+    acl: jsonb("acl").$type<Record<string, unknown>>().notNull().default({}),
+    language: varchar("language", { length: 10 }).notNull().default("fa"),
+    documentType: varchar("document_type", { length: 60 }),
+    category: varchar("category", { length: 80 }),
+    product: varchar("product", { length: 120 }),
+    service: varchar("service", { length: 120 }),
+    branch: varchar("branch", { length: 120 }),
+    department: varchar("department", { length: 120 }),
+    tags: jsonb("tags").$type<string[]>().notNull().default([]),
+    effectiveFrom: timestamp("effective_from", { withTimezone: true }),
+    effectiveUntil: timestamp("effective_until", { withTimezone: true }),
     chunkCount: integer("chunk_count").notNull().default(0),
     errorMessage: text("error_message"),
     content: text("content").notNull(),
@@ -308,6 +357,10 @@ export const knowledgeDocuments = pgTable(
   (table) => ({
     businessStatusIdx: index("knowledge_documents_business_status_idx").on(table.businessId, table.status),
     businessCreatedIdx: index("knowledge_documents_business_created_idx").on(table.businessId, table.createdAt),
+    tenantIdIdx: uniqueIndex("knowledge_documents_tenant_id_idx").on(table.id, table.businessId),
+    versionIdx: index("knowledge_documents_version_idx").on(table.businessId, table.title, table.version),
+    lifecycleIdx: index("knowledge_documents_lifecycle_idx").on(table.businessId, table.lifecycle),
+    supersedesIdx: index("knowledge_documents_supersedes_idx").on(table.businessId, table.supersedesDocumentId),
   }),
 );
 
@@ -331,6 +384,12 @@ export const knowledgeChunks = pgTable(
   (table) => ({
     businessIdx: index("knowledge_chunks_business_idx").on(table.businessId),
     documentIdx: index("knowledge_chunks_document_idx").on(table.documentId, table.chunkIndex),
+    // Composite tenant FK: a chunk can never point at another tenant's document.
+    documentTenantFk: foreignKey({
+      name: "knowledge_chunks_document_tenant_fk",
+      columns: [table.documentId, table.businessId],
+      foreignColumns: [knowledgeDocuments.id, knowledgeDocuments.businessId],
+    }).onDelete("cascade"),
   }),
 );
 
@@ -486,6 +545,7 @@ export const refreshTokens = pgTable(
   (table) => ({
     userIdx: index("refresh_tokens_user_idx").on(table.userId),
     jtiIdx: uniqueIndex("refresh_tokens_jti_idx").on(table.jti),
+    tenantUserIdx: index("refresh_tokens_tenant_user_idx").on(table.businessId, table.userId),
   }),
 );
 
@@ -537,7 +597,7 @@ export const webhookEvents = pgTable(
   "webhook_events",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-    businessId: uuid("business_id").references(() => businesses.id, { onDelete: "cascade" }),
+    businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
     scope: varchar("scope", { length: 100 }).notNull(),
     idempotencyKey: varchar("idempotency_key", { length: 255 }).notNull(),
     status: varchar("status", { length: 20 }).notNull().default("processed"),
@@ -545,7 +605,8 @@ export const webhookEvents = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    scopeKeyIdx: uniqueIndex("webhook_events_scope_key_idx").on(table.scope, table.idempotencyKey),
+    scopeKeyIdx: uniqueIndex("webhook_events_scope_key_idx").on(table.businessId, table.scope, table.idempotencyKey),
+    tenantIdx: index("webhook_events_tenant_idx").on(table.businessId, table.createdAt),
   }),
 );
 
@@ -609,7 +670,8 @@ export const agentVersions = pgTable("agent_versions", {
   snapshot: jsonb("snapshot").$type<Record<string, unknown>>().notNull(),
   createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => ({ tenantIdx: index("agent_versions_tenant_idx").on(t.businessId, t.agentId, t.createdAt) }));
+}, (t) => ({ tenantIdx: index("agent_versions_tenant_idx").on(t.businessId, t.agentId, t.createdAt),
+  agentTenantFk: foreignKey({ name: "agent_versions_agent_tenant_fk", columns: [t.agentId, t.businessId], foreignColumns: [agents.id, agents.businessId] }).onDelete("cascade") }));
 
 export const automationJobs = pgTable("automation_jobs", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -657,7 +719,8 @@ export const crmOpportunities = pgTable("crm_opportunities", {
   tags: jsonb("tags").$type<string[]>().notNull().default([]),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => ({ stageIdx: index("crm_opportunities_stage_idx").on(t.businessId, t.pipelineId, t.stage) }));
+}, (t) => ({ stageIdx: index("crm_opportunities_stage_idx").on(t.businessId, t.pipelineId, t.stage),
+  pipelineTenantFk: foreignKey({ name: "crm_opportunities_pipeline_tenant_fk", columns: [t.pipelineId, t.businessId], foreignColumns: [crmPipelines.id, crmPipelines.businessId] }).onDelete("restrict") }));
 export const crmTasks = pgTable("crm_tasks", {
   id: uuid("id").defaultRandom().primaryKey(),
   businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
@@ -679,8 +742,14 @@ export const subscriptions = pgTable("subscriptions", {
   periodStart: timestamp("period_start", { withTimezone: true }),
   periodEnd: timestamp("period_end", { withTimezone: true }),
   cancelAtPeriodEnd: boolean("cancel_at_period_end").notNull().default(false),
+  status: varchar("status", { length: 20 }).notNull().default("ACTIVE"),
+  provider: varchar("provider", { length: 50 }),
+  providerSubscriptionId: varchar("provider_subscription_id", { length: 255 }),
+  graceUntil: timestamp("grace_until", { withTimezone: true }),
+  canceledAt: timestamp("canceled_at", { withTimezone: true }),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => ({ tenantUnique: uniqueIndex("subscriptions_business_unique").on(t.businessId) }));
+}, (t) => ({ tenantUnique: uniqueIndex("subscriptions_business_unique").on(t.businessId),
+  providerSubIdx: index("subscriptions_provider_sub_idx").on(t.provider, t.providerSubscriptionId) }));
 export const billingInvoices = pgTable("billing_invoices", {
   id: uuid("id").defaultRandom().primaryKey(),
   businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
@@ -723,3 +792,469 @@ export const quotaReservations = pgTable("quota_reservations", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   completedAt: timestamp("completed_at", { withTimezone: true }),
 }, (t) => ({ tenantKey: uniqueIndex("quota_reservations_tenant_key").on(t.businessId, t.idempotencyKey), pending: index("quota_reservations_pending").on(t.businessId, t.status, t.createdAt) }));
+
+// ---------------------------------------------------------------------------
+// P0 hardening — transactional outbox, payment ledger, knowledge governance,
+// storage accounting, tenant-scoped machine access and outbound webhooks.
+// All tenant-owned rows carry `business_id`; composite foreign keys tie
+// dependent rows to the same tenant as their parent.
+// ---------------------------------------------------------------------------
+
+/** Application-level idempotency ledger for provider webhooks (tenant-scoped). */
+export const providerEvents = pgTable(
+  "provider_events",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    businessId: uuid("business_id").references(() => businesses.id, { onDelete: "cascade" }),
+    provider: varchar("provider", { length: 50 }).notNull(),
+    scope: varchar("scope", { length: 100 }).notNull(),
+    eventId: varchar("event_id", { length: 255 }).notNull(),
+    payloadHash: varchar("payload_hash", { length: 64 }),
+    status: varchar("status", { length: 20 }).notNull().default("processed"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    scopeIdx: uniqueIndex("provider_events_scope_key_idx").on(t.provider, t.scope, t.eventId),
+    tenantIdx: index("provider_events_tenant_idx").on(t.businessId, t.createdAt),
+  }),
+);
+
+/**
+ * Transactional outbox. Domain events are inserted in the SAME transaction as
+ * the state change; the worker leases rows and performs provider I/O outside
+ * any transaction. Retries use exponential backoff and end in `dead`.
+ */
+export const outboxEvents = pgTable(
+  "outbox_events",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    businessId: uuid("business_id")
+      .notNull()
+      .references(() => businesses.id, { onDelete: "cascade" }),
+    topic: varchar("topic", { length: 80 }).notNull(),
+    idempotencyKey: varchar("idempotency_key", { length: 255 }).notNull(),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+    status: outboxStatusEnum("status").notNull().default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    availableAt: timestamp("available_at", { withTimezone: true }).notNull().defaultNow(),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    claimId: uuid("claim_id"),
+    lastError: text("last_error"),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    tenantKeyIdx: uniqueIndex("outbox_events_tenant_key_idx").on(t.businessId, t.idempotencyKey),
+    pendingIdx: index("outbox_events_pending_idx").on(t.status, t.availableAt),
+    tenantIdx: index("outbox_events_tenant_idx").on(t.businessId, t.createdAt),
+    topicIdx: index("outbox_events_topic_idx").on(t.businessId, t.topic, t.createdAt),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Commercial billing: payment provider lifecycle (additive to manual invoices)
+// ---------------------------------------------------------------------------
+
+export const paymentProviders = pgTable(
+  "payment_providers",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+    provider: varchar("provider", { length: 50 }).notNull(),
+    providerCustomerId: varchar("provider_customer_id", { length: 255 }),
+    mode: varchar("mode", { length: 20 }).notNull().default("live"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ tenantProviderIdx: uniqueIndex("payment_providers_tenant_provider_idx").on(t.businessId, t.provider) }),
+);
+
+export const paymentAttempts = pgTable(
+  "payment_attempts",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+    invoiceId: uuid("invoice_id").references(() => billingInvoices.id, { onDelete: "set null" }),
+    provider: varchar("provider", { length: 50 }).notNull(),
+    plan: varchar("plan", { length: 20 }).notNull(),
+    amountMinor: integer("amount_minor").notNull(),
+    currency: varchar("currency", { length: 3 }).notNull(),
+    status: paymentAttemptStatusEnum("status").notNull().default("PENDING"),
+    idempotencyKey: uuid("idempotency_key").notNull(),
+    providerReference: varchar("provider_reference", { length: 255 }),
+    checkoutUrl: text("checkout_url"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    failureCode: varchar("failure_code", { length: 100 }),
+    failureMessage: text("failure_message"),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    tenantKeyIdx: uniqueIndex("payment_attempts_tenant_key_idx").on(t.businessId, t.idempotencyKey),
+    providerRefIdx: uniqueIndex("payment_attempts_provider_ref_idx").on(t.provider, t.providerReference),
+    tenantCreatedIdx: index("payment_attempts_tenant_created_idx").on(t.businessId, t.createdAt),
+    statusIdx: index("payment_attempts_status_idx").on(t.status, t.expiresAt),
+  }),
+);
+
+/** Immutable financial history. Rows are append-only; corrections use refunds/credit notes. */
+export const paymentTransactions = pgTable(
+  "payment_transactions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "restrict" }),
+    attemptId: uuid("attempt_id").references(() => paymentAttempts.id, { onDelete: "set null" }),
+    invoiceId: uuid("invoice_id").references(() => billingInvoices.id, { onDelete: "set null" }),
+    kind: paymentTransactionKindEnum("kind").notNull(),
+    provider: varchar("provider", { length: 50 }).notNull(),
+    providerTransactionId: varchar("provider_transaction_id", { length: 255 }).notNull(),
+    amountMinor: integer("amount_minor").notNull(),
+    currency: varchar("currency", { length: 3 }).notNull(),
+    plan: varchar("plan", { length: 20 }),
+    periodStart: timestamp("period_start", { withTimezone: true }),
+    periodEnd: timestamp("period_end", { withTimezone: true }),
+    actorType: varchar("actor_type", { length: 30 }).notNull().default("provider"),
+    actorId: varchar("actor_id", { length: 255 }),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    providerTxnIdx: uniqueIndex("payment_transactions_provider_txn_idx").on(t.provider, t.providerTransactionId),
+    tenantCreatedIdx: index("payment_transactions_tenant_created_idx").on(t.businessId, t.createdAt),
+    invoiceIdx: index("payment_transactions_invoice_idx").on(t.invoiceId),
+  }),
+);
+
+/** Raw provider webhook/event ledger for payment providers (replay protection). */
+export const paymentEvents = pgTable(
+  "payment_events",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    provider: varchar("provider", { length: 50 }).notNull(),
+    eventId: varchar("event_id", { length: 255 }).notNull(),
+    eventType: varchar("event_type", { length: 100 }).notNull(),
+    businessId: uuid("business_id").references(() => businesses.id, { onDelete: "set null" }),
+    payloadHash: varchar("payload_hash", { length: 64 }).notNull(),
+    processedAt: timestamp("processed_at", { withTimezone: true }),
+    error: text("error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    eventIdx: uniqueIndex("payment_events_provider_event_idx").on(t.provider, t.eventId),
+    tenantCreatedIdx: index("payment_events_tenant_created_idx").on(t.businessId, t.createdAt.desc().nullsLast()),
+  }),
+);
+
+export const refundRecords = pgTable(
+  "refund_records",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "restrict" }),
+    transactionId: uuid("transaction_id").notNull().references(() => paymentTransactions.id, { onDelete: "restrict" }),
+    provider: varchar("provider", { length: 50 }).notNull(),
+    providerRefundId: varchar("provider_refund_id", { length: 255 }),
+    amountMinor: integer("amount_minor").notNull(),
+    currency: varchar("currency", { length: 3 }).notNull(),
+    status: refundStatusEnum("status").notNull().default("REQUESTED"),
+    reason: text("reason"),
+    requestedBy: uuid("requested_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (t) => ({
+    providerRefundIdx: uniqueIndex("refund_records_provider_ref_idx").on(t.provider, t.providerRefundId),
+    tenantIdx: index("refund_records_tenant_idx").on(t.businessId, t.createdAt),
+  }),
+);
+
+export const subscriptionEvents = pgTable(
+  "subscription_events",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+    eventType: varchar("event_type", { length: 60 }).notNull(),
+    fromPlan: varchar("from_plan", { length: 20 }),
+    toPlan: varchar("to_plan", { length: 20 }),
+    provider: varchar("provider", { length: 50 }),
+    effectiveAt: timestamp("effective_at", { withTimezone: true }).notNull().defaultNow(),
+    actorType: varchar("actor_type", { length: 30 }).notNull().default("system"),
+    actorId: varchar("actor_id", { length: 255 }),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ tenantIdx: index("subscription_events_tenant_idx").on(t.businessId, t.createdAt) }),
+);
+
+export const creditNotes = pgTable(
+  "credit_notes",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "restrict" }),
+    invoiceId: uuid("invoice_id").references(() => billingInvoices.id, { onDelete: "set null" }),
+    amountMinor: integer("amount_minor").notNull(),
+    currency: varchar("currency", { length: 3 }).notNull(),
+    reason: text("reason").notNull(),
+    issuedBy: uuid("issued_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ tenantIdx: index("credit_notes_tenant_idx").on(t.businessId, t.createdAt) }),
+);
+
+// ---------------------------------------------------------------------------
+// Knowledge governance: versioning, ACLs and retrieval analytics
+// ---------------------------------------------------------------------------
+
+export const retrievalEvents = pgTable(
+  "retrieval_events",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+    query: text("query").notNull(),
+    queryHash: varchar("query_hash", { length: 64 }).notNull(),
+    strategy: varchar("strategy", { length: 30 }).notNull().default("hybrid"),
+    candidateCount: integer("candidate_count").notNull().default(0),
+    resultCount: integer("result_count").notNull().default(0),
+    documentIds: jsonb("document_ids").$type<string[]>().notNull().default([]),
+    usedDocumentIds: jsonb("used_document_ids").$type<string[]>().notNull().default([]),
+    reranker: varchar("reranker", { length: 50 }),
+    rerankMs: integer("rerank_ms"),
+    retrievalMs: integer("retrieval_ms").notNull().default(0),
+    agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
+    callId: uuid("call_id").references(() => calls.id, { onDelete: "set null" }),
+    outcome: varchar("outcome", { length: 20 }).notNull().default("ok"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    tenantCreatedIdx: index("retrieval_events_tenant_created_idx").on(t.businessId, t.createdAt),
+    queryIdx: index("retrieval_events_query_idx").on(t.businessId, t.queryHash),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Object storage accounting (authoritative bytes per tenant)
+// ---------------------------------------------------------------------------
+
+export const storageObjects = pgTable(
+  "storage_objects",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+    key: text("key").notNull(),
+    bytes: numeric("bytes", { precision: 24, scale: 0 }).notNull(),
+    contentType: varchar("content_type", { length: 150 }),
+    category: varchar("category", { length: 40 }).notNull().default("other"),
+    sourceType: varchar("source_type", { length: 40 }),
+    sourceId: uuid("source_id"),
+    checksum: varchar("checksum", { length: 64 }),
+    retainedUntil: timestamp("retained_until", { withTimezone: true }),
+    legalHold: boolean("legal_hold").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    tenantKeyIdx: uniqueIndex("storage_objects_tenant_key_idx").on(t.businessId, t.key),
+    tenantCategoryIdx: index("storage_objects_tenant_category_idx").on(t.businessId, t.category),
+    retentionIdx: index("storage_objects_retention_idx").on(t.retainedUntil),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Tenant-defined RBAC, service accounts, API keys and invitations
+// ---------------------------------------------------------------------------
+
+export const roles = pgTable(
+  "roles",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+    name: varchar("name", { length: 60 }).notNull(),
+    description: varchar("description", { length: 255 }),
+    isSystem: boolean("is_system").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ tenantNameIdx: uniqueIndex("roles_tenant_name_idx").on(t.businessId, t.name) }),
+);
+
+export const rolePermissions = pgTable(
+  "role_permissions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+    roleId: uuid("role_id").notNull(),
+    permission: varchar("permission", { length: 60 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    unique: uniqueIndex("role_permissions_unique_idx").on(t.businessId, t.roleId, t.permission),
+    roleIdx: index("role_permissions_role_idx").on(t.roleId),
+  }),
+);
+
+export const userRoles = pgTable(
+  "user_roles",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    roleId: uuid("role_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    unique: uniqueIndex("user_roles_unique_idx").on(t.businessId, t.userId, t.roleId),
+    userIdx: index("user_roles_user_idx").on(t.userId),
+  }),
+);
+
+export const apiKeys = pgTable(
+  "api_keys",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+    name: varchar("name", { length: 100 }).notNull(),
+    prefix: varchar("prefix", { length: 24 }).notNull(),
+    keyHash: varchar("key_hash", { length: 64 }).notNull(),
+    scopes: jsonb("scopes").$type<string[]>().notNull().default([]),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    serviceAccountId: uuid("service_account_id"),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revokedReason: varchar("revoked_reason", { length: 100 }),
+    rotatedFromId: uuid("rotated_from_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    hashIdx: uniqueIndex("api_keys_hash_idx").on(t.keyHash),
+    prefixIdx: index("api_keys_prefix_idx").on(t.prefix),
+    tenantIdx: index("api_keys_tenant_idx").on(t.businessId, t.createdAt),
+  }),
+);
+
+export const serviceAccounts = pgTable(
+  "service_accounts",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+    name: varchar("name", { length: 100 }).notNull(),
+    description: varchar("description", { length: 255 }),
+    scopes: jsonb("scopes").$type<string[]>().notNull().default([]),
+    isActive: boolean("is_active").notNull().default(true),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ tenantNameIdx: uniqueIndex("service_accounts_tenant_name_idx").on(t.businessId, t.name) }),
+);
+
+export const invitations = pgTable(
+  "invitations",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+    email: varchar("email", { length: 255 }).notNull(),
+    role: userRoleEnum("role").notNull().default("AGENT"),
+    tokenHash: varchar("token_hash", { length: 64 }).notNull(),
+    invitedBy: uuid("invited_by").references(() => users.id, { onDelete: "set null" }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    acceptedByUserId: uuid("accepted_by_user_id").references(() => users.id, { onDelete: "set null" }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    resendCount: integer("resend_count").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    tokenIdx: uniqueIndex("invitations_token_idx").on(t.tokenHash),
+    tenantEmailIdx: uniqueIndex("invitations_tenant_email_idx").on(t.businessId, t.email),
+    tenantIdx: index("invitations_tenant_idx").on(t.businessId, t.createdAt),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Outbound tenant webhooks
+// ---------------------------------------------------------------------------
+
+export const webhookEndpoints = pgTable(
+  "webhook_endpoints",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+    url: text("url").notNull(),
+    description: varchar("description", { length: 255 }),
+    secretHash: varchar("secret_hash", { length: 64 }).notNull(),
+    secretCiphertext: text("secret_ciphertext").notNull(),
+    events: jsonb("events").$type<string[]>().notNull().default([]),
+    isActive: boolean("is_active").notNull().default(true),
+    failureCount: integer("failure_count").notNull().default(0),
+    disabledAt: timestamp("disabled_at", { withTimezone: true }),
+    createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ tenantIdx: index("webhook_endpoints_tenant_idx").on(t.businessId, t.isActive) }),
+);
+
+export const webhookDeliveries = pgTable(
+  "webhook_deliveries",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+    endpointId: uuid("endpoint_id").notNull().references(() => webhookEndpoints.id, { onDelete: "cascade" }),
+    event: varchar("event", { length: 80 }).notNull(),
+    idempotencyKey: varchar("idempotency_key", { length: 255 }).notNull(),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+    status: webhookDeliveryStatusEnum("status").notNull().default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    responseStatus: integer("response_status"),
+    lastError: text("last_error"),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    tenantKeyIdx: uniqueIndex("webhook_deliveries_tenant_key_idx").on(t.endpointId, t.idempotencyKey),
+    tenantIdx: index("webhook_deliveries_tenant_idx").on(t.businessId, t.createdAt),
+    statusIdx: index("webhook_deliveries_status_idx").on(t.status, t.createdAt),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Tenant lifecycle + data export
+// ---------------------------------------------------------------------------
+
+export const dataExports = pgTable(
+  "data_exports",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+    requestedBy: uuid("requested_by").references(() => users.id, { onDelete: "set null" }),
+    status: varchar("status", { length: 20 }).notNull().default("PENDING"),
+    scope: jsonb("scope").$type<string[]>().notNull().default([]),
+    storageKey: text("storage_key"),
+    bytes: numeric("bytes", { precision: 24, scale: 0 }),
+    rowCounts: jsonb("row_counts").$type<Record<string, number>>().notNull().default({}),
+    error: text("error"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ tenantIdx: index("data_exports_tenant_idx").on(t.businessId, t.createdAt) }),
+);
+
+export const supportSessions = pgTable(
+  "support_sessions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    businessId: uuid("business_id").notNull().references(() => businesses.id, { onDelete: "cascade" }),
+    actorId: uuid("actor_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    reason: text("reason").notNull(),
+    readOnly: boolean("read_only").notNull().default(true),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({ tenantIdx: index("support_sessions_tenant_idx").on(t.businessId, t.expiresAt) }),
+);

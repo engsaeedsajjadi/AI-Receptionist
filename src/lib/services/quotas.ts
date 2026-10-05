@@ -24,33 +24,77 @@ function normalize(input: Amounts): Record<string, string> {
 }
 function same(a: Record<string, string>, b: Record<string, string>) { return JSON.stringify(Object.entries(a).sort()) === JSON.stringify(Object.entries(b).sort()); }
 function exceeded(meter: string) { metrics().quotaRejections.inc({ meter }); return new AppError(402, "QUOTA_EXCEEDED", "Tenant usage limit reached", { meter }); }
-export async function reserveUsage(businessId: string, key: string, input: Amounts, now = new Date()) {
+/**
+ * Reserve meters inside the caller's transaction. The caller must already hold
+ * the tenant row lock (or call {@link reserveUsage}, which takes it here).
+ * The reservation row and the bucket increments commit atomically.
+ */
+export async function reserveUsageInTransaction(tx: QuotaTx, businessId: string, key: string, input: Amounts, now = new Date()) {
   assertTenantScope(businessId); z.string().min(1).max(255).parse(key);
   const amounts = normalize(input);
   if ("active_agents" in amounts || "tenant_users" in amounts) throw new AppError(400, "BAD_REQUEST", "Use transactional inventory admission for resource counts");
+  const [existing] = await tx.select().from(quotaReservations).where(and(eq(quotaReservations.businessId, businessId), eq(quotaReservations.idempotencyKey, key)));
+  if (existing) {
+    if (!same(existing.amounts, amounts)) throw new AppError(409, "CONFLICT", "Reservation key was reused with different amounts");
+    return { ...existing, reused: true, warnings: [] as Meter[] };
+  }
+  const { policy } = await policyFor(tx, businessId, now);
+  const windows: Record<string, string> = {}, warnings: Meter[] = [];
+  for (const [name, value] of Object.entries(amounts)) {
+    const meter = name as Meter, start = windowStart(meter, now); windows[meter] = start.toISOString();
+    await tx.insert(quotaBuckets).values({ businessId, meter, windowStart: start }).onConflictDoNothing();
+    const predicate = and(eq(quotaBuckets.businessId, businessId), eq(quotaBuckets.meter, meter), eq(quotaBuckets.windowStart, start));
+    const [bucket] = await tx.select().from(quotaBuckets).where(predicate);
+    const limit = checkLimit(policy[meter], storedUnits(bucket.consumed) + storedUnits(bucket.reserved) + storedUnits(value));
+    if (limit.blocked) throw exceeded(meter);
+    if (limit.warning) warnings.push(meter);
+    await tx.update(quotaBuckets).set({ reserved: sql`${quotaBuckets.reserved} + ${value}::numeric` }).where(predicate);
+  }
+  const [reservation] = await tx.insert(quotaReservations).values({ businessId, idempotencyKey: key, amounts, windows }).returning();
+  return { ...reservation, reused: false, warnings };
+}
+
+/**
+ * Reserve meters in their own transaction (row lock taken here).
+ * Prefer the in-transaction primitive when the reservation belongs to the same
+ * business transaction as the resource it protects.
+ */
+export async function reserveUsage(businessId: string, key: string, input: Amounts, now = new Date()) {
+  assertTenantScope(businessId);
   return db.transaction(async (tx) => {
     await lockTenant(tx, businessId);
-    const [existing] = await tx.select().from(quotaReservations).where(and(eq(quotaReservations.businessId, businessId), eq(quotaReservations.idempotencyKey, key)));
-    if (existing) {
-      if (!same(existing.amounts, amounts)) throw new AppError(409, "CONFLICT", "Reservation key was reused with different amounts");
-      return { ...existing, reused: true, warnings: [] as Meter[] };
-    }
-    const { policy } = await policyFor(tx, businessId, now);
-    const windows: Record<string, string> = {}, warnings: Meter[] = [];
-    for (const [name, value] of Object.entries(amounts)) {
-      const meter = name as Meter, start = windowStart(meter, now); windows[meter] = start.toISOString();
-      await tx.insert(quotaBuckets).values({ businessId, meter, windowStart: start }).onConflictDoNothing();
-      const predicate = and(eq(quotaBuckets.businessId, businessId), eq(quotaBuckets.meter, meter), eq(quotaBuckets.windowStart, start));
-      const [bucket] = await tx.select().from(quotaBuckets).where(predicate);
-      const limit = checkLimit(policy[meter], storedUnits(bucket.consumed) + storedUnits(bucket.reserved) + storedUnits(value));
-      if (limit.blocked) throw exceeded(meter);
-      if (limit.warning) warnings.push(meter);
-      await tx.update(quotaBuckets).set({ reserved: sql`${quotaBuckets.reserved} + ${value}::numeric` }).where(predicate);
-    }
-    const [reservation] = await tx.insert(quotaReservations).values({ businessId, idempotencyKey: key, amounts, windows }).returning();
-    return { ...reservation, reused: false, warnings };
+    return reserveUsageInTransaction(tx, businessId, key, input, now);
   });
 }
+
+/**
+ * Apply a signed delta to a meter's consumed quantity inside the caller's
+ * transaction. Increases are quota-checked; decreases (deletions, corrections)
+ * are always allowed and floor at zero, so removing data can never be blocked
+ * by the limit it would otherwise breach.
+ */
+export async function adjustConsumedInTransaction(tx: QuotaTx, businessId: string, meter: Meter, delta: number, now = new Date()) {
+  assertTenantScope(businessId);
+  if (!Number.isFinite(delta) || delta === 0) return { applied: false, projected: null as string | null };
+  const value = decimal(units(Math.abs(delta)));
+  const start = windowStart(meter, now);
+  await tx.insert(quotaBuckets).values({ businessId, meter, windowStart: start }).onConflictDoNothing();
+  const predicate = and(eq(quotaBuckets.businessId, businessId), eq(quotaBuckets.meter, meter), eq(quotaBuckets.windowStart, start));
+  const [bucket] = await tx.select().from(quotaBuckets).where(predicate).for("update");
+  const current = storedUnits(bucket.consumed);
+  let next = delta > 0 ? current + storedUnits(value) : current - storedUnits(value);
+  if (next < BigInt(0)) next = BigInt(0);
+  if (delta > 0) {
+    const { policy } = await policyFor(tx, businessId, now);
+    if (checkLimit(policy[meter], next + storedUnits(bucket.reserved)).blocked) throw exceeded(meter);
+  }
+  const projected = `${next / BigInt(10000)}.${(next % BigInt(10000)).toString().padStart(4, "0")}`;
+  await tx.update(quotaBuckets).set({ consumed: projected }).where(predicate);
+  return { applied: true, projected };
+}
+
+/** Meters whose metering paths are fully connected (used by billing status). */
+export const CONNECTED_METERS: Meter[] = [...METERS];
 // Internal primitive: caller must hold the tenant row lock. Never export a scope bypass.
 async function finishLocked(tx: QuotaTx, businessId: string, id: string, normalized?: Record<string, string>) {
     const [reservation] = await tx.select().from(quotaReservations).where(and(eq(quotaReservations.businessId, businessId), eq(quotaReservations.id, id)));
@@ -118,7 +162,8 @@ export async function getQuotaStatus(businessId: string) {
         consumed = decimal(units(count));
       }
       const reserved = bucket?.reserved ?? "0.0000", limit = policy[meter] ?? { hard: null, soft: null, grace: 0 };
-      meters.push({ meter, connected: ["calls", "llm_input_tokens", "llm_output_tokens", "embedding_tokens", "tts_characters", "active_agents", "tenant_users"].includes(meter), windowStart: start.toISOString(), consumed, reserved, ...limit, ...checkLimit(limit, storedUnits(consumed) + storedUnits(reserved)) });
+      meters.push({ meter, connected: true, windowStart: start.toISOString(), consumed, reserved, ...limit,
+        ...checkLimit(limit, storedUnits(consumed) + storedUnits(reserved)) });
     }
     return { plan, meters };
   });
