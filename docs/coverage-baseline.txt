@@ -1,0 +1,67 @@
+Coverage baseline — measured on this branch (arena/01a10ae4-ai-receptionist)
+============================================================================
+
+Command
+-------
+  redis-cli flushall          # global rate-limit counters must not leak between files
+  npx vitest run --coverage   # vitest.config.ts thresholds: 80 for all four metrics
+
+Scope
+-----
+  include: src/lib/**/*.ts, src/app/api/**/*.ts
+  (product code only; no exclusions were added, no test was skipped to reach
+  these numbers — see scripts/ci/check-test-results.mjs, which fails on any skip)
+
+Latest measured result (final clean run on this branch head, 17 migrations)
+----------------------------------------------------------------
+  statements : 91.97%  (15447/16794)
+  lines      : 91.97%  (15447/16794)
+  functions  : 94.02%  (834/887)
+  branches   : 81.12%  (4332/5340)
+  test files : 86 passed / 0 failed
+  tests      : 752 passed / 0 failed / 0 skipped
+
+Threshold gate status: PASS for lines, functions, branches and statements (80 each).
+
+History on this branch
+----------------------
+  starting point          : statements/lines 69.76%, branches 72.37%, functions 81.48%
+  after provider adapters : statements/lines 86.73%, branches 73.26%, functions 91.26%
+  after route coverage    : statements/lines 88.85%, branches 74.89%, functions 92.46%
+  after ops/AI suites     : statements/lines 90.23%, branches 80.41%, functions 93.07%
+  after browser/live/WhatsApp suites: statements/lines 90.23%, branches 80.41% (4023/5003), functions 93.07%
+  after resilience suites               : statements/lines 90.32%, branches 80.69% (4114/5098), functions 93.14%
+  after injection/index-audit suites    : statements/lines 90.40%, branches 80.78% (4121/5101), functions 93.14%
+  after SCIM/OAuth/PII/white-label/voice-safety suites: statements/lines 91.97% (15447/16794), branches 81.12% (4332/5340), functions 94.02% (834/887); 86 files / 752 tests / 0 skipped
+
+How the gap was closed
+----------------------
+  * integration route suites (appointments, properties, knowledge lifecycle,
+    calls, agents, users/business, platform control plane, metrics, OpenAPI,
+    voice and payment webhooks)
+  * provider factory suites (notification channels incl. failure paths, AI
+    providers refusing when unconfigured, reranker selection/fallback)
+  * production environment guards (every secret and provider combination)
+  * ops primitives (outbox backoff/lease, Redis fallback, storage keys and
+    signed URLs, RRF fusion, upload constraints, tenant state machine)
+  * call lifecycle (transition races, transfer success/failure, reaper,
+    idempotent completion, no fabricated summaries)
+  * scheduling edge cases (holidays, closed days, overlap, cross-tenant refs)
+  * media protocol and Twilio adapter edge cases (invalid frames, capacity,
+    idle timeout, DTMF handoff, provider error mapping)
+
+Remaining lowest-covered modules (branch %) — candidates for the next pass
+-------------------------------------------------------------------------
+  src/lib/providers/payments.ts        ~53%   (provider-specific error mapping)
+  src/lib/services/payments.ts         ~76%   (billing edge states)
+  src/lib/voice/media-server.ts        ~72%   (long-running session paths)
+  src/lib/services/knowledge.ts        ~69%   (ingestion failure branches)
+  src/lib/services/agent.ts            ~60%   (tool-loop edge cases)
+  src/lib/auth.ts                      ~76%   (session rotation paths)
+
+Reproduce
+---------
+  bash scripts/ci/local-stack.sh          # Postgres 16 + pgvector + Redis
+  source /home/user/.cache/ci-env.sh
+  npm ci && npm run db:migrate && npm run db:migrate
+  npx vitest run --coverage
