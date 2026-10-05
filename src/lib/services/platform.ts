@@ -1,9 +1,10 @@
-import { and, asc, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
 import { auditLogs, businesses, refreshTokens, users } from "@/db/schema";
 import { AppError } from "@/lib/api";
 import { requestContext } from "@/lib/request-context";
+import { enqueueOutbox } from "@/lib/services/outbox";
 
 export const TenantStateSchema = z.object({
   id: z.string().uuid(), isActive: z.boolean(), reason: z.string().trim().min(10).max(1000),
@@ -54,6 +55,38 @@ export async function changePlatformTenantState(actorId: string, input: unknown)
       action: change.isActive ? "tenant.reactivated" : "tenant.suspended", entityType: "business", entityId: change.id,
       requestId: requestContext.getStore()?.requestId,
       metadata: { reason: change.reason, actorBusinessId: actor.businessId, previousState: tenant.isActive } });
+    await enqueueOutbox(tx, {
+      businessId: change.id,
+      topic: change.isActive ? "tenant.reactivated" : "tenant.suspended",
+      idempotencyKey: `tenant.${change.isActive ? "reactivated" : "suspended"}:${change.id}:${now.getTime()}`,
+      payload: { businessId: change.id, id: change.id, reason: change.reason, actorId },
+    });
     return { id: change.id, isActive: change.isActive, changed: true };
   });
+}
+
+/**
+ * Tenant-admin authorization (used by tenant-scoped operator tooling such as
+ * the outbox viewer and data export). Platform administration is a strictly
+ * different privilege and is never granted here.
+ */
+export async function assertTenantAdmin(actorId: string, businessId: string) {
+  z.string().uuid().parse(actorId);
+  z.string().uuid().parse(businessId);
+  const [actor] = await db
+    .select({ id: users.id, businessId: users.businessId, role: users.role })
+    .from(users)
+    .innerJoin(businesses, eq(users.businessId, businesses.id))
+    .where(
+      and(
+        eq(users.id, actorId),
+        eq(users.businessId, businessId),
+        eq(users.isActive, true),
+        eq(businesses.isActive, true),
+        inArray(users.role, ["ADMIN", "TENANT_ADMIN"]),
+      ),
+    )
+    .limit(1);
+  if (!actor) throw new AppError(403, "FORBIDDEN", "Tenant administrator access is required");
+  return actor;
 }
