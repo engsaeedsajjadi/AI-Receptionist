@@ -39,7 +39,7 @@ Node 22.
 
 | Area | Implementation / source | Automated tests | Live validation | Status | Blocker |
 | --- | --- | --- | --- | --- | --- |
-| Coverage ≥80% (all four) | `vitest.config.ts` thresholds 80/80/80/80, no exclusions, no skips | 86 files / 752 tests, 0 skipped; **91.97 statements / 91.97 lines / 94.02 functions / 81.12 branches** (15447/16794, 834/887, 4332/5340) | n/a | **PASS** | — (branch coverage margin is 1.12 pt; new code must carry tests) |
+| Coverage ≥80% (all four) | `vitest.config.ts` thresholds 80/80/80/80, no exclusions, no skips | 97 files / 807 tests, 0 skipped; **92.36 statements / 92.36 lines / 94.07 functions / 81.94 branches** (16248/17591, 857/911, 4712/5750) | n/a | **PASS** | — (branch coverage margin is 1.94 pt; new code must carry tests) |
 | Tenant isolation | `businesses.id` root + `business_id` boundary on every scoped table; composite FKs; `requestContext` fail-closed; tenant cache/storage/vector/quota scoping | `tenant-isolation` (11 negative cases), tenant-webhooks, webhook-routes, rbac, access-control | No production audit | **PASS (source + tests)** | Production data audit remains a release activity |
 | RLS decision | **Decision: no RLS rollout**; documented rationale + equivalent safeguards and a revisit trigger in `docs/TENANT-ISOLATION.md` | Isolation enforced/tested at the application + schema layers | n/a | **PASS (decision documented)** | — |
 | Webhook ledger tenancy | `webhook_events.business_id NOT NULL`, nullable legacy rows removed, tenant-scoped unique index | webhook negative/replay/forgery suites | No production traffic | **PASS** | — |
@@ -151,14 +151,20 @@ Node 22.
 ## Bottom line
 
 All P0 gates that can be verified without third-party infrastructure now pass: coverage
-(91.97/91.97/94.02/81.12 on 752 tests with zero skips), tenant isolation with a documented RLS
-decision, meters, billing core with an immutable ledger, a 15-topic transactional outbox, a
-concrete telephony adapter, restore/DR drill, migration safety, live-suite loud-failure gating,
-an enforced PII/secret log audit, and a green production build. The remaining P0 gaps are inherently external (real PSTN acceptance, live
+(92.36/92.36/94.07/81.94 on 807 tests across 97 files with zero skips), tenant isolation with a
+documented RLS decision, meters, billing core with an immutable ledger, a 15-topic transactional
+outbox, a concrete telephony adapter, restore/DR drill, migration safety, live-suite loud-failure
+gating, an enforced PII/secret log audit, and a green production build. The remaining P0 gaps are inherently external (real PSTN acceptance, live
 gateway, live SMTP/OAuth/storage/telemetry) plus E2E execution outside this sandbox and load/HA
 soak. P1 gaps closed in this round: WhatsApp channel (adapter + tests), cross-tab session
 coordination, the load harness, provider circuit breakers, the prompt-injection red-team corpus,
 the index/N+1 audit gate, SCIM + OIDC HTTP route coverage, and the PII/secret log audit gate.
+P1 gaps closed since the first matrix revision: the retrieval ACL was made fail-closed (the
+`scope` argument is required and the predicate is applied unconditionally, so the AI runtime and
+the search API can no longer see ROLE/AGENT/PRIVATE/CATEGORY documents), claim verification is
+enforced on the live turn (an unsupported reply is replaced by the extractive excerpts before the
+caller hears it), and the typed intent boundary now runs on every turn with a tenant-scoped
+quality report (`GET /api/v1/analytics/intent`) plus a dashboard panel.
 P2 gaps closed in this round: white-labeling and voice-cloning safety (both entitlement/consent
 gated with HTTP-level tests). The only P2 rows that remain PARTIAL are deliberately scoped:
 WebRTC transport (the architecture and media protocol are ready; no WebRTC transport exists) and
