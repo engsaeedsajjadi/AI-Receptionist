@@ -1,4 +1,5 @@
 import { assertTenantScope } from "@/lib/request-context";
+import { scoreLead } from "@/lib/scoring";
 import { and, desc, eq, notInArray } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
@@ -140,24 +141,49 @@ export async function createOrUpdateLead(input: {
       .limit(1);
 
     const e = input.extraction;
-    const patch = {
-      type: e.intent,
-      budgetMin: e.budgetMin ?? undefined,
-      budgetMax: e.budgetMax ?? undefined,
-      location: e.location ?? undefined,
-      minArea: e.minArea ?? undefined,
-      maxArea: e.maxArea ?? undefined,
-      bedrooms: e.bedrooms ?? undefined,
-      timeframe: e.timeframe ?? undefined,
-      requestedVisit: e.requestedVisit || undefined,
-      summary: e.summary ?? undefined,
-      updatedAt: new Date(),
-    } as const;
+    // Explainable scoring: recompute from the merged signals and persist the
+    // rationale next to the score, so a later reader can see exactly why.
+    const reasons = (latest: typeof leads.$inferSelect | undefined) => {
+      const merged = {
+        type: e.intent ?? latest?.type ?? null,
+        budgetMin: e.budgetMin ?? latest?.budgetMin ?? null,
+        budgetMax: e.budgetMax ?? latest?.budgetMax ?? null,
+        location: e.location ?? latest?.location ?? null,
+        minArea: e.minArea ?? latest?.minArea ?? null,
+        maxArea: e.maxArea ?? latest?.maxArea ?? null,
+        bedrooms: e.bedrooms ?? latest?.bedrooms ?? null,
+        timeframe: e.timeframe ?? latest?.timeframe ?? null,
+        requestedVisit: e.requestedVisit || latest?.requestedVisit || false,
+        source: input.source ?? latest?.source ?? "call",
+        summary: e.summary ?? latest?.summary ?? null,
+        status: latest?.status ?? "NEW",
+      };
+      return scoreLead(merged);
+    };
+
+    const patch = (latest: typeof leads.$inferSelect | undefined) => {
+      const scored = reasons(latest);
+      return {
+        type: e.intent,
+        budgetMin: e.budgetMin ?? undefined,
+        budgetMax: e.budgetMax ?? undefined,
+        location: e.location ?? undefined,
+        minArea: e.minArea ?? undefined,
+        maxArea: e.maxArea ?? undefined,
+        bedrooms: e.bedrooms ?? undefined,
+        timeframe: e.timeframe ?? undefined,
+        requestedVisit: e.requestedVisit || undefined,
+        summary: e.summary ?? undefined,
+        score: scored.score,
+        scoreRationale: scored as unknown as Record<string, unknown>,
+        updatedAt: new Date(),
+      } as const;
+    };
 
     if (latest && (OPEN_STATUSES as readonly string[]).includes(latest.status)) {
       const [updated] = await tx
         .update(leads)
-        .set({ ...patch, updatedAt: new Date() })
+        .set({ ...patch(latest), updatedAt: new Date() })
         .where(eq(leads.id, latest.id))
         .returning();
       return { lead: updated, outcome: "updated_open" };
@@ -166,7 +192,7 @@ export async function createOrUpdateLead(input: {
     if (latest && latest.status === "LOST") {
       const [reopened] = await tx
         .update(leads)
-        .set({ ...patch, status: "NEW", source: input.source ?? latest.source, updatedAt: new Date() })
+        .set({ ...patch(latest), status: "NEW", source: input.source ?? latest.source, updatedAt: new Date() })
         .where(eq(leads.id, latest.id))
         .returning();
       await enqueueOutbox(tx, {
@@ -196,6 +222,9 @@ export async function createOrUpdateLead(input: {
         timeframe: e.timeframe,
         requestedVisit: e.requestedVisit,
         summary: e.summary,
+        // A brand-new lead has no history: score exactly what was collected.
+        score: reasons(undefined).score,
+        scoreRationale: reasons(undefined) as unknown as Record<string, unknown>,
       })
       .returning();
     await enqueueOutbox(tx, {

@@ -196,6 +196,8 @@ export const leads = pgTable(
     type: leadTypeEnum("type").notNull().default("OTHER"),
     status: leadStatusEnum("status").notNull().default("NEW"),
     score: integer("score").notNull().default(0),
+    /** Explainable rationale for `score` (rubric version + itemised factors). */
+    scoreRationale: jsonb("score_rationale").$type<Record<string, unknown>>().notNull().default({}),
     budgetMin: numeric("budget_min"),
     budgetMax: numeric("budget_max"),
     location: text("location"),

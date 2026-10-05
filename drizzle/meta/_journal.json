@@ -120,6 +120,13 @@
       "when": 1791202294377,
       "tag": "0016_white_label_domain",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1791211933273,
+      "tag": "0017_lead_score_rationale",
+      "breakpoints": true
     }
   ]
 }

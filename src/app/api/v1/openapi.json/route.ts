@@ -109,6 +109,7 @@ export const DOCUMENTED_ROUTES: Array<{ path: string; file: string }> = [
   { path: "/api/v1/business/branding", file: "src/app/api/v1/business/branding/route.ts" },
   { path: "/api/v1/business/voice-consent", file: "src/app/api/v1/business/voice-consent/route.ts" },
   { path: "/api/v1/public/branding", file: "src/app/api/v1/public/branding/route.ts" },
+  { path: "/api/v1/leads/{id}/score", file: "src/app/api/v1/leads/[id]/score/route.ts" },
   { path: "/api/v1/notifications", file: "src/app/api/v1/notifications/route.ts" },
   { path: "/api/v1/platform/tenants", file: "src/app/api/v1/platform/tenants/route.ts" },
   { path: "/api/v1/platform/tenants/deletion", file: "src/app/api/v1/platform/tenants/deletion/route.ts" },
@@ -143,6 +144,10 @@ export function buildOpenApiDocument(baseUrl: string) {
     "/api/v1/billing/quotas": { get: { summary: "Quota usage and limits", security: SECURITY, responses: { "200": { description: "OK" } } } },
     "/api/v1/usage": list("Usage records (cursor pagination)"),
     "/api/v1/notifications": list("Notifications (cursor pagination)"),
+    "/api/v1/leads/{id}/score": {
+      get: { summary: "Lead score with its stored rationale", security: SECURITY, responses: { "200": { description: "OK" }, "404": { description: "lead not found in this tenant" } } },
+      post: { summary: "Recompute the lead score (audited, explains the change)", security: SECURITY, responses: { "200": { description: "OK" }, "403": { description: "crm:write required" } } },
+    },
     "/api/v1/admin/roles": { ...list("Custom roles"), ...mutation("Create a custom role") },
     "/api/v1/admin/api-keys": { ...list("API keys (hash-only)"), ...mutation("Create an API key") },
     "/api/v1/admin/service-accounts": { ...list("Service accounts"), ...mutation("Create a service account") },
