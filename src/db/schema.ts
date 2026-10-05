@@ -14,6 +14,7 @@ import {
   varchar,
   vector,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 // ---------------------------------------------------------------------------
 // Enums
@@ -99,6 +100,9 @@ export const businesses = pgTable(
   (table) => ({
     slugIdx: uniqueIndex("businesses_slug_idx").on(table.slug),
     customDomainIdx: uniqueIndex("businesses_custom_domain_idx").on(table.customDomain),
+    // One phone number belongs to exactly one tenant: an inbound call must never
+    // be routed ambiguously. Partial, because many tenants have no number yet.
+    phoneIdx: uniqueIndex("businesses_phone_idx").on(table.phone).where(sql`${table.phone} is not null`),
   }),
 );
 
