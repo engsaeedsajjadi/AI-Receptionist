@@ -54,3 +54,5 @@ The accompanying API inventory lists every route/method present in the source. I
 ## Quotas
 
 `GET /api/v1/billing/quotas` returns the current tenant plan and per-meter consumed/reserved quantities, UTC window and limits; tenant-admin authorization required. `connected:false` means enforcement is incomplete for that meter. `PATCH /api/v1/platform/quotas` accepts `{businessId,policy,reason}`; only active SUPER_ADMIN with MFA can merge overrides, with an audit record. Hard admission failures return HTTP 402 with `QUOTA_EXCEEDED`. See ENTERPRISE-QUOTAS.md for policy shape.
+
+Call-started webhook admission now records the call, tenant-scoped PostgreSQL idempotency entry, usage and call quota debit in one transaction. HTTP 402 leaves no event key behind. Same-key identical retries return the existing call; changed payloads with that key return 409. Calls with inactive/foreign agents are rejected. Media bootstrap remains a separately reported external operation, not part of the database atomicity guarantee.

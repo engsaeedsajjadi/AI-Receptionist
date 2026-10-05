@@ -1,4 +1,4 @@
-# Enterprise implementation checkpoint — 2026-10-04
+# Enterprise implementation checkpoint — 2026-10-05
 
 This branch is an implementation in progress, **not an approved production release**. The original architecture audit was committed before code changes. Existing Next.js/Drizzle/provider boundaries are retained.
 
@@ -15,8 +15,8 @@ This branch is an implementation in progress, **not an approved production relea
 
 ## Evidence
 
-- GitHub Actions run 37186769147 on commit 42e285a: 350 tests passed across 49 files, zero skipped, including PostgreSQL, Redis, tenant isolation, concurrent refresh, CRM, MFA and agent memory. Both migration runs and production build passed.
-- Coverage on that run: lines/statements 71.88%, branches 72.03%, functions 76.45%. The 80% gate correctly failed; it has not been lowered or narrowed.
+- GitHub Actions run 37272324721 on commit 08c37c3: 364 tests passed across 52 files, zero skipped, including PostgreSQL, Redis, tenant isolation, concurrent refresh, CRM, MFA and agent memory. Both migration runs and production build passed.
+- Coverage on that run: lines/statements 72.43%, branches 73.38%, functions 77.94%. The 80% gate correctly failed; it has not been lowered or narrowed.
 - Dependency scanning found vulnerable baseline versions. Next.js was upgraded within version 16 to 16.3.8; Nodemailer to 10.0.14 and PostCSS to 8.5.23. A subsequent local production dependency audit reports zero known vulnerabilities. The same remote CI run also passed the production dependency audit.
 - New passwords use full-input scrypt; legacy bcrypt remains readable. Long Persian passwords and malformed hash parameter rejection have dedicated tests.
 - Prometheus endpoint, Grafana provisioning, OTLP trace export and optional rolling/customer memory are implemented. Dashboard configuration exposes model/temperature/tool/retrieval/memory settings. Live deployed telemetry/provider acceptance is still pending.
@@ -62,13 +62,13 @@ Manual invoice billing now provides configured plan pricing, immutable invoice s
 
 ## Follow-up specification / Phase 1 checkpoint
 
-Status: **PARTIAL**. The uploaded follow-up work order is being applied to this branch without rebuilding existing modules. Tenant-row-locked multi-meter reservation, original-window settlement/release, soft/hard/grace caps, plan configuration and audited tenant overrides are implemented. Agent/user inventory changes use the same transaction as admission. LLM, embedding, TTS and call-count paths are connected; call-duration, STT and physical storage quotas remain incomplete. See ENTERPRISE-QUOTAS.md for precise guarantees and limitations. New remote CI evidence is pending.
+Status: **PARTIAL**. The uploaded follow-up work order is being applied to this branch without rebuilding existing modules. Tenant-row-locked multi-meter reservation, original-window settlement/release, soft/hard/grace caps, plan configuration and audited tenant overrides are implemented. Agent/user inventory changes use the same transaction as admission. LLM, embedding, TTS and call-count paths are connected; call-duration, STT and physical storage quotas remain incomplete. See ENTERPRISE-QUOTAS.md for precise guarantees and limitations. Remote CI run 37272324721 passed all 364 functional tests, migrations twice, lint/typecheck, build and dependency audit. Coverage is still below 80%.
 
 Testing correction: three historical live LLM cases returned early when credentials were missing and were counted as passes by Vitest. They have been moved to an explicit `npm run test:live:ai` acceptance command which fails when required credentials/database are absent. They are no longer included in the Enterprise CI passing-test count. This does not lower coverage thresholds or remove deterministic tests. Historical totals must not be interpreted as executed live-provider validation.
 
 | Follow-up priority | Status | Acceptance still needed |
 | --- | --- | --- |
-| P0 billing quota enforcement | PARTIAL | Remaining meters, reservation recovery, provider-bound acceptance and CI concurrency evidence |
+| P0 billing quota enforcement | PARTIAL | Remaining three meters, reservation recovery and provider-bound acceptance; CI concurrency checks passed |
 | P0 tenant isolation final audit | PARTIAL | Repository-wide coverage beyond the changed services |
 | P0 RAG ACL/versioning | PARTIAL | ACL/version implementation and negative retrieval tests |
 | P0 agent intent/verification | PARTIAL | Typed classifier and evaluated claim verification |

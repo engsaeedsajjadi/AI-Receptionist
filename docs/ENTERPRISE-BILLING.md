@@ -1,6 +1,6 @@
 # Manual invoice subscriptions
 
-Implemented scope: FREE fallback plus configurable STARTER, BUSINESS and ENTERPRISE plan invoices, operator reconciliation, monthly subscription periods, renewal requests and cancellation. **This does not yet enforce usage quotas, collect money automatically, generate tax-compliant jurisdiction-specific invoices or process refunds.** Existing usage dashboards continue to show provider usage and estimated costs separately from subscription fees. Existing tenant functionality is preserved.
+Implemented scope: FREE fallback plus configurable STARTER, BUSINESS and ENTERPRISE plan invoices, operator reconciliation, monthly subscription periods, renewal requests and cancellation. **This does not yet enforce every usage quota, collect money automatically, generate tax-compliant jurisdiction-specific invoices or process refunds.** Existing usage dashboards continue to show provider usage and estimated costs separately from subscription fees. Existing tenant functionality is preserved.
 
 ## Operator configuration
 
@@ -14,7 +14,7 @@ Leave the variable empty to disable paid invoice issuance. Undefined plans canno
 
 ## Tenant workflow
 
-Tenant administrators open `/dashboard/billing`, request a plan invoice and view/print it (browser Save as PDF). POST request keys prevent retry-created duplicate invoices. Open invoices can be voided. Tenant administrators cannot mark invoices paid or directly change their paid plan. Expired/missing subscriptions resolve to FREE immediately without waiting for cron. This plan state currently does **not** enforce consumption limits.
+Tenant administrators open `/dashboard/billing`, request a plan invoice and view/print it (browser Save as PDF). POST request keys prevent retry-created duplicate invoices. Open invoices can be voided. Tenant administrators cannot mark invoices paid or directly change their paid plan. Expired/missing subscriptions resolve to FREE immediately without waiting for cron. Plan state now selects the configured quota policy for connected meters. Omitted limits remain explicitly unlimited. See ENTERPRISE-QUOTAS.md for connected paths and remaining work.
 
 ## Operator workflow
 
