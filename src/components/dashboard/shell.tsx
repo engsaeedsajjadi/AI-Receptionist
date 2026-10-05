@@ -1,21 +1,30 @@
 "use client";
 
+import { hasRole, type UserRole } from "@/lib/permissions";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, type ReactNode } from "react";
 import { useAuth } from "@/components/dashboard/auth";
 import { LoadingState } from "@/components/dashboard/ui";
 
-const NAV: Array<{ href: string; label: string; roles?: Array<"ADMIN" | "MANAGER" | "AGENT"> }> = [
+const NAV: Array<{ href: string; label: string; roles?: Array<UserRole> }> = [
   { href: "/dashboard", label: "نمای کلی" },
   { href: "/dashboard/calls", label: "تماس‌ها" },
+  { href: "/dashboard/crm", label: "فرصت‌ها و پیگیری" },
   { href: "/dashboard/leads", label: "سرنخ‌ها" },
   { href: "/dashboard/customers", label: "مشتریان" },
   { href: "/dashboard/appointments", label: "نوبت‌ها" },
   { href: "/dashboard/knowledge", label: "پایگاه دانش" },
   { href: "/dashboard/agent", label: "منشی هوشمند" },
+  { href: "/dashboard/quotas", label: "سهمیه‌ها", roles: ["ADMIN"] },
+  { href: "/dashboard/billing", label: "صورتحساب", roles: ["ADMIN"] },
+  { href: "/dashboard/platform-billing", label: "تطبیق پرداخت", roles: ["SUPER_ADMIN"] },
+  { href: "/dashboard/quota-reservations", label: "بررسی رزرو سهمیه", roles: ["SUPER_ADMIN"] },
   { href: "/dashboard/usage", label: "مصرف" },
   { href: "/dashboard/users", label: "کاربران", roles: ["ADMIN", "MANAGER"] },
+  { href: "/dashboard/automation", label: "اتوماسیون", roles: ["MANAGER"] },
+  { href: "/dashboard/tenants", label: "مستأجرها", roles: ["SUPER_ADMIN"] },
+  { href: "/dashboard/security", label: "امنیت حساب" },
   { href: "/dashboard/settings", label: "تنظیمات", roles: ["ADMIN"] },
 ];
 
@@ -46,7 +55,7 @@ export function DashboardShell({ children }: { children: ReactNode }) {
 
   if (!user) return null;
 
-  const visibleNav = NAV.filter((n) => !n.roles || n.roles.includes(user.role));
+  const visibleNav = NAV.filter((n) => !n.roles || n.roles.some((role) => hasRole(user.role, role)));
 
   return (
     <div className="mx-auto flex min-h-screen w-full max-w-7xl gap-4 px-4 py-6 sm:px-6">

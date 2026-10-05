@@ -1,7 +1,13 @@
+import { meteredCompletion } from "@/lib/services/metered-ai";
+import { loadAgentMemory, summarizeConversation } from "@/lib/services/memory";
+import { hybridSearch } from "@/lib/services/knowledge";
+import { requireTenantFeature } from "@/lib/tenant-config";
+import { assertTenantScope } from "@/lib/request-context";
 import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
 import { agents, businesses, callMessages, calls } from "@/db/schema";
+import { collectRagEvidence, evidencePrompt, evidenceFallback, isKnowledgeDenial } from "@/lib/rag-evidence";
 import { AppError } from "@/lib/errors";
 import { TOOL_FAILURE_MESSAGE_FA, UNKNOWN_INFO_MESSAGE_FA, buildSystemPrompt } from "@/lib/guardrails";
 import { logWarn } from "@/lib/logger";
@@ -19,6 +25,10 @@ export const AgentConfigSchema = z.object({
   transferNumber: z.string().max(30).optional(),
   fallbackBehavior: z.string().max(1000).optional(),
   systemInstructions: z.string().max(5000).optional(),
+  memoryEnabled: z.boolean().default(false),
+  retrievalMode: z.enum(["tools", "automatic"]).default("tools"),
+  model: z.string().min(1).max(150).nullable().optional(),
+  allowedTools: z.array(z.string().min(1).max(100)).max(50).nullable().optional(),
   temperature: z.number().min(0).max(2).default(0.2),
   maxToolIterations: z.number().int().min(1).max(10).default(5),
 });
@@ -32,7 +42,7 @@ async function loadAgent(businessId: string, agentId?: string) {
     const [row] = await db
       .select()
       .from(agents)
-      .where(and(eq(agents.id, agentId), eq(agents.businessId, businessId)))
+      .where(and(eq(agents.id, agentId), eq(agents.businessId, businessId), eq(agents.isActive, true)))
       .limit(1);
     if (!row) throw new AppError(404, "AGENT_NOT_FOUND", "Agent not found");
     return row;
@@ -55,16 +65,16 @@ function parseAgentConfig(agent: typeof agents.$inferSelect): AgentConfig {
     ...raw,
   });
   if (!parsed.success) {
-    return AgentConfigSchema.parse({ agentName: agent.name });
+    throw new AppError(400, "VALIDATION_ERROR", "Agent configuration is invalid; correct it before running the agent");
   }
   return parsed.data;
 }
 
-async function loadCallHistory(callId: string): Promise<ChatMessage[]> {
+async function loadCallHistory(businessId: string, callId: string): Promise<ChatMessage[]> {
   const rows = await db
     .select()
     .from(callMessages)
-    .where(eq(callMessages.callId, callId))
+    .where(and(eq(callMessages.callId, callId), eq(callMessages.businessId, businessId)))
     .orderBy(desc(callMessages.timestamp))
     .limit(MAX_HISTORY_MESSAGES);
   return rows.reverse().map((r) => ({
@@ -100,6 +110,8 @@ export type AgentTurnResult = {
  * audited tool registry with tenant context.
  */
 export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
+  assertTenantScope(input.businessId);
+  await requireTenantFeature(input.businessId, "agent");
   // Normalize Persian input BEFORE any downstream processing (tool parsing,
   // history persistence, LLM): ي/ي, ک/ك, digits, tashkeel, spacing.
   const userMessage = normalizePersianText(input.userMessage).trim().slice(0, 4000);
@@ -123,7 +135,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
   if (!business) throw new AppError(404, "BUSINESS_NOT_FOUND", "Business not found");
   const config = parseAgentConfig(agent);
 
-  const history: ChatMessage[] = input.callId ? await loadCallHistory(input.callId) : [];
+  const history: ChatMessage[] = input.callId ? await loadCallHistory(input.businessId, input.callId) : [];
   history.push({ role: "user", content: userMessage });
 
   // Preload lightweight business context for the prompt (no secrets).
@@ -138,7 +150,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
     .join("\n");
   void settings;
 
-  const systemPrompt = buildSystemPrompt({
+  let systemPrompt = buildSystemPrompt({
     language: config.language,
     businessName: business.name,
     agentName: config.agentName ?? agent.name,
@@ -148,9 +160,16 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
     businessContext,
   });
 
+  if (config.memoryEnabled && input.callId) systemPrompt += "\n" + await loadAgentMemory(input.businessId, input.callId);
   const llm = input.llm ?? getLLMProvider();
-  const tools = getToolDefinitions();
-  const messages: ChatMessage[] = [{ role: "system", content: systemPrompt }, ...history.slice(-MAX_HISTORY_MESSAGES)];
+  const tools = getToolDefinitions().filter((tool) => !config.allowedTools || config.allowedTools.includes(tool.name));
+  const allowedTools = new Set(tools.map((tool) => tool.name));
+  const evidence = new Map<string, { document: string; content: string }>();
+  if (config.retrievalMode === "automatic" && allowedTools.has("search_knowledge")) {
+    const found = await hybridSearch({ businessId: input.businessId, query: userMessage, topK: 5, requestId: input.requestId });
+    for (const chunk of found.chunks) evidence.set(chunk.id, { document: chunk.documentTitle, content: chunk.content.slice(0, 1500) });
+  }
+  const messages: ChatMessage[] = [{ role: "system", content: systemPrompt + (evidence.size ? "\n" + evidencePrompt([...evidence.values()]) : "") }, ...history.slice(-MAX_HISTORY_MESSAGES)];
 
   let inputTokens = 0;
   let outputTokens = 0;
@@ -159,7 +178,8 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
   let idempotencySeq = 0;
 
   for (let iteration = 0; iteration < config.maxToolIterations; iteration++) {
-    const result = await llm.complete(messages, {
+    const result = await meteredCompletion(input.businessId, llm, messages, {
+      model: config.model ?? undefined,
       tools,
       toolChoice: "auto",
       temperature: config.temperature,
@@ -186,18 +206,21 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
     messages.push({
       role: "assistant",
       content: result.content ?? "",
-      toolCalls: result.toolCalls.map((t) => ({ id: t.id, name: t.name, arguments: JSON.stringify(t.arguments) })),
+      toolCalls: result.toolCalls.map((t) => ({ id: t.id, name: t.name, arguments: JSON.stringify(t.arguments), thoughtSignature: t.thoughtSignature })),
     });
 
     for (const tc of result.toolCalls) {
-      const toolResult = await executeToolCall({
+      const toolResult = allowedTools.has(tc.name) ? await executeToolCall({
         businessId: input.businessId,
         callId: input.callId,
         tool: tc.name,
         args: tc.arguments,
         requestId: input.requestId,
         actor: input.actor ?? "agent-runtime",
-      });
+      }) : { status: "FAILED" as const, error: "Tool is not allowed for this agent" };
+      if (tc.name === "search_knowledge" && toolResult.status === "SUCCESS") {
+        for (const item of collectRagEvidence(toolResult.data)) evidence.set(`${item.document}:${item.content}`, item);
+      }
       executed.push({ tool: tc.name, status: toolResult.status });
       messages.push({
         role: "tool",
@@ -208,6 +231,13 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
         }).slice(0, 8000),
       });
     }
+    // Rebuild from original system instructions, never accumulate arbitrary
+    // tool text as instructions. Evidence is bounded, quoted, and read-only.
+    if (evidence.size) messages[0] = { role: "system", content: systemPrompt + "\n" + evidencePrompt([...evidence.values()]) };
+  }
+
+  if (evidence.size && (!reply || isKnowledgeDenial(reply))) {
+    reply = evidenceFallback([...evidence.values()], config.language);
   }
 
   if (!reply) {
@@ -230,12 +260,16 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
       .limit(1);
     if (call) {
       await db.insert(callMessages).values([
-        { callId: input.callId, role: "CUSTOMER", content: userMessage },
-        { callId: input.callId, role: "AGENT", content: reply },
+        { businessId: input.businessId, callId: input.callId, role: "CUSTOMER", content: userMessage },
+        { businessId: input.businessId, callId: input.callId, role: "AGENT", content: reply },
       ]);
     }
   }
 
+  if (config.memoryEnabled && input.callId) {
+    try { await summarizeConversation({ businessId: input.businessId, callId: input.callId, requestId: input.requestId, llm, model: config.model ?? undefined }); }
+    catch (error) { logWarn("Conversation summary unavailable", { businessId: input.businessId, callId: input.callId, error: error instanceof Error ? error.message : String(error) }); }
+  }
   return { reply, toolCalls: executed, agentId: agent.id, usage: { inputTokens, outputTokens } };
 }
 

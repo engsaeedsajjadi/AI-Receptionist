@@ -1,3 +1,4 @@
+import { inventoryQuota } from "@/lib/services/quotas";
 import { and, desc, eq, ne } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { z } from "zod";
@@ -47,7 +48,7 @@ const createSchema = z.object({
   email: z.string().email().max(255),
   phone: z.string().max(30).optional(),
   password: z.string().min(8).max(128),
-  role: z.enum(["ADMIN", "MANAGER", "AGENT"]).default("AGENT"),
+  role: z.enum(["ADMIN", "MANAGER", "AGENT", "TENANT_ADMIN", "AGENT_OPERATOR", "CALL_OPERATOR", "VIEWER"]).default("AGENT"),
 });
 
 export async function POST(req: NextRequest) {
@@ -66,19 +67,24 @@ export async function POST(req: NextRequest) {
     const [existing] = await db.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1);
     if (existing) throw new ApiError(409, "EMAIL_EXISTS", "Email already exists");
 
+    const passwordHash = await hashPassword(body.password);
     let created: typeof users.$inferSelect;
     try {
-      [created] = await db
+      created = await db.transaction(async (tx) => {
+        await inventoryQuota(tx, auth.businessId, "tenant_users", 1);
+        const [row] = await tx
         .insert(users)
         .values({
           businessId: auth.businessId,
           name: normalizePersianText(body.name),
           email,
           phone: body.phone ? (normalizePhone(body.phone) ?? normalizePersianText(body.phone)) : null,
-          passwordHash: await hashPassword(body.password),
+          passwordHash,
           role: body.role,
         })
         .returning();
+        return row;
+      });
     } catch (err) {
       mapUniqueViolation(err, {
         users_email_idx: { code: "EMAIL_EXISTS", message: "Email already exists" },

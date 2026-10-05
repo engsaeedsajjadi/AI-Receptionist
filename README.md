@@ -5,7 +5,7 @@ Inbound calls are answered by an LLM agent that speaks Persian, searches the bus
 base (RAG), lists/searches real-estate properties, captures leads, books appointments, and
 hands off to a human when needed — with full tenant isolation, audit trails, and cost tracking.
 
-Stack: **Next.js 15 (TypeScript, API Routes) · PostgreSQL 16 + pgvector · Drizzle ORM ·
+Stack: **Next.js 16 (TypeScript, API Routes) · PostgreSQL 16 + pgvector · Drizzle ORM ·
 Redis · n8n · Docker**. Persan-first RTL dashboard (English + Persian UI).
 
 ## Features
@@ -150,19 +150,16 @@ npm run lint && npm run typecheck
 - `tests/integration` — tenant isolation, leads, appointments, auth, webhooks,
   notifications/usage, knowledge. Need `TEST_DATABASE_URL` (or `DATABASE_URL`); they
   skip automatically when no database is reachable.
-- `tests/ai/eval.test.ts` — deterministic eval cases (Persian understanding, tool
-  contract, guardrail fallbacks) + live-LLM smoke cases gated on
-  `TEST_DATABASE_URL` + a live `LLM_PROVIDER` (they skip otherwise, never fail).
+- `tests/ai/eval.test.ts` contains deterministic evals. Explicit live acceptance uses `npm run test:live:ai`, requires a disposable test database and configured provider, and fails when required configuration is missing. Live tests are not counted as deterministic CI passes.
 - `tests/e2e` — critical journeys: full call lifecycle (started → turns → ended →
   billed + notified) and Redis-backed behavior (locks, rate limits, turn markers)
   against a real server (`REDIS_URL` / `TEST_REDIS_URL`).
 
-CI (`.github/workflows/ci.yml`): lint → typecheck → **migrate-from-zero validation** →
-full suite on real postgres (pgvector) + redis → **execution gate**
-(`scripts/ci/check-test-results.mjs` fails the build if ANY test skips, so green
-means every integration/E2E file ran) → production build → docker build →
-**prod boot smoke** (compose stack up with dummy secrets, `/ready` + nginx `/media`
-WebSocket assertions, always torn down).
+CI (`.github/workflows/enterprise-ci.yml`) runs lint, types, migrations twice,
+real PostgreSQL/Redis tests, the no-skips execution check, unchanged 80% coverage,
+production build and production dependency audit. Coverage currently blocks a green
+release. Docker boot, browser E2E, restore and live provider acceptance are outstanding;
+see `docs/PRODUCTION-READINESS.md` for source-backed gaps.
 
 ## API surface
 

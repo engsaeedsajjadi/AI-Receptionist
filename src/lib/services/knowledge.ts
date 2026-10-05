@@ -1,3 +1,6 @@
+import { meteredEmbeddings } from "@/lib/services/metered-ai";
+import { requireTenantFeature } from "@/lib/tenant-config";
+import { assertTenantScope } from "@/lib/request-context";
 import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { knowledgeChunks, knowledgeDocuments } from "@/db/schema";
@@ -55,7 +58,7 @@ async function embedAndStore(input: {
 }): Promise<{ embedded: number; tokens: number }> {
   if (input.chunks.length === 0) return { embedded: 0, tokens: 0 };
   const provider = getEmbeddingProvider();
-  const results = await provider.embedMany(
+  const results = await meteredEmbeddings(input.businessId, provider,
     input.chunks.map((c) => c.content),
     { requestId: input.requestId },
   );
@@ -92,6 +95,8 @@ async function embedAndStore(input: {
  * validate → extract → clean → normalize → chunk → embed → store (+archive original).
  */
 export async function ingestFile(input: IngestFileInput) {
+  assertTenantScope(input.businessId);
+  await requireTenantFeature(input.businessId, "knowledge");
   const validated = validateUpload({ filename: input.filename, mimeType: input.mimeType, size: input.buffer.length });
   const { text, pages } = await extractText(input.buffer, validated.docType);
   const cleaned = cleanText(text);
@@ -167,6 +172,8 @@ export async function ingestFile(input: IngestFileInput) {
 
 /** Ingestion for manual/pasted text content (same chunk+embed pipeline). */
 export async function ingestContent(input: IngestContentInput) {
+  assertTenantScope(input.businessId);
+  await requireTenantFeature(input.businessId, "knowledge");
   const cleaned = cleanText(input.content);
   if (cleaned.length < 20) {
     throw new AppError(400, "VALIDATION_ERROR", "Content is too short to index");
@@ -211,6 +218,7 @@ export async function ingestContent(input: IngestContentInput) {
 
 /** Re-chunk + re-embed an existing document from its stored content. */
 export async function reindexDocument(businessId: string, documentId: string, opts?: { requestId?: string }) {
+  assertTenantScope(businessId);
   const [doc] = await db
     .select()
     .from(knowledgeDocuments)
@@ -246,6 +254,7 @@ export async function reindexDocument(businessId: string, documentId: string, op
 }
 
 export async function deleteDocument(businessId: string, documentId: string): Promise<void> {
+  assertTenantScope(businessId);
   const [doc] = await db
     .select()
     .from(knowledgeDocuments)
@@ -302,6 +311,7 @@ async function vectorSearch(businessId: string, embedding: number[], limit: numb
     JOIN knowledge_documents kd ON kd.id = kc.document_id
     WHERE kc.business_id = ${businessId}
       AND kd.business_id = ${businessId}
+      AND kd.status = 'indexed'
       AND kc.embedding IS NOT NULL
     ORDER BY kc.embedding <=> ${literal}::vector
     LIMIT ${limit}
@@ -344,6 +354,7 @@ async function keywordSearch(businessId: string, query: string, limit: number): 
       and(
         eq(knowledgeChunks.businessId, businessId),
         eq(knowledgeDocuments.businessId, businessId),
+        eq(knowledgeDocuments.status, "indexed"),
         or(...termPatterns.map((p) => ilike(knowledgeChunks.content, p))),
       ),
     )
@@ -403,7 +414,9 @@ export async function hybridSearch(input: {
    */
   embed?: (normalizedQuery: string) => Promise<number[]>;
 }): Promise<{ chunks: RetrievedChunk[]; degraded: boolean }> {
-  const topK = Math.min(input.topK ?? 5, 20);
+  assertTenantScope(input.businessId);
+  await requireTenantFeature(input.businessId, "knowledge");
+  const topK = Math.max(1, Math.min(Math.trunc(input.topK ?? 5) || 5, 20));
   const minSimilarity = input.minSimilarity ?? 0.25;
   const normalized = normalizePersianText(input.query);
   if (!normalized) return { chunks: [], degraded: false };
@@ -413,7 +426,7 @@ export async function hybridSearch(input: {
   try {
     const embedding = input.embed
       ? await input.embed(normalized)
-      : (await getEmbeddingProvider().embed(normalized, { requestId: input.requestId })).embedding;
+      : (await meteredEmbeddings(input.businessId, getEmbeddingProvider(), [normalized], { requestId: input.requestId }))[0].embedding;
     assertDimensions(embedding);
     vectorResults = (await vectorSearch(input.businessId, embedding, topK)).filter((r) => r.score >= minSimilarity);
   } catch (err) {
@@ -438,6 +451,7 @@ export async function hybridSearch(input: {
 }
 
 export async function getDocument(businessId: string, documentId: string) {
+  assertTenantScope(businessId);
   const [doc] = await db
     .select()
     .from(knowledgeDocuments)

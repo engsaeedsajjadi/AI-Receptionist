@@ -82,7 +82,7 @@ abstract class BaseTtsProvider implements TTSProvider {
           response_format: format,
           speed: options.speed,
         },
-        { timeout: options.timeoutMs },
+        options.timeoutMs === undefined ? undefined : { timeout: options.timeoutMs },
       );
       const buffer = Buffer.from(await response.arrayBuffer());
       logInfo("TTS synthesis completed", {
