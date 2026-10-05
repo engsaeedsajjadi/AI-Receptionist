@@ -172,6 +172,10 @@ jobs:
       # Backup → restore into an isolated database → validate → migrate → health
       - run: bash scripts/ci/restore-drill.sh
       - run: docker build -t ai-receptionist:ci .
+      # `test-results/` is where vitest writes its report; the browser job's
+      # artifact is the only other producer, so create it before the SBOM step
+      # writes its evidence file here.
+      - run: mkdir -p test-results
       # Pinned release binary rather than the composite action: trivy-action
       # resolves an internal action reference (aquasecurity/setup-trivy@v0.2.1)
       # that no longer exists, which fails the job before any scan runs.
@@ -222,6 +226,8 @@ jobs:
         with:
           image: ai-receptionist:ci
           format: cyclonedx-json
+          # sbom-action writes the file but does not create the directory, and
+          # this job never runs vitest (so test-results/ does not exist yet).
           output-file: test-results/sbom.cyclonedx.json
       - uses: actions/upload-artifact@v4
         if: always()
