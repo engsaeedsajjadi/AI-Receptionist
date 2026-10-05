@@ -76,26 +76,46 @@ describe.skipIf(!hasTestDatabase())("appointment routes (HTTP)", () => {
     const customer = await createCustomer(a.business.id, "09121110001");
     const lead = await createLead(a.business.id, customer.id);
     const { POST, GET } = await import("@/app/api/v1/appointments/route");
-    const scheduledAt = new Date(Date.now() + 3 * 86_400_000).toISOString();
-    const created = await POST(send("/api/v1/appointments", { token: a.token, body: { title: "بازدید ملک", scheduledAt, durationMinutes: 30, customerId: customer.id, leadId: lead.id } }));
-    expect([201, 200]).toContain(created.status);
+
+    // Book the windows the scheduling engine offers instead of inventing them
+    // from the wall clock. `now + N days` keeps the current time of day, so a run
+    // that starts late in the tenant's evening (Asia/Tehran) asked for an
+    // appointment that ends after the business day's last minute and the route
+    // correctly refused it with 409 — a suite that fails depending on the hour it
+    // runs is a suite that lies about the code.
+    const freeSlots = async (daysAhead: number, durationMinutes: number) => {
+      const date = new Date(Date.now() + daysAhead * 86_400_000).toISOString().slice(0, 10);
+      const availability = await GET(send(`/api/v1/appointments?date=${date}&durationMinutes=${durationMinutes}`, { token: a.token }));
+      expect(availability.status).toBe(200);
+      const payload = (await availability.json()) as { slots?: Array<{ start: string; available: boolean }> };
+      expect(payload).toHaveProperty("slots");
+      return (payload.slots ?? []).filter((slot) => slot.available);
+    };
+
+    const bookable30 = await freeSlots(3, 30);
+    expect(bookable30.length).toBeGreaterThan(0);
+    const created = await POST(send("/api/v1/appointments", { token: a.token, body: { title: "بازدید ملک", scheduledAt: bookable30[0].start, durationMinutes: 30, customerId: customer.id, leadId: lead.id } }));
+    expect(created.status).toBe(201);
     const body = await created.json();
     const appointmentId = body.id ?? body.appointment?.id;
     expect(appointmentId).toBeTruthy();
 
     const list = await GET(send("/api/v1/appointments?status=SCHEDULED", { token: a.token }));
     expect(list.status).toBe(200);
-    const availability = await GET(send(`/api/v1/appointments?date=${scheduledAt.slice(0, 10)}&durationMinutes=30`, { token: a.token }));
-    expect(availability.status).toBe(200);
-    expect(await availability.json()).toHaveProperty("slots");
 
     const { GET: one, PUT, DELETE } = await import("@/app/api/v1/appointments/[id]/route");
     expect((await one(send(`/api/v1/appointments/${appointmentId}`, { token: a.token }), { params: Promise.resolve({ id: appointmentId }) })).status).toBe(200);
+
+    // A 45-minute window on another day: every offered slot fits inside the
+    // business day, so the reschedule must succeed. The old `[200, 400]`
+    // tolerance accepted a 400 here and hid the failure above.
+    const bookable45 = await freeSlots(4, 45);
+    expect(bookable45.length).toBeGreaterThan(0);
     const rescheduled = await PUT(
-      send(`/api/v1/appointments/${appointmentId}`, { method: "PUT", token: a.token, body: { scheduledAt: new Date(Date.now() + 4 * 86_400_000).toISOString(), durationMinutes: 45 } }),
+      send(`/api/v1/appointments/${appointmentId}`, { method: "PUT", token: a.token, body: { scheduledAt: bookable45[0].start, durationMinutes: 45 } }),
       { params: Promise.resolve({ id: appointmentId }) },
     );
-    expect([200, 400]).toContain(rescheduled.status);
+    expect(rescheduled.status).toBe(200);
     const cancelled = await DELETE(send(`/api/v1/appointments/${appointmentId}`, { method: "DELETE", token: a.token }), { params: Promise.resolve({ id: appointmentId }) });
     expect(cancelled.status).toBe(200);
     const [row] = await db.select().from(appointments).where(eq(appointments.id, appointmentId));
