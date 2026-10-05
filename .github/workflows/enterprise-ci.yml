@@ -169,14 +169,17 @@ jobs:
       # Backup → restore into an isolated database → validate → migrate → health
       - run: bash scripts/ci/restore-drill.sh
       - run: docker build -t ai-receptionist:ci .
+      # Pinned release binary rather than the composite action: trivy-action
+      # resolves an internal action reference (aquasecurity/setup-trivy@v0.2.1)
+      # that no longer exists, which fails the job before any scan runs.
+      - name: Install Trivy
+        run: |
+          curl -sfL -o /tmp/trivy.tar.gz https://github.com/aquasecurity/trivy/releases/download/v0.75.0/trivy_0.75.0_Linux-64bit.tar.gz
+          tar -xzf /tmp/trivy.tar.gz -C /tmp trivy
+          sudo install -m 0755 /tmp/trivy /usr/local/bin/trivy
+          trivy --version
       - name: Container image vulnerability scan (Trivy)
-        uses: aquasecurity/trivy-action@v0.28.0
-        with:
-          image-ref: ai-receptionist:ci
-          format: table
-          exit-code: '1'
-          severity: 'CRITICAL,HIGH'
-          ignore-unfixed: true
+        run: trivy image --exit-code 1 --severity CRITICAL,HIGH --ignore-unfixed --format table ai-receptionist:ci
       - name: SBOM (CycloneDX)
         uses: anchore/sbom-action@v0
         with:

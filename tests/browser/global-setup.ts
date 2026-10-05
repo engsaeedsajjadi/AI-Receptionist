@@ -1,6 +1,14 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { loadEnvConfig } from "@next/env";
+// Static imports on purpose: a dynamic `await import("@/db")` inside the setup
+// function is resolved by the ESM loader, which does not apply the tsconfig
+// `paths` mapping, so it fails at runtime with "Cannot find module '@/db'".
+// Statically imported files go through Playwright's transform, which does.
+import { seedBrowserTenant } from "./seed-tenant";
+import { hashPassword } from "@/lib/auth";
+import { closeDb, db } from "@/db";
+import { businesses, users } from "@/db/schema";
 
 export const SEED_FILE = path.join(process.cwd(), "test-results", "browser-seed.json");
 
@@ -34,15 +42,14 @@ export default async function globalSetup(): Promise<void> {
     );
   }
 
-  const { seedBrowserTenant } = await import("./seed-tenant");
-  const { hashPassword } = await import("@/lib/auth");
-  const { db, closeDb } = await import("@/db");
-  const { businesses, users } = await import("@/db/schema");
-
   const businessName = `آژانس آرنا ${Date.now()}`;
+  // The phone is uniquely indexed (that is what routes inbound calls to a
+  // tenant), so a fixed value makes a second run against a non-empty database
+  // fail with a duplicate-key error. Derive it from the run instead.
+  const runSuffix = Date.now().toString(36);
   const [business] = await db
     .insert(businesses)
-    .values({ name: businessName, slug: `e2e-${Date.now().toString(36)}`, phone: "+982188776655" })
+    .values({ name: businessName, slug: `e2e-${runSuffix}`, phone: `+989${String(Date.now()).slice(-9)}` })
     .returning();
 
   const adminEmail = `admin-${Date.now().toString(36)}@e2e.example.com`;
