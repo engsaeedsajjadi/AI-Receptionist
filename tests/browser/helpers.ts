@@ -11,7 +11,9 @@ export async function login(page: Page, email = seed().adminEmail, password = se
   await page.goto("/dashboard/login");
   await page.getByLabel("ایمیل").fill(email);
   await page.getByLabel("گذرواژه").fill(password);
-  await page.getByRole("button", { name: /ورود/ }).click();
+  // Exact name: the form also has "ورود با Google" / "ورود با Microsoft"
+  // buttons, and a regex matches all three (strict-mode violation).
+  await page.getByRole("button", { name: "ورود", exact: true }).click();
   await expect(page).toHaveURL(/\/dashboard(?!\/login)/, { timeout: 20_000 });
 }
 

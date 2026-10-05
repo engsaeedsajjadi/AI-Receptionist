@@ -179,7 +179,28 @@ jobs:
           sudo install -m 0755 /tmp/trivy /usr/local/bin/trivy
           trivy --version
       - name: Container image vulnerability scan (Trivy)
-        run: trivy image --exit-code 1 --severity CRITICAL,HIGH --ignore-unfixed --format table ai-receptionist:ci
+        run: |
+          set -o pipefail
+          trivy image --exit-code 1 --severity CRITICAL,HIGH --ignore-unfixed --format table ai-receptionist:ci | tee /tmp/trivy-report.txt
+      # A red scan must be reviewable without the job log: publish the table on the
+      # pull request that triggered the run (this step never changes the outcome).
+      - name: Publish Trivy findings on the pull request
+        if: failure() && github.event.pull_request.number
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          test -s /tmp/trivy-report.txt || echo "no report captured" > /tmp/trivy-report.txt
+          {
+            echo '### Container image scan (Trivy) failed'
+            echo
+            echo '`trivy image --severity CRITICAL,HIGH --ignore-unfixed`'
+            echo
+            echo '```'
+            head -c 60000 /tmp/trivy-report.txt
+            echo '```'
+          } > /tmp/trivy-comment.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/trivy-comment.md
       - name: SBOM (CycloneDX)
         uses: anchore/sbom-action@v0
         with:
