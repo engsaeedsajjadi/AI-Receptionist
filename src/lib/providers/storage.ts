@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
-import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { AppError } from "@/lib/errors";
 import { env, getEnv } from "@/lib/env";
@@ -16,12 +16,20 @@ export type UploadInput = {
 
 export type UploadResult = { key: string; bytes: number };
 
+export type ListedObject = { key: string; bytes: number; lastModified?: Date };
+
 export interface StorageProvider {
   readonly name: string;
   upload(input: UploadInput): Promise<UploadResult>;
   download(key: string): Promise<Buffer>;
   delete(key: string): Promise<void>;
   getSignedUrl(key: string, expiresInSeconds?: number): Promise<string>;
+  /**
+   * Enumerate stored objects under a prefix. Optional: when a provider cannot
+   * list, storage reconciliation reports that honestly instead of claiming the
+   * ledger matches the object store.
+   */
+  list?(prefix: string): Promise<ListedObject[]>;
 }
 
 function assertSafeKey(key: string): string {
@@ -88,6 +96,30 @@ export class LocalStorageProvider implements StorageProvider {
     const full = this.resolve(key);
     await fs.rm(full, { force: true });
     await fs.rm(`${full}.meta.json`, { force: true });
+  }
+
+  /** Walk the local root and report real sizes from the filesystem. */
+  async list(prefix: string): Promise<ListedObject[]> {
+    const base = this.resolve(assertSafeKey(prefix.replace(/\/+$/, "")));
+    const out: ListedObject[] = [];
+    const walk = async (dir: string): Promise<void> => {
+      let entries: import("node:fs").Dirent[];
+      try {
+        entries = await fs.readdir(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) await walk(full);
+        else if (!entry.name.endsWith(".meta.json")) {
+          const stat = await fs.stat(full);
+          out.push({ key: path.relative(this.root, full).split(path.sep).join("/"), bytes: stat.size, lastModified: stat.mtime });
+        }
+      }
+    };
+    await walk(base);
+    return out;
   }
 
   /** HMAC-signed capability URL served by /api/v1/files/[...key]. */
@@ -189,6 +221,27 @@ export class S3StorageProvider implements StorageProvider {
     } catch (err) {
       logError("S3 delete failed", { provider: this.name, operation: "storage.delete", status: "error", error: err });
       throw new AppError(502, "STORAGE_ERROR", "Object delete failed");
+    }
+  }
+
+  /** Paginated ListObjectsV2 enumeration (real sizes, never estimates). */
+  async list(prefix: string): Promise<ListedObject[]> {
+    const out: ListedObject[] = [];
+    let token: string | undefined;
+    try {
+      do {
+        const res = await this.client.send(
+          new ListObjectsV2Command({ Bucket: this.bucket, Prefix: assertSafeKey(prefix), ContinuationToken: token, MaxKeys: 1000 }),
+        );
+        for (const item of res.Contents ?? []) {
+          if (item.Key) out.push({ key: item.Key, bytes: Number(item.Size ?? 0), lastModified: item.LastModified });
+        }
+        token = res.IsTruncated ? res.NextContinuationToken : undefined;
+      } while (token);
+      return out;
+    } catch (err) {
+      logError("S3 list failed", { provider: this.name, operation: "storage.list", status: "error", error: err });
+      throw new AppError(502, "STORAGE_ERROR", "Object listing failed");
     }
   }
 
