@@ -155,7 +155,7 @@ export async function consumeUsageInTransaction(tx: QuotaTx, businessId: string,
   await tx.insert(quotaReservations).values({ businessId, idempotencyKey: key, amounts: { [meter]: value }, settledAmounts: { [meter]: value }, windows: { [meter]: start.toISOString() }, status: "settled", completedAt: now });
 }
 
-const ReservationPageSchema = z.object({
+export const ReservationPageSchema = z.object({
   businessId: z.string().uuid(), after: z.string().uuid().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(30),
   status: z.enum(["reserved", "settled", "released"]).default("reserved"),
