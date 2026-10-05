@@ -6,6 +6,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  # gitleaks-action@v2 needs to read the pull request's commits (its breaking
+  # change of 2025-09 requires GITHUB_TOKEN for pull_request scans).
+  pull-requests: read
 concurrency:
   group: enterprise-${{ github.ref }}
   cancel-in-progress: true
@@ -51,6 +54,7 @@ jobs:
       - name: Secret scan (gitleaks)
         uses: gitleaks/gitleaks-action@v2
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'
         continue-on-error: false
       # 4–6 · migrations must apply twice on a fresh database and stay safe
