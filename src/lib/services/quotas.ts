@@ -1,5 +1,5 @@
 import { metrics } from "@/lib/telemetry";
-import { and, eq, sql } from "drizzle-orm";
+import { and, asc, eq, gt, lte, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
 import { agents, auditLogs, businesses, quotaBuckets, quotaOverrides, quotaReservations, subscriptions, users } from "@/db/schema";
@@ -51,28 +51,34 @@ export async function reserveUsage(businessId: string, key: string, input: Amoun
     return { ...reservation, reused: false, warnings };
   });
 }
-async function finish(businessId: string, id: string, actual?: Amounts) {
-  assertTenantScope(businessId); z.string().uuid().parse(id);
-  const normalized = actual === undefined ? undefined : normalize(actual);
-  return db.transaction(async (tx) => {
-    await lockTenant(tx, businessId, false);
+// Internal primitive: caller must hold the tenant row lock. Never export a scope bypass.
+async function finishLocked(tx: QuotaTx, businessId: string, id: string, normalized?: Record<string, string>) {
     const [reservation] = await tx.select().from(quotaReservations).where(and(eq(quotaReservations.businessId, businessId), eq(quotaReservations.id, id)));
     if (!reservation) throw new AppError(404, "NOT_FOUND", "Reservation not found");
     const target = normalized ? "settled" : "released";
     if (reservation.status !== "reserved") {
       if (reservation.status !== target || (normalized && !same(reservation.settledAmounts ?? {}, normalized))) throw new AppError(409, "CONFLICT", "Reservation already finalized differently");
-      return { overrun: Object.entries(normalized ?? {}).some(([meter, value]) => storedUnits(value) > storedUnits(reservation.amounts[meter])) };
+      return { changed: false, overrun: Object.entries(normalized ?? {}).some(([meter, value]) => storedUnits(value) > storedUnits(reservation.amounts[meter])) };
     }
     if (normalized && !same(Object.fromEntries(Object.keys(normalized).map(k => [k, "0"])), Object.fromEntries(Object.keys(reservation.amounts).map(k => [k, "0"])))) throw new AppError(400, "BAD_REQUEST", "Settlement meters must match reservation");
     let overrun = false;
     for (const [meter, reserved] of Object.entries(reservation.amounts)) {
       const consumed = normalized?.[meter] ?? "0.0000";
       overrun ||= storedUnits(consumed) > storedUnits(reserved);
-      await tx.update(quotaBuckets).set({ reserved: sql`${quotaBuckets.reserved} - ${reserved}::numeric`, consumed: sql`${quotaBuckets.consumed} + ${consumed}::numeric` })
-        .where(and(eq(quotaBuckets.businessId, businessId), eq(quotaBuckets.meter, meter), eq(quotaBuckets.windowStart, new Date(reservation.windows[meter]))));
+      const updated = await tx.update(quotaBuckets).set({ reserved: sql`${quotaBuckets.reserved} - ${reserved}::numeric`, consumed: sql`${quotaBuckets.consumed} + ${consumed}::numeric` })
+        .where(and(eq(quotaBuckets.businessId, businessId), eq(quotaBuckets.meter, meter), eq(quotaBuckets.windowStart, new Date(reservation.windows[meter])))).returning({ id: quotaBuckets.id });
+      if (updated.length !== 1) throw new AppError(409, "CONFLICT", "Reservation accounting bucket is missing; investigate before reconciliation");
     }
     await tx.update(quotaReservations).set({ status: target, settledAmounts: normalized ?? null, completedAt: new Date() }).where(and(eq(quotaReservations.id, id), eq(quotaReservations.businessId, businessId)));
     if (overrun) await tx.insert(auditLogs).values({ businessId, actorType: "system", action: "quota.provider_overrun", entityType: "quota_reservation", entityId: id, metadata: { reserved: reservation.amounts, actual: normalized } });
+    return { changed: true, overrun };
+}
+async function finish(businessId: string, id: string, actual?: Amounts) {
+  assertTenantScope(businessId); z.string().uuid().parse(id);
+  const normalized = actual === undefined ? undefined : normalize(actual);
+  return db.transaction(async (tx) => {
+    await lockTenant(tx, businessId, false);
+    const { overrun } = await finishLocked(tx, businessId, id, normalized);
     return { overrun };
   });
 }
@@ -147,4 +153,61 @@ export async function consumeUsageInTransaction(tx: QuotaTx, businessId: string,
   if (checkLimit(policy[meter], storedUnits(bucket.consumed) + storedUnits(bucket.reserved) + storedUnits(value)).blocked) throw exceeded(meter);
   await tx.update(quotaBuckets).set({ consumed: sql`${quotaBuckets.consumed} + ${value}::numeric` }).where(predicate);
   await tx.insert(quotaReservations).values({ businessId, idempotencyKey: key, amounts: { [meter]: value }, settledAmounts: { [meter]: value }, windows: { [meter]: start.toISOString() }, status: "settled", completedAt: now });
+}
+
+const ReservationPageSchema = z.object({
+  businessId: z.string().uuid(), after: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(30),
+  status: z.enum(["reserved", "settled", "released"]).default("reserved"),
+  olderThanSeconds: z.coerce.number().int().min(0).max(31536000).default(900),
+}).strict();
+export const RECONCILIATION_MIN_AGE_MS = 15 * 60 * 1000;
+const reconciliationBase = {
+  businessId: z.string().uuid(), id: z.string().uuid(),
+  reason: z.string().trim().min(10).max(1000),
+  evidenceReference: z.string().trim().min(5).max(255),
+  executionStopped: z.literal(true),
+};
+export const ReconcileQuotaSchema = z.discriminatedUnion("action", [
+  z.object({ ...reconciliationBase, action: z.literal("settle"), actual: AmountsSchema }).strict(),
+  z.object({ ...reconciliationBase, action: z.literal("release"), noUsageConfirmed: z.literal(true) }).strict(),
+]);
+/** Explicit platform boundary: target tenant is mandatory and live MFA authorization precedes reads. */
+export async function listQuotaReservations(actorId: string, input: unknown) {
+  await requirePlatformAdmin(db, actorId);
+  const page = ReservationPageSchema.parse(input);
+  const rows = await db.select().from(quotaReservations).where(and(
+    eq(quotaReservations.businessId, page.businessId), eq(quotaReservations.status, page.status),
+    lte(quotaReservations.createdAt, new Date(Date.now() - page.olderThanSeconds * 1000)),
+    page.after ? gt(quotaReservations.id, page.after) : undefined,
+  )).orderBy(asc(quotaReservations.id)).limit(page.limit + 1);
+  const hasMore = rows.length > page.limit, data = rows.slice(0, page.limit);
+  return { data, hasMore, nextCursor: hasMore ? data[data.length - 1].id : null };
+}
+/** Operator attestation, not automatic provider verification. No provider I/O inside this transaction. */
+export async function reconcileQuotaReservation(actorId: string, input: unknown) {
+  const body = ReconcileQuotaSchema.parse(input);
+  return db.transaction(async (tx) => {
+    const actor = await requirePlatformAdmin(tx, actorId, true);
+    await lockTenant(tx, body.businessId, false);
+    await requirePlatformAdmin(tx, actorId);
+    const [reservation] = await tx.select().from(quotaReservations).where(and(
+      eq(quotaReservations.businessId, body.businessId), eq(quotaReservations.id, body.id),
+    ));
+    if (!reservation) throw new AppError(404, "NOT_FOUND", "Reservation not found");
+    if (reservation.createdAt.getTime() > Date.now() - RECONCILIATION_MIN_AGE_MS)
+      throw new AppError(409, "CONFLICT", "Recent reservation may still be running; wait and verify provider execution has stopped");
+    const result = await finishLocked(tx, body.businessId, body.id, body.action === "settle" ? normalize(body.actual) : undefined);
+    if (result.changed) await tx.insert(auditLogs).values({
+      businessId: body.businessId, actorType: "platform_admin", actorId,
+      action: "quota.reservation_reconciled", entityType: "quota_reservation", entityId: body.id,
+      requestId: requestContext.getStore()?.requestId,
+      metadata: { actorBusinessId: actor.businessId, action: body.action, reason: body.reason,
+        evidenceReference: body.evidenceReference, executionStopped: true,
+        noUsageConfirmed: body.action === "release", reserved: reservation.amounts,
+        actual: body.action === "settle" ? normalize(body.actual) : null, windows: reservation.windows,
+        overrun: result.overrun },
+    });
+    return { id: body.id, businessId: body.businessId, status: body.action === "settle" ? "settled" : "released", ...result };
+  });
 }

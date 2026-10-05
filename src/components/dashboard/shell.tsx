@@ -19,6 +19,7 @@ const NAV: Array<{ href: string; label: string; roles?: Array<UserRole> }> = [
   { href: "/dashboard/quotas", label: "سهمیه‌ها", roles: ["ADMIN"] },
   { href: "/dashboard/billing", label: "صورتحساب", roles: ["ADMIN"] },
   { href: "/dashboard/platform-billing", label: "تطبیق پرداخت", roles: ["SUPER_ADMIN"] },
+  { href: "/dashboard/quota-reservations", label: "بررسی رزرو سهمیه", roles: ["SUPER_ADMIN"] },
   { href: "/dashboard/usage", label: "مصرف" },
   { href: "/dashboard/users", label: "کاربران", roles: ["ADMIN", "MANAGER"] },
   { href: "/dashboard/automation", label: "اتوماسیون", roles: ["MANAGER"] },
