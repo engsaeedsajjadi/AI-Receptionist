@@ -18,7 +18,10 @@ const transitions: Record<VoiceSessionState, readonly VoiceSessionState[]> = {
   TRANSFERRING: ["ENDING", "ERROR"],
   ENDING: ["ENDED", "ERROR"],
   ENDED: [],
-  ERROR: ["ENDING", "ENDED"],
+  // A failed turn must not end a live phone call: the session returns to
+  // LISTENING so the caller can speak again (the failure itself is reported to
+  // the client, logged and metered). ENDING/ENDED remain available for hangup.
+  ERROR: ["LISTENING", "ENDING", "ENDED"],
 };
 
 export class VoiceStateMachine {

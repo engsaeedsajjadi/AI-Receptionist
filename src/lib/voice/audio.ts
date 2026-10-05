@@ -9,6 +9,7 @@ export type AudioFormat = {
 };
 
 const MULAW_BIAS = 0x84;
+const MULAW_CLIP = 32635;
 
 /** Decode one G.711 μ-law byte to signed 16-bit PCM. */
 export function decodeMulawByte(value: number): number {
@@ -142,4 +143,72 @@ export function normalizeTelephonyAudio(input: Buffer, codec: AudioCodec, sample
     return { audio: pcm16ToWav(input, sampleRate), mimeType: "audio/wav", filename: "call-audio.wav" };
   }
   return { audio: input, mimeType: "audio/mpeg", filename: "call-audio.bin" };
+}
+
+// ---------------------------------------------------------------------------
+// PCM16 → G.711 μ-law (telephony egress)
+// ---------------------------------------------------------------------------
+
+
+/**
+ * Encode one signed 16-bit sample as a G.711 μ-law byte.
+ * Standard bit-exact algorithm (same table every telephony stack uses).
+ */
+export function encodeMulawSample(sample: number): number {
+  let sign = 0;
+  let value = sample;
+  if (value < 0) {
+    value = -value;
+    sign = 0x80;
+  }
+  if (value > MULAW_CLIP) value = MULAW_CLIP;
+  value += MULAW_BIAS;
+  let exponent = 7;
+  for (let mask = 0x4000; (value & mask) === 0 && exponent > 0; mask >>= 1) exponent -= 1;
+  const mantissa = (value >> (exponent + 3)) & 0x0f;
+  return ~(sign | (exponent << 4) | mantissa) & 0xff;
+}
+
+/** Convert little-endian PCM16 mono audio to μ-law bytes. */
+export function pcm16ToMulaw(pcm: Buffer): Buffer {
+  const samples = Math.floor(pcm.length / 2);
+  const out = Buffer.allocUnsafe(samples);
+  for (let i = 0; i < samples; i++) out[i] = encodeMulawSample(pcm.readInt16LE(i * 2));
+  return out;
+}
+
+/**
+ * Resample little-endian PCM16 mono audio with linear interpolation.
+ * Used to bring provider TTS (24 kHz) down to telephony rates (8 kHz).
+ */
+export function resamplePcm16(pcm: Buffer, fromRate: number, toRate: number): Buffer {
+  if (fromRate === toRate || fromRate <= 0 || toRate <= 0) return pcm;
+  const inSamples = Math.floor(pcm.length / 2);
+  if (inSamples === 0) return Buffer.alloc(0);
+  const outSamples = Math.max(1, Math.round((inSamples * toRate) / fromRate));
+  const out = Buffer.allocUnsafe(outSamples * 2);
+  const ratio = (inSamples - 1) / Math.max(1, outSamples - 1);
+  for (let i = 0; i < outSamples; i++) {
+    const position = i * ratio;
+    const index = Math.floor(position);
+    const fraction = position - index;
+    const a = pcm.readInt16LE(index * 2);
+    const b = index + 1 < inSamples ? pcm.readInt16LE((index + 1) * 2) : a;
+    out.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(a + (b - a) * fraction))), i * 2);
+  }
+  return out;
+}
+
+/** Full provider-TTS → telephony path: resample to 8 kHz then μ-law encode. */
+export function pcmToTelephonyMulaw(pcm: Buffer, fromRate = 24_000, toRate = 8_000): Buffer {
+  return pcm16ToMulaw(resamplePcm16(pcm, fromRate, toRate));
+}
+
+/** Split μ-law audio into 20 ms telephony frames (160 bytes at 8 kHz). */
+export function mulawFrames(mulaw: Buffer, frameBytes = 160): Buffer[] {
+  const frames: Buffer[] = [];
+  for (let offset = 0; offset < mulaw.length; offset += frameBytes) {
+    frames.push(mulaw.subarray(offset, Math.min(mulaw.length, offset + frameBytes)));
+  }
+  return frames;
 }

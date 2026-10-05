@@ -7,6 +7,7 @@ import { AppError } from "@/lib/errors";
 import { assertTenantScope } from "@/lib/request-context";
 import { tenantFeaturesSchema } from "@/lib/tenant-config";
 import { consumeUsageInTransaction } from "@/lib/services/quotas";
+import { reserveCallQuota } from "@/lib/services/voice-usage";
 export async function registerInboundCall(input: {
   businessId: string; externalCallId: string; phoneNumber: string; agentId?: string;
   direction: "INBOUND" | "OUTBOUND"; metadata: Record<string, unknown>; idempotencyKey: string;
@@ -29,10 +30,15 @@ export async function registerInboundCall(input: {
     if (event && !existing) throw new AppError(409, "CONFLICT", "Processed call no longer exists");
     if (!event) await tx.insert(webhookEvents).values({ businessId: input.businessId, scope, idempotencyKey: input.idempotencyKey, payloadHash });
     if (existing) return { callId: existing.id, created: false, settings: business.settings };
+    const now = new Date();
     const [call] = await tx.insert(calls).values({ businessId: input.businessId, externalCallId: input.externalCallId,
-      phoneNumber: input.phoneNumber, agentId: input.agentId ?? null, direction: input.direction, status: "RINGING", startedAt: new Date(),
-      metadata: { ...input.metadata, idempotencyKey: input.idempotencyKey } }).returning({ id: calls.id });
+      phoneNumber: input.phoneNumber, agentId: input.agentId ?? null, direction: input.direction, status: "RINGING", startedAt: now,
+      metadata: { ...input.metadata, idempotencyKey: input.idempotencyKey, media_started_at: now.toISOString() } }).returning({ id: calls.id });
     await consumeUsageInTransaction(tx, input.businessId, "calls", 1, `call-admission:${call.id}`);
+    // Reserve the maximum airtime/STT capacity for this call. The reservation is
+    // settled with trusted lifecycle data when the call ends; a crashed call
+    // leaves a visible reservation for operator reconciliation.
+    await reserveCallQuota(tx, input.businessId, call.id);
     await tx.insert(usageRecords).values({ businessId: input.businessId, type: "calls", quantity: "1", unit: "count",
       idempotencyKey: `call-started:${call.id}`, metadata: { event: "call_started", callId: call.id, externalCallId: input.externalCallId } });
     return { callId: call.id, created: true, settings: business.settings };
