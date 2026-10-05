@@ -5,6 +5,19 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Fixed — cursor pagination silently dropped rows
+- A keyset cursor carries a JSON timestamp (millisecond precision) while Postgres
+  stores microseconds, but the query compared the cursor against the
+  full-precision column. Every row sharing the cursor's millisecond with a smaller
+  sub-millisecond remainder became unreachable: reproduced with seven rows inside
+  one millisecond, where only three of seven could be paged to. Ordering and the
+  keyset condition now both use
+  `date_trunc('milliseconds', created_at AT TIME ZONE 'UTC')`, which the cursor can
+  represent exactly, and nine expression indexes keep the window index-backed
+  (EXPLAIN: Index Scan, no sort). Regression test added; the pairing between
+  ordering and condition is enforced by `keysetOrder` plus `keysetCondition`.
+
+
 ### Changed — container image hardening
 - The runtime image now installs **production dependencies only** (the build
   toolchain `drizzle-kit` / `tsx` / `vitest` / `esbuild` no longer ships), runs the

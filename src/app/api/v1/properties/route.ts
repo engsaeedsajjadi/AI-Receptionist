@@ -7,7 +7,7 @@ import { getAuthContext } from "@/lib/auth";
 import { hasRole } from "@/lib/permissions";
 import { checkGlobalPublicRateLimit, withApiHandling } from "@/lib/server-core";
 import { PropertyUpsertSchema, createProperty } from "@/lib/services/properties";
-import { cursorPage, keysetCondition, parseListWindow } from "@/lib/pagination";
+import { cursorPage, keysetCondition, keysetOrder, parseListWindow } from "@/lib/pagination";
 
 export async function GET(req: NextRequest) {
   return withApiHandling(async () => {
@@ -33,7 +33,7 @@ export async function GET(req: NextRequest) {
         .select()
         .from(properties)
         .where(and(...conditions))
-        .orderBy(desc(properties.createdAt), desc(properties.id))
+        .orderBy(...keysetOrder({ createdAt: properties.createdAt, id: properties.id }))
         .limit(listWindow.cursor ? listWindow.limit + 1 : listWindow.limit)
         .offset(listWindow.cursor ? 0 : listWindow.offset),
       db

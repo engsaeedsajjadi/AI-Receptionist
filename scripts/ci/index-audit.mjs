@@ -34,6 +34,17 @@ const REQUIRED_INDEXES = [
   ["quota_reservations", "quota_reservations_pending", "quota reservation expiry sweep"],
   ["refresh_tokens", "refresh_tokens_jti_idx", "refresh-token rotation looks tokens up by jti"],
   ["calls", "calls_business_created_idx", "call list is tenant-scoped and created_at ordered"],
+  // Cursor pagination keys: the keyset window orders by (truncated millisecond
+  // created_at, id), so the plain (business_id, created_at) index cannot serve it.
+  ["appointments", "appointments_business_cursor_idx", "cursor pagination on the appointments list"],
+  ["calls", "calls_business_cursor_idx", "cursor pagination on the calls list"],
+  ["customers", "customers_business_cursor_idx", "cursor pagination on the customers list"],
+  ["knowledge_documents", "knowledge_documents_business_cursor_idx", "cursor pagination on the knowledge list"],
+  ["leads", "leads_business_cursor_idx", "cursor pagination on the leads list"],
+  ["notifications", "notifications_business_cursor_idx", "cursor pagination on the notifications list"],
+  ["properties", "properties_business_cursor_idx", "cursor pagination on the properties list"],
+  ["usage_records", "usage_records_business_cursor_idx", "cursor pagination on the usage list"],
+  ["users", "users_business_cursor_idx", "cursor pagination on the users list"],
 ];
 
 /** [label, sql, table whose sequential scan would be a regression] */

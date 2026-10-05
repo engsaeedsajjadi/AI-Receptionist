@@ -14,12 +14,12 @@ Scope
 
 Latest measured result (final clean run on this branch head, 19 migrations)
 ----------------------------------------------------------------
-  statements : 92.36%  (16248/17591)
-  lines      : 92.36%  (16248/17591)
-  functions  : 94.07%  (857/911)
-  branches   : 81.94%  (4712/5750)
+  statements : 92.36%  (16255/17598)
+  lines      : 92.36%  (16255/17598)
+  functions  : 94.08%  (859/913)
+  branches   : 81.95%  (4714/5752)
   test files : 97 passed / 0 failed
-  tests      : 807 passed / 0 failed / 0 skipped
+  tests      : 808 passed / 0 failed / 0 skipped
 
 Threshold gate status: PASS for lines, functions, branches and statements (80 each).
 
@@ -38,6 +38,7 @@ History on this branch
   after upload malware policy + monitoring  : statements/lines 92.30% (16048/17386), branches 81.88% (4665/5697), functions 94.03% (852/906); 95 files / 798 tests / 0 skipped
   after RAG ACL fail-closed + grounding gate: statements/lines 92.23% (16112/17468), branches 81.97% (4674/5702), functions 94.04% (853/907); 96 files / 804 tests / 0 skipped
   after typed intent on the live turn      : statements/lines 92.36% (16248/17591), branches 81.94% (4712/5750), functions 94.07% (857/911); 97 files / 807 tests / 0 skipped
+  after cursor-precision fix               : statements/lines 92.36% (16255/17598), branches 81.95% (4714/5752), functions 94.08% (859/913); 97 files / 808 tests / 0 skipped
 
 How the gap was closed
 ----------------------

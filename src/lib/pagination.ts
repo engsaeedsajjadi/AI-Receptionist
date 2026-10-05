@@ -78,15 +78,39 @@ export function parseListWindow(req: NextRequest, defaults: { limit?: number; ma
 type SortableColumn = Parameters<typeof sql>[0] extends never ? never : unknown;
 
 /**
- * `(created_at, id) < (cursor.created_at, cursor.id)` with the same collation
- * the endpoints sort by, so the window is stable across pages and index-backed
- * by the tenant-leading `(business_id, created_at)` indexes.
+ * The cursor's ordering key: `created_at` truncated to milliseconds in UTC.
+ *
+ * A cursor is JSON, and JavaScript dates only carry milliseconds, while Postgres
+ * timestamps carry microseconds. Ordering by the full-precision column and
+ * comparing against a millisecond cursor silently drops every row that shares the
+ * cursor's millisecond with a smaller sub-millisecond remainder (reproduced: 4 of
+ * 7 rows unreachable). Sorting *and* comparing on the same truncated expression
+ * makes the key a total order that the cursor can represent exactly.
+ *
+ * `AT TIME ZONE 'UTC'` keeps the expression immutable, so it can be indexed.
+ */
+function cursorStamp(column: SortableColumn): SQL {
+  return sql`date_trunc('milliseconds', ${column} AT TIME ZONE 'UTC')`;
+}
+
+/**
+ * `(trunc_ms(created_at), id) < (cursor, id)` — the condition that matches the
+ * ordering produced by {@link keysetOrder}. Must always be used together with it.
  */
 export function keysetCondition(
   columns: { createdAt: SortableColumn; id: SortableColumn },
   cursor: Cursor,
 ): SQL {
-  return sql`(${columns.createdAt} < ${cursor.createdAt} OR (${columns.createdAt} = ${cursor.createdAt} AND ${columns.id} < ${cursor.id}::uuid))`;
+  const stamp = sql`${cursor.createdAt.toISOString()}::timestamp`;
+  return sql`(${cursorStamp(columns.createdAt)} < ${stamp} OR (${cursorStamp(columns.createdAt)} = ${stamp} AND ${columns.id} < ${cursor.id}::uuid))`;
+}
+
+/**
+ * The ORDER BY that pairs with {@link keysetCondition}. Endpoints must use this
+ * (not `desc(createdAt)`) or the window is not stable.
+ */
+export function keysetOrder(columns: { createdAt: SortableColumn; id: SortableColumn }): SQL[] {
+  return [sql`${cursorStamp(columns.createdAt)} DESC`, sql`${columns.id} DESC`];
 }
 
 export type CursorPage<T> = {

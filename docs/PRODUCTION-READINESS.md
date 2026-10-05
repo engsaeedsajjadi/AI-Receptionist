@@ -17,13 +17,13 @@ Node 22.
 | `npm ci` | pass |
 | `npx tsc --noEmit` (`npm run typecheck`) | pass, 0 errors |
 | `npx eslint .` (`npm run lint`) | pass, 0 problems |
-| `npx vitest run` | **807 tests / 97 files passed, 0 skipped, 0 failed** |
-| `npx vitest run --coverage` | **statements 92.36% · lines 92.36% · functions 94.07% · branches 81.94% (16248/17591, 857/911, 4712/5750)** — all four 80% thresholds pass, 0 skipped; see `docs/coverage-baseline.txt` |
+| `npx vitest run` | **808 tests / 97 files passed, 0 skipped, 0 failed** |
+| `npx vitest run --coverage` | **statements 92.36% · lines 92.36% · functions 94.08% · branches 81.95% (16255/17598, 859/913, 4714/5752)** — all four 80% thresholds pass, 0 skipped; see `docs/coverage-baseline.txt` |
 | `npm run db:migrate` (twice) | pass; migrations `0014`–`0018` apply cleanly on a fresh and on a restored database |
 | `node scripts/ci/check-migration-safety.mjs` | pass (no `db:push` in deploy paths, journal/snapshot coverage complete, destructive statements justified) |
 | `node scripts/ci/index-audit.mjs` | pass (50 tenant tables tenant-indexed, 181 public indexes, forced-index plans available, incl. the keyset pagination window) |
 | `node scripts/ci/pii-log-audit.mjs` | pass — every structured log call site is free of raw request bodies, credential keys and unmasked personal data (0 waivers) |
-| `node scripts/ci/check-test-results.mjs test-results/vitest.json` | pass — 278 suites / 807 tests, 0 skipped, all required integration + e2e files executed |
+| `node scripts/ci/check-test-results.mjs test-results/vitest.json` | pass — 278 suites / 808 tests, 0 skipped, all required integration + e2e files executed |
 | `bash scripts/ci/restore-drill.sh` | **pass** — backup → isolated restore → sentinel tenant round-trip → migrate ×2 → health checks |
 | `for s in llm embedding stt tts smtp oauth storage telephony; do node scripts/ci/check-live-suite-fails.mjs $s; done` | **8/8 suites fail loudly without credentials** (never skip-green) |
 | `npm run build` | pass (production build, 51 routes) |
@@ -39,7 +39,7 @@ Node 22.
 
 | Area | Implementation / source | Automated tests | Live validation | Status | Blocker |
 | --- | --- | --- | --- | --- | --- |
-| Coverage ≥80% (all four) | `vitest.config.ts` thresholds 80/80/80/80, no exclusions, no skips | 97 files / 807 tests, 0 skipped; **92.36 statements / 92.36 lines / 94.07 functions / 81.94 branches** (16248/17591, 857/911, 4712/5750) | n/a | **PASS** | — (branch coverage margin is 1.94 pt; new code must carry tests) |
+| Coverage ≥80% (all four) | `vitest.config.ts` thresholds 80/80/80/80, no exclusions, no skips | 97 files / 808 tests, 0 skipped; **92.36 statements / 92.36 lines / 94.08 functions / 81.95 branches** (16255/17598, 859/913, 4714/5752) | n/a | **PASS** | — (branch coverage margin is 1.94 pt; new code must carry tests) |
 | Tenant isolation | `businesses.id` root + `business_id` boundary on every scoped table; composite FKs; `requestContext` fail-closed; tenant cache/storage/vector/quota scoping | `tenant-isolation` (11 negative cases), tenant-webhooks, webhook-routes, rbac, access-control | No production audit | **PASS (source + tests)** | Production data audit remains a release activity |
 | RLS decision | **Decision: no RLS rollout**; documented rationale + equivalent safeguards and a revisit trigger in `docs/TENANT-ISOLATION.md` | Isolation enforced/tested at the application + schema layers | n/a | **PASS (decision documented)** | — |
 | Webhook ledger tenancy | `webhook_events.business_id NOT NULL`, nullable legacy rows removed, tenant-scoped unique index | webhook negative/replay/forgery suites | No production traffic | **PASS** | — |
@@ -109,7 +109,7 @@ Node 22.
 | Area | Status | Evidence / blocker |
 | --- | --- | --- |
 | Tenant config schemas | **PASS** | `tenant-config.ts`, env validators, per-tenant settings JSON |
-| Cursor pagination | **PASS** | `src/lib/pagination.ts` provides opaque keyset cursors `(created_at, id)` with validation (400 `VALIDATION_ERROR` on garbage), a relaxed SQL tuple comparison that stays index-backed, and `data`/`nextCursor`/`hasMore` on every response. All nine tenant list endpoints use it (`calls`, `leads`, `customers`, `appointments`, `users`, `knowledge`, `notifications`, `properties`, `usage`) while the legacy `page`/`limit` window keeps working; the dashboard table switches to cursors for forward pages and back to offsets on the known last page (so totals stay exact). Cursors are applied **in addition to** the tenant predicate, so a borrowed or forged cursor can only move the window inside the caller's own tenant — `tests/integration/cursor-pagination.test.ts` (5) and `tests/unit/{pagination,dashboard-pagination}.test.ts` (8) cover walks without duplicates, same-timestamp tie-breaking, cross-tenant replay and malformed cursors |
+| Cursor pagination | **PASS** |**Ordering and the keyset condition share one precision**: `keysetOrder` + `keysetCondition` both use `date_trunc('milliseconds', created_at AT TIME ZONE 'UTC')` — cursors carry milliseconds while Postgres stores microseconds, and comparing against the full-precision column dropped rows (reproduced: 7 rows in one millisecond, only 3 reachable). Nine expression indexes keep the window index-backed (EXPLAIN: Index Scan, no sort) and the index audit now requires them.  `src/lib/pagination.ts` provides opaque keyset cursors `(created_at, id)` with validation (400 `VALIDATION_ERROR` on garbage), a relaxed SQL tuple comparison that stays index-backed, and `data`/`nextCursor`/`hasMore` on every response. All nine tenant list endpoints use it (`calls`, `leads`, `customers`, `appointments`, `users`, `knowledge`, `notifications`, `properties`, `usage`) while the legacy `page`/`limit` window keeps working; the dashboard table switches to cursors for forward pages and back to offsets on the known last page (so totals stay exact). Cursors are applied **in addition to** the tenant predicate, so a borrowed or forged cursor can only move the window inside the caller's own tenant — `tests/integration/cursor-pagination.test.ts` (5) and `tests/unit/{pagination,dashboard-pagination}.test.ts` (8) cover walks without duplicates, same-timestamp tie-breaking, cross-tenant replay and malformed cursors |
 | Audit-log completeness | **PASS (source + tests)** | `audit_logs` written for auth, admin, billing, platform, config changes |
 | Privacy / export / deletion | **PASS (source + tests)** | `data-governance.ts`, `/admin/privacy`, `/admin/exports`, tenant deletion state machine |
 | Tenant offboarding state machine | **PASS** | `ACTIVE → SUSPENDED → PENDING_DELETION → DELETED`, SUPER_ADMIN + MFA + reason + grace period, atomic session revocation, audit; the suspend switch refuses to resurrect a pending-deletion or deleted tenant (409) and keeps `isActive`/`status` in step, and request-serving paths use `tenantServingState` (fails closed on either signal) |
@@ -151,7 +151,7 @@ Node 22.
 ## Bottom line
 
 All P0 gates that can be verified without third-party infrastructure now pass: coverage
-(92.36/92.36/94.07/81.94 on 807 tests across 97 files with zero skips), tenant isolation with a
+(92.36/92.36/94.08/81.95 on 808 tests across 97 files with zero skips), tenant isolation with a
 documented RLS decision, meters, billing core with an immutable ledger, a 15-topic transactional
 outbox, a concrete telephony adapter, restore/DR drill, migration safety, live-suite loud-failure
 gating, an enforced PII/secret log audit, and a green production build. The remaining P0 gaps are inherently external (real PSTN acceptance, live

@@ -8,7 +8,7 @@ import { getAuthContext } from "@/lib/auth";
 import { normalizePersianText, normalizePhone } from "@/lib/normalization";
 import { checkGlobalPublicRateLimit, withApiHandling } from "@/lib/server-core";
 import { findOrCreateCustomer } from "@/lib/services/customers";
-import { cursorPage, keysetCondition, parseListWindow } from "@/lib/pagination";
+import { cursorPage, keysetCondition, keysetOrder, parseListWindow } from "@/lib/pagination";
 
 export async function GET(req: NextRequest) {
   return withApiHandling(async () => {
@@ -27,7 +27,7 @@ export async function GET(req: NextRequest) {
 
     const [rows, total] = await Promise.all([
       db.select().from(customers).where(and(...conditions))
-        .orderBy(desc(customers.createdAt), desc(customers.id))
+        .orderBy(...keysetOrder({ createdAt: customers.createdAt, id: customers.id }))
         .limit(window.cursor ? window.limit + 1 : window.limit)
         .offset(window.cursor ? 0 : window.offset),
       db.select({ count: sql<number>`count(*)::int` }).from(customers).where(and(...conditions)).then((r) => r[0]?.count ?? 0),

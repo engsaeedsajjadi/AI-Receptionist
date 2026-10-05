@@ -12,7 +12,7 @@ import { createOrUpdateLead, normalizeLeadExtraction } from "@/lib/services/lead
 import { notifyNewLead } from "@/lib/services/notifications";
 import { emitAutomationEvent } from "@/lib/services/n8n";
 import { checkGlobalPublicRateLimit, withApiHandling } from "@/lib/server-core";
-import { cursorPage, keysetCondition, parseListWindow } from "@/lib/pagination";
+import { cursorPage, keysetCondition, keysetOrder, parseListWindow } from "@/lib/pagination";
 
 export async function GET(req: NextRequest) {
   return withApiHandling(async () => {
@@ -39,7 +39,7 @@ export async function GET(req: NextRequest) {
 
     const [rows, total] = await Promise.all([
       db.select().from(leads).where(and(...conditions))
-        .orderBy(desc(leads.createdAt), desc(leads.id))
+        .orderBy(...keysetOrder({ createdAt: leads.createdAt, id: leads.id }))
         .limit(window.cursor ? window.limit + 1 : window.limit)
         .offset(window.cursor ? 0 : window.offset),
       db.select({ count: sql<number>`count(*)::int` }).from(leads).where(and(...conditions)).then((r) => r[0]?.count ?? 0),

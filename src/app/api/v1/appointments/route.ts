@@ -8,7 +8,7 @@ import { checkGlobalPublicRateLimit, withApiHandling } from "@/lib/server-core";
 import { checkAvailability, createAppointment } from "@/lib/services/appointments";
 import { notifyAppointment } from "@/lib/services/notifications";
 import { emitAutomationEvent } from "@/lib/services/n8n";
-import { cursorPage, keysetCondition, parseListWindow } from "@/lib/pagination";
+import { cursorPage, keysetCondition, keysetOrder, parseListWindow } from "@/lib/pagination";
 
 export async function GET(req: NextRequest) {
   return withApiHandling(async () => {
@@ -47,7 +47,7 @@ export async function GET(req: NextRequest) {
         // (created_at, id) is the total order the cursor is derived from; the
         // scheduled_at ordering stays the primary presentation order when no
         // cursor is supplied.
-        .orderBy(desc(appointments.createdAt), desc(appointments.id))
+        .orderBy(...keysetOrder({ createdAt: appointments.createdAt, id: appointments.id }))
         .limit(listWindow.cursor ? listWindow.limit + 1 : listWindow.limit)
         .offset(listWindow.cursor ? 0 : listWindow.offset),
       db

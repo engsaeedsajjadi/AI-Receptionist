@@ -184,9 +184,14 @@ describe.skipIf(!hasTestDatabase())("knowledge upload pipeline", () => {
     const lenient = await upload(multipart(token, [TXT("محتوای سالم با سیاست ملایم برای اسکنر در دسترس نبودن.")]));
     expect(lenient.status).toBe(503);
     expect(JSON.stringify(await lenient.json())).toContain("PROVIDER_NOT_CONFIGURED");
+    // Select by what the rows *are*, not by the order an unordered SELECT happens
+    // to return them in (a planner that picks an index scan can reorder them).
     const rows = await db.select().from(knowledgeDocuments).where(eq(knowledgeDocuments.businessId, business.id));
-    const scanned = rows[rows.length - 1];
-    const metadata = scanned.metadata as { malwareScan: { status: string; detail: string }; quarantined?: boolean };
+    const quarantined = rows.filter((row) => (row.metadata as { quarantined?: boolean }).quarantined === true);
+    const accepted = rows.filter((row) => (row.metadata as { quarantined?: boolean }).quarantined === undefined);
+    expect(quarantined).toHaveLength(1); // the strict upload's refused row
+    expect(accepted).toHaveLength(1); // the lenient upload's row, recorded as unscanned
+    const metadata = accepted[0].metadata as { malwareScan: { status: string; detail: string }; quarantined?: boolean };
     expect(metadata.malwareScan.status).toBe("unavailable");
     expect(metadata.quarantined).toBeUndefined();
   });

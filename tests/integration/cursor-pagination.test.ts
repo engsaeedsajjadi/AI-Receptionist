@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { NextRequest } from "next/server";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { closeDb, db } from "@/db";
 import { leads } from "@/db/schema";
 import { issueAuthTokens } from "@/lib/auth";
@@ -80,6 +80,27 @@ describe.skipIf(!hasTestDatabase())("cursor pagination (HTTP)", () => {
     expect(pages).toBe(3);
     expect(new Set(seen).size).toBe(7);
     expect([...seen].sort()).toEqual([...a.created].sort());
+  });
+
+  itDb("walks rows that share a millisecond but differ below it", async () => {
+    const a = await tenantWithLeads(7);
+    // Seven rows inside a single millisecond — the cursor can only carry
+    // milliseconds while Postgres stores microseconds, so a cursor compared
+    // against the full-precision column silently drops every later row in that
+    // millisecond. The ordering and the cursor must agree on the same precision.
+    for (const [i, id] of a.created.entries()) {
+      await db.execute(sql`update leads set created_at = ${`2026-02-03 04:05:06.12000${i}`}::timestamptz where id = ${id}::uuid`);
+    }
+
+    const seen = new Set<string>();
+    let cursor: string | null = null;
+    for (let page = 0; page < 10; page += 1) {
+      const body = (await (await leadsGet(list(`/api/v1/leads?limit=3${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`, a.token))).json()) as Page<{ id: string }>;
+      for (const row of body.data) seen.add(row.id);
+      cursor = body.nextCursor;
+      if (!cursor) break;
+    }
+    expect(seen.size).toBe(7);
   });
 
   itDb("is stable when many rows share one created_at (id tiebreak)", async () => {

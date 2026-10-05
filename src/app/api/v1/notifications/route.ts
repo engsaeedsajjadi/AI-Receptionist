@@ -5,7 +5,7 @@ import { notifications } from "@/db/schema";
 import { ok } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
 import { checkGlobalPublicRateLimit, withApiHandling } from "@/lib/server-core";
-import { cursorPage, keysetCondition, parseListWindow } from "@/lib/pagination";
+import { cursorPage, keysetCondition, keysetOrder, parseListWindow } from "@/lib/pagination";
 
 export async function GET(req: NextRequest) {
   return withApiHandling(async () => {
@@ -28,7 +28,7 @@ export async function GET(req: NextRequest) {
         .select()
         .from(notifications)
         .where(and(...conditions))
-        .orderBy(desc(notifications.createdAt), desc(notifications.id))
+        .orderBy(...keysetOrder({ createdAt: notifications.createdAt, id: notifications.id }))
         .limit(listWindow.cursor ? listWindow.limit + 1 : listWindow.limit)
         .offset(listWindow.cursor ? 0 : listWindow.offset),
       db

@@ -9,7 +9,7 @@ import { getAuthContext, hashPassword, validatePasswordPolicy } from "@/lib/auth
 import { normalizePersianText, normalizePhone } from "@/lib/normalization";
 import { hasRole } from "@/lib/permissions";
 import { checkGlobalPublicRateLimit, withApiHandling } from "@/lib/server-core";
-import { cursorPage, keysetCondition, parseListWindow } from "@/lib/pagination";
+import { cursorPage, keysetCondition, keysetOrder, parseListWindow } from "@/lib/pagination";
 
 function publicUser(u: typeof users.$inferSelect) {
   return {
@@ -39,7 +39,7 @@ export async function GET(req: NextRequest) {
         .select()
         .from(users)
         .where(and(...conditions))
-        .orderBy(desc(users.createdAt), desc(users.id))
+        .orderBy(...keysetOrder({ createdAt: users.createdAt, id: users.id }))
         .limit(listWindow.cursor ? listWindow.limit + 1 : listWindow.limit)
         .offset(listWindow.cursor ? 0 : listWindow.offset),
       db

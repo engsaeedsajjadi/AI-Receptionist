@@ -9,7 +9,7 @@ import { hasPermission } from "@/lib/permissions";
 import { checkGlobalPublicRateLimit, withApiHandling } from "@/lib/server-core";
 import { ingestContent } from "@/lib/services/knowledge";
 import { enforceRateLimit } from "@/lib/rate-limit";
-import { cursorPage, keysetCondition, parseListWindow } from "@/lib/pagination";
+import { cursorPage, keysetCondition, keysetOrder, parseListWindow } from "@/lib/pagination";
 
 export async function GET(req: NextRequest) {
   return withApiHandling(async () => {
@@ -26,7 +26,7 @@ export async function GET(req: NextRequest) {
         .select()
         .from(knowledgeDocuments)
         .where(and(...conditions))
-        .orderBy(desc(knowledgeDocuments.createdAt), desc(knowledgeDocuments.id))
+        .orderBy(...keysetOrder({ createdAt: knowledgeDocuments.createdAt, id: knowledgeDocuments.id }))
         .limit(listWindow.cursor ? listWindow.limit + 1 : listWindow.limit)
         .offset(listWindow.cursor ? 0 : listWindow.offset),
       db
