@@ -14,6 +14,7 @@ import {
 import { findOrCreateCustomer } from "@/lib/services/customers";
 import { checkAvailability, createAppointment } from "@/lib/services/appointments";
 import { hybridSearch } from "@/lib/services/knowledge";
+import { KnowledgeMetadataFiltersSchema, runtimePrincipal } from "@/lib/rag/access";
 import { notify } from "@/lib/services/notifications";
 import { requestTransfer } from "@/lib/services/calls";
 import { normalizePersianText } from "@/lib/normalization";
@@ -23,6 +24,8 @@ export type ToolContext = {
   businessId: string;
   callId?: string;
   userId?: string;
+  /** Agent answering the call, when the tool runs inside the AI runtime. */
+  agentId?: string | null;
   requestId: string;
   /** Who invoked the tool: "voice-webhook" | "agent-runtime" | "api" | user id. */
   actor: string;
@@ -54,11 +57,14 @@ const searchKnowledgeTool: ToolDefinition = {
   schema: z.object({ query: z.string().min(2).max(500), topK: z.number().int().min(1).max(10).default(5) }),
   handler: async (args, ctx) => {
     const { query, topK } = args as { query: string; topK: number };
+    // Runtime principal: TENANT/AGENT/CATEGORY documents are searchable, while
+    // role- or user-restricted documents stay invisible to a caller-facing AI.
     const { chunks, degraded } = await hybridSearch({
       businessId: ctx.businessId,
       query,
       topK,
       requestId: ctx.requestId,
+      scope: { principal: runtimePrincipal({ agentId: ctx.agentId ?? null }), filters: KnowledgeMetadataFiltersSchema.parse({}) },
     });
     if (chunks.length === 0) {
       return { status: "NOT_FOUND", error: "No relevant knowledge found." };
@@ -353,6 +359,8 @@ export async function executeToolCall(input: {
   businessId: string;
   callId?: string;
   userId?: string;
+  /** Agent answering the call, when the tool runs inside the AI runtime. */
+  agentId?: string | null;
   tool: string;
   args: Record<string, unknown>;
   requestId: string;
@@ -362,6 +370,7 @@ export async function executeToolCall(input: {
     businessId: input.businessId,
     callId: input.callId,
     userId: input.userId,
+    agentId: input.agentId ?? null,
     requestId: input.requestId,
     actor: input.actor,
   };

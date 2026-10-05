@@ -409,13 +409,14 @@ type VectorRow = {
   similarity: string | number;
 };
 
-async function vectorSearch(businessId: string, embedding: number[], limit: number, scope?: RetrievalScope): Promise<RetrievedChunk[]> {
+async function vectorSearch(businessId: string, embedding: number[], limit: number, scope: RetrievalScope): Promise<RetrievedChunk[]> {
   const literal = `[${embedding.join(",")}]`;
   // ACL + lifecycle + metadata predicates are part of the SQL: unauthorized
-  // documents never enter the candidate set (no retrieve-then-filter).
-  const access = scope ? knowledgeAccessPredicate(scope.principal, "kd") : sql`TRUE`;
-  const lifecycle = knowledgeLifecyclePredicate(scope?.filters ?? { tags: [], includeDrafts: false }, new Date(), "kd");
-  const metadata = knowledgeMetadataPredicate(scope?.filters ?? { tags: [], includeDrafts: false }, "kd");
+  // documents never enter the candidate set (no retrieve-then-filter). The scope
+  // is mandatory, so there is no code path that retrieves without an ACL.
+  const access = knowledgeAccessPredicate(scope.principal, "kd");
+  const lifecycle = knowledgeLifecyclePredicate(scope.filters, new Date(), "kd");
+  const metadata = knowledgeMetadataPredicate(scope.filters, "kd");
   const rows = await db.execute<VectorRow>(sql`
     SELECT kc.id, kc.document_id, kc.content, kd.title,
            1 - (kc.embedding <=> ${literal}::vector) AS similarity
@@ -441,7 +442,7 @@ async function vectorSearch(businessId: string, embedding: number[], limit: numb
   }));
 }
 
-async function keywordSearch(businessId: string, query: string, limit: number, scope?: RetrievalScope): Promise<RetrievedChunk[]> {
+async function keywordSearch(businessId: string, query: string, limit: number, scope: RetrievalScope): Promise<RetrievedChunk[]> {
   const normalized = normalizeForSearch(query);
   const terms = normalized.split(" ").filter((t) => t.length >= 2).slice(0, 8);
   if (terms.length === 0) return [];
@@ -469,9 +470,9 @@ async function keywordSearch(businessId: string, query: string, limit: number, s
         eq(knowledgeChunks.businessId, businessId),
         eq(knowledgeDocuments.businessId, businessId),
         or(...termPatterns.map((p) => ilike(knowledgeChunks.content, p))),
-        knowledgeLifecyclePredicate(scope?.filters ?? { tags: [], includeDrafts: false }),
-        scope ? knowledgeAccessPredicate(scope.principal) : sql`TRUE`,
-        knowledgeMetadataPredicate(scope?.filters ?? { tags: [], includeDrafts: false }),
+        knowledgeLifecyclePredicate(scope.filters),
+        knowledgeAccessPredicate(scope.principal),
+        knowledgeMetadataPredicate(scope.filters),
       ),
     )
     .orderBy(desc(matchCount), desc(knowledgeChunks.createdAt))
@@ -526,8 +527,14 @@ export async function hybridSearch(input: {
   topK?: number;
   minSimilarity?: number;
   requestId?: string;
-  /** ACL + structured metadata scope. Omit only for trusted server-side callers. */
-  scope?: RetrievalScope;
+  /**
+   * ACL + structured metadata scope. Required: omitting it previously made the
+   * access predicate `TRUE`, which silently turned off every ROLE/AGENT/
+   * PRIVATE/CATEGORY restriction at retrieval time. Callers must state who is
+   * asking — `runtimePrincipal()` for the AI runtime, the authenticated
+   * principal for API/dashboard requests.
+   */
+  scope: RetrievalScope;
   /**
    * Deterministic embedding override for tests (mirrors the agent `llm?`
    * override pattern). Production callers omit it and always use the

@@ -17,7 +17,7 @@ export const ClaimSchema = z
   .object({
     text: z.string().min(3).max(1000),
     /** Evidence ids the claim cites, when the model provided them. */
-    evidenceIds: z.array(z.string().uuid()).max(20).default([]),
+    evidenceIds: z.array(z.string().min(1).max(200)).max(20).default([]),
   })
   .strict();
 
@@ -25,7 +25,19 @@ export const VerificationInputSchema = z
   .object({
     answer: z.string().min(1).max(20_000),
     evidence: z
-      .array(z.object({ id: z.string().uuid(), content: z.string().min(1).max(20_000), documentId: z.string().uuid().optional() }).strict())
+      .array(
+        z
+          .object({
+            /**
+             * Chunk id for retrieval evidence, or a bounded synthetic id for
+             * evidence carried by tool results. Only used in the report.
+             */
+            id: z.string().min(1).max(200),
+            content: z.string().min(1).max(20_000),
+            documentId: z.string().uuid().optional(),
+          })
+          .strict(),
+      )
       .max(50),
     /** Below this share of supported claims the answer must not be sent as-is. */
     minSupportRatio: z.number().min(0).max(1).default(0.7),

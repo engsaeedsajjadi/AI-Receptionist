@@ -8,6 +8,7 @@ import { resetEnvCache } from "@/lib/env";
 import { POST as upload } from "@/app/api/v1/knowledge/upload/route";
 import { createBusiness, createUser } from "../helpers/fixtures";
 import { ensureDbReady, hasTestDatabase, itDb, truncateAll } from "../helpers/db";
+import { runtimePrincipal } from "@/lib/rag/access";
 
 /**
  * The knowledge upload surface: size/MIME/extension validation, magic-byte
@@ -132,7 +133,12 @@ describe.skipIf(!hasTestDatabase())("knowledge upload pipeline", () => {
     const chunks = await db.select().from(knowledgeChunks).where(and(eq(knowledgeChunks.businessId, business.id), eq(knowledgeChunks.documentId, rows[0].id)));
     expect(chunks).toHaveLength(0);
     const { hybridSearch } = await import("@/lib/services/knowledge");
-    const search = await hybridSearch({ businessId: business.id, query: "قیمت‌گذاری", topK: 5 });
+    const search = await hybridSearch({
+      businessId: business.id,
+      query: "قیمت‌گذاری",
+      topK: 5,
+      scope: { principal: runtimePrincipal(), filters: { tags: [], includeDrafts: false } },
+    });
     expect(search.chunks).toHaveLength(0);
   });
 

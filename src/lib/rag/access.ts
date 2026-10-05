@@ -105,6 +105,28 @@ export function knowledgeAccessPredicate(principal: RetrievalPrincipal, alias = 
 }
 
 /**
+ * Principal used by the AI runtime when it retrieves for a caller.
+ *
+ * The runtime is **not** a user: it acts for the tenant on behalf of whoever is
+ * on the phone, so it must not inherit a human role's allowlists. `role` is set
+ * to a value no tenant role can hold by accident (`AI_RUNTIME`) and `userId` is
+ * null, which means:
+ *   - TENANT documents: visible (that is what the knowledge base is for),
+ *   - AGENT documents: visible to the agent that is answering,
+ *   - CATEGORY documents: visible when the category/department matches,
+ *   - ROLE/PRIVATE documents: **not** visible unless the tenant explicitly
+ *     granted them to the runtime principal.
+ */
+export function runtimePrincipal(input: { agentId?: string | null } = {}): RetrievalPrincipal {
+  return RetrievalPrincipalSchema.parse({
+    role: "AI_RUNTIME",
+    userId: null,
+    agentId: input.agentId ?? null,
+    platformSupport: false,
+  });
+}
+
+/**
  * Effective-window + lifecycle predicate. Only ACTIVE documents inside their
  * validity window are retrievable; drafts/failed/archived versions never enter
  * the candidate set.
