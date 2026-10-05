@@ -21,6 +21,7 @@ import { getStorageProvider, tenantKey } from "@/lib/providers/storage";
 import { recordEmbeddingUsage } from "@/lib/services/usage";
 import { knowledgeAccessPredicate, knowledgeLifecyclePredicate, knowledgeMetadataPredicate, type KnowledgeMetadataFilters, type RetrievalPrincipal } from "@/lib/rag/access";
 import { recordStoredObjectStandalone, forgetStoredObjectStandalone } from "@/lib/services/storage-usage";
+import { malwarePolicy, scanUpload } from "@/lib/services/identity-provisioning";
 import { enqueueOutbox } from "@/lib/services/outbox";
 
 export type IngestFileInput = {
@@ -94,13 +95,104 @@ async function embedAndStore(input: {
 }
 
 /**
+ * Record a rejected upload: the document row stays `failed` (retrieval only ever
+ * reads `indexed` documents, so it can never be searched), the verdict is kept in
+ * metadata, and the original is archived best-effort for evidence.
+ */
+async function quarantineRejectedUpload(input: {
+  businessId: string;
+  validated: ReturnType<typeof validateUpload>;
+  buffer: Buffer;
+  title?: string;
+  errorMessage: string;
+  scan: Record<string, unknown>;
+  requestId?: string;
+}): Promise<void> {
+  const [doc] = await db
+    .insert(knowledgeDocuments)
+    .values({
+      businessId: input.businessId,
+      title: normalizePersianText(input.title ?? input.validated.filename),
+      sourceType: input.validated.docType,
+      fileName: input.validated.filename,
+      mimeType: input.validated.mimeType,
+      fileSize: input.validated.size,
+      status: "failed",
+      // Never indexed (retrieval reads only `indexed` rows), kept for the audit
+      // trail with the reason it was refused.
+      content: "",
+      errorMessage: input.errorMessage.slice(0, 1000),
+      metadata: { malwareScan: input.scan, quarantined: true },
+    })
+    .returning({ id: knowledgeDocuments.id });
+  try {
+    const key = tenantKey(input.businessId, "quarantine", doc.id, input.validated.filename);
+    await getStorageProvider().upload({ key, data: input.buffer, contentType: input.validated.mimeType });
+    await recordStoredObjectStandalone({
+      businessId: input.businessId,
+      key,
+      bytes: input.buffer.length,
+      contentType: input.validated.mimeType,
+      category: "knowledge",
+      sourceType: "knowledge_quarantine",
+      sourceId: doc.id,
+    });
+    await db.update(knowledgeDocuments).set({ storageKey: key, updatedAt: new Date() }).where(eq(knowledgeDocuments.id, doc.id));
+  } catch (err) {
+    logWarn("Quarantined upload could not be archived", {
+      requestId: input.requestId,
+      businessId: input.businessId,
+      operation: "knowledge.quarantine",
+      status: "error",
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/**
  * Full ingestion pipeline for binary uploads:
- * validate → extract → clean → normalize → chunk → embed → store (+archive original).
+ * validate → scan → extract → clean → normalize → chunk → embed → store (+archive original).
  */
 export async function ingestFile(input: IngestFileInput) {
   assertTenantScope(input.businessId);
   await requireTenantFeature(input.businessId, "knowledge");
   const validated = validateUpload({ filename: input.filename, mimeType: input.mimeType, size: input.buffer.length });
+
+  // Scan before anything is extracted, archived or indexed. A verdict is part of
+  // the document's provenance, and a rejected file still leaves an audit trail.
+  const verdict = await scanUpload({ data: input.buffer, filename: validated.filename, contentType: validated.mimeType });
+  const policy = malwarePolicy();
+  const scan = {
+    status: verdict.status,
+    engine: verdict.engine,
+    signature: verdict.signature ?? null,
+    detail: verdict.detail ?? null,
+    strict: policy.strict,
+  };
+  if (verdict.status === "infected" || (verdict.status === "unavailable" && policy.strict)) {
+    const infected = verdict.status === "infected";
+    await quarantineRejectedUpload({
+      businessId: input.businessId,
+      validated,
+      buffer: input.buffer,
+      title: input.title,
+      errorMessage: infected
+        ? `Malware signature detected: ${verdict.signature ?? "unknown"}`
+        : `Malware scan unavailable (${verdict.detail ?? "unknown"}); rejected under strict policy`,
+      scan,
+      requestId: input.requestId,
+    });
+    logWarn("Knowledge upload rejected by malware policy", {
+      requestId: input.requestId,
+      businessId: input.businessId,
+      operation: "knowledge.ingest",
+      status: infected ? "infected" : "scan_unavailable",
+    });
+    throw infected
+      ? new AppError(400, "MALWARE_DETECTED", "File rejected: malware signature detected")
+      : new AppError(503, "SCANNER_UNAVAILABLE", "File could not be scanned for malware; upload rejected");
+  }
+
   const { text, pages } = await extractText(input.buffer, validated.docType);
   const cleaned = cleanText(text);
   if (cleaned.length < 20) {
@@ -118,7 +210,7 @@ export async function ingestFile(input: IngestFileInput) {
       fileSize: validated.size,
       status: "indexing",
       content: cleaned.slice(0, 500_000),
-      metadata: { pages: pages ?? null },
+      metadata: { pages: pages ?? null, malwareScan: scan },
     })
     .returning();
 
