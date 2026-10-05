@@ -16,10 +16,22 @@ const PAGINATED = {
   properties: {
     success: { type: "boolean" },
     data: { type: "array", items: { type: "object" } },
-    nextCursor: { type: ["string", "null"] },
+    nextCursor: { type: ["string", "null"], description: "Opaque keyset cursor for the next page (null on the last page)" },
     hasMore: { type: "boolean" },
+    pagination: { type: "object", description: "Legacy offset pagination block", additionalProperties: true },
   },
 } as const;
+/** Shared query parameters for every cursor-paginated list endpoint. */
+const LIST_PARAMS = [
+  { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 100, default: 20 } },
+  {
+    name: "cursor",
+    in: "query",
+    description: "nextCursor from the previous page; invalid cursors are rejected with 400 VALIDATION_ERROR",
+    schema: { type: "string" },
+  },
+  { name: "page", in: "query", description: "Legacy offset window (kept for existing clients)", schema: { type: "integer", minimum: 1 } },
+] as const;
 const ERROR = {
   type: "object",
   properties: {
@@ -38,7 +50,18 @@ const ERROR = {
 } as const;
 
 function list(description: string) {
-  return { get: { summary: description, security: SECURITY, responses: { "200": { description: "OK", content: { "application/json": { schema: PAGINATED } } }, "401": { description: "Unauthorized", content: { "application/json": { schema: ERROR } } } } } };
+  return {
+    get: {
+      summary: description,
+      security: SECURITY,
+      parameters: LIST_PARAMS,
+      responses: {
+        "200": { description: "OK", content: { "application/json": { schema: PAGINATED } } },
+        "400": { description: "Invalid cursor or parameters", content: { "application/json": { schema: ERROR } } },
+        "401": { description: "Unauthorized", content: { "application/json": { schema: ERROR } } },
+      },
+    },
+  };
 }
 
 function mutation(description: string, status = "201") {
@@ -83,6 +106,10 @@ export const DOCUMENTED_ROUTES: Array<{ path: string; file: string }> = [
   { path: "/api/v1/admin/exports", file: "src/app/api/v1/admin/exports/route.ts" },
   { path: "/api/v1/admin/privacy", file: "src/app/api/v1/admin/privacy/route.ts" },
   { path: "/api/v1/auth/invitations/accept", file: "src/app/api/v1/auth/invitations/accept/route.ts" },
+  { path: "/api/v1/business/branding", file: "src/app/api/v1/business/branding/route.ts" },
+  { path: "/api/v1/business/voice-consent", file: "src/app/api/v1/business/voice-consent/route.ts" },
+  { path: "/api/v1/public/branding", file: "src/app/api/v1/public/branding/route.ts" },
+  { path: "/api/v1/notifications", file: "src/app/api/v1/notifications/route.ts" },
   { path: "/api/v1/platform/tenants", file: "src/app/api/v1/platform/tenants/route.ts" },
   { path: "/api/v1/platform/tenants/deletion", file: "src/app/api/v1/platform/tenants/deletion/route.ts" },
   { path: "/api/v1/platform/billing", file: "src/app/api/v1/platform/billing/route.ts" },
@@ -103,18 +130,19 @@ export function buildOpenApiDocument(baseUrl: string) {
     "/api/health/ready": { get: { summary: "Readiness probe (DB, Redis, migrations, storage)", responses: { "200": { description: "ready" }, "503": { description: "not ready" } } } },
     "/api/metrics": { get: { summary: "Prometheus metrics (bearer METRICS_TOKEN)", responses: { "200": { description: "metrics" }, "401": { description: "unauthorized" } } } },
     "/api/v1/calls": list("List calls (cursor pagination)"),
-    "/api/v1/leads": list("List leads"),
-    "/api/v1/customers": list("List customers"),
-    "/api/v1/appointments": list("List appointments"),
+    "/api/v1/leads": list("List leads (cursor pagination)"),
+    "/api/v1/customers": list("List customers (cursor pagination)"),
+    "/api/v1/appointments": list("List appointments (cursor pagination)"),
     "/api/v1/agents": list("List agents"),
-    "/api/v1/knowledge": list("List knowledge documents"),
+    "/api/v1/knowledge": list("List knowledge documents (cursor pagination)"),
     "/api/v1/knowledge/search": mutation("Governed knowledge search (ACL + lifecycle + optional rerank)", "200"),
-    "/api/v1/properties": list("List properties"),
+    "/api/v1/properties": list("List properties (cursor pagination)"),
     "/api/v1/billing": { get: { summary: "Subscription + invoices", security: SECURITY, responses: { "200": { description: "OK" } } }, ...mutation("Request a manual invoice") },
     "/api/v1/billing/checkout": mutation("Start a provider checkout"),
     "/api/v1/billing/ledger": list("Billing ledger (charges, refunds, credit notes, subscription events)"),
     "/api/v1/billing/quotas": { get: { summary: "Quota usage and limits", security: SECURITY, responses: { "200": { description: "OK" } } } },
-    "/api/v1/usage": list("Usage records"),
+    "/api/v1/usage": list("Usage records (cursor pagination)"),
+    "/api/v1/notifications": list("Notifications (cursor pagination)"),
     "/api/v1/admin/roles": { ...list("Custom roles"), ...mutation("Create a custom role") },
     "/api/v1/admin/api-keys": { ...list("API keys (hash-only)"), ...mutation("Create an API key") },
     "/api/v1/admin/service-accounts": { ...list("Service accounts"), ...mutation("Create a service account") },
@@ -124,6 +152,9 @@ export function buildOpenApiDocument(baseUrl: string) {
     "/api/v1/admin/exports": { ...list("Data exports"), ...mutation("Request a tenant data export") },
     "/api/v1/admin/privacy": { get: { summary: "Data inventory + retention policy", security: SECURITY, responses: { "200": { description: "OK" } } } },
     "/api/v1/auth/invitations/accept": mutation("Accept an invitation"),
+    "/api/v1/business/branding": { get: { summary: "Tenant branding (white-labeling)", security: SECURITY, responses: { "200": { description: "OK" } } }, patch: { summary: "Update branding (ADMIN + whiteLabel entitlement)", security: SECURITY, requestBody: { required: true, content: { "application/json": { schema: { type: "object" } } } }, responses: { "200": { description: "OK" }, "403": { description: "entitlement required" }, "409": { description: "custom domain already in use" } } } },
+    "/api/v1/business/voice-consent": { get: { summary: "Voice-cloning consent + platform gate", security: SECURITY, responses: { "200": { description: "OK" } } }, post: { summary: "Record voice-cloning consent (ADMIN)", security: SECURITY, requestBody: { required: true, content: { "application/json": { schema: { type: "object" } } } }, responses: { "201": { description: "recorded" } } }, delete: { summary: "Revoke voice-cloning consent (ADMIN)", security: SECURITY, responses: { "200": { description: "revoked" } } } },
+    "/api/v1/public/branding": { get: { summary: "Public branding by custom domain (never discloses tenant existence)", parameters: [{ name: "domain", in: "query", required: false, schema: { type: "string" } }], responses: { "200": { description: "branding or platform defaults" } } } },
     "/api/v1/platform/tenants": list("Platform tenant inventory"),
     "/api/v1/platform/tenants/deletion": { ...list("Tenants due for purge"), ...mutation("Request tenant deletion") },
     "/api/v1/platform/billing": { get: { summary: "Manual invoice queue", security: SECURITY, responses: { "200": { description: "OK" } } }, ...mutation("Record a manual payment", "200") },
@@ -143,7 +174,7 @@ export function buildOpenApiDocument(baseUrl: string) {
       title: "AI Receptionist API",
       version: "0.2.0",
       description:
-        "Multi-tenant AI receptionist platform API. Tenant endpoints require a bearer JWT or a tenant API key; platform endpoints require SUPER_ADMIN with MFA. Errors always use { success: false, error: { code, message, requestId } }.",
+        "Multi-tenant AI receptionist platform API. Tenant endpoints require a bearer JWT or a tenant API key; platform endpoints require SUPER_ADMIN with MFA. List endpoints paginate with an opaque keyset `cursor` (responses carry data/nextCursor/hasMore) while the legacy offset `page`/`limit` window keeps working. Errors always use { success: false, error: { code, message, requestId } }.",
     },
     servers: [{ url: baseUrl }],
     components: {

@@ -104,17 +104,23 @@ export type CursorPage<T> = {
  * is dropped here so callers cannot accidentally leak it to the client.
  */
 export function cursorPage<T extends { id: string; createdAt: Date | string }>(input: {
+  /** Page rows. In cursor mode pass `limit + 1` rows and `extra: true`. */
   rows: T[];
   limit: number;
   page?: number;
   extra?: boolean;
+  /** Exact filtered row count; lets offset mode report `hasMore` without an extra fetch. */
   total?: number;
 }): CursorPage<T> {
   const { rows, limit, page = 1 } = input;
-  const hasMore = input.extra ? rows.length > limit : false;
-  const data = input.extra ? rows.slice(0, limit) : rows;
-  const last = data[data.length - 1];
   const total = input.total;
+  const data = input.extra ? rows.slice(0, limit) : rows;
+  const hasMore = input.extra
+    ? rows.length > limit
+    : typeof total === "number"
+      ? (page - 1) * limit + data.length < total
+      : false;
+  const last = data[data.length - 1];
   return {
     data,
     nextCursor: hasMore && last ? encodeCursor(last) : null,

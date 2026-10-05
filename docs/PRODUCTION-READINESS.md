@@ -106,7 +106,7 @@ Node 22.
 | Area | Status | Evidence / blocker |
 | --- | --- | --- |
 | Tenant config schemas | **PASS** | `tenant-config.ts`, env validators, per-tenant settings JSON |
-| Cursor pagination | **PARTIAL** | `nextCursor`/`hasMore` in platform, quotas, outbox, tenants; list endpoints migrate as touched |
+| Cursor pagination | **PASS** | `src/lib/pagination.ts` provides opaque keyset cursors `(created_at, id)` with validation (400 `VALIDATION_ERROR` on garbage), a relaxed SQL tuple comparison that stays index-backed, and `data`/`nextCursor`/`hasMore` on every response. All nine tenant list endpoints use it (`calls`, `leads`, `customers`, `appointments`, `users`, `knowledge`, `notifications`, `properties`, `usage`) while the legacy `page`/`limit` window keeps working; the dashboard table switches to cursors for forward pages and back to offsets on the known last page (so totals stay exact). Cursors are applied **in addition to** the tenant predicate, so a borrowed or forged cursor can only move the window inside the caller's own tenant — `tests/integration/cursor-pagination.test.ts` (5) and `tests/unit/{pagination,dashboard-pagination}.test.ts` (8) cover walks without duplicates, same-timestamp tie-breaking, cross-tenant replay and malformed cursors |
 | Audit-log completeness | **PASS (source + tests)** | `audit_logs` written for auth, admin, billing, platform, config changes |
 | Privacy / export / deletion | **PASS (source + tests)** | `data-governance.ts`, `/admin/privacy`, `/admin/exports`, tenant deletion state machine |
 | Tenant offboarding state machine | **PASS** | `ACTIVE → SUSPENDED → PENDING_DELETION → DELETED`, SUPER_ADMIN + MFA + reason + grace period, atomic session revocation, audit |

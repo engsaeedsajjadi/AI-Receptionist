@@ -58,6 +58,12 @@ All notable changes to this project are documented here. The format follows
   `tests/integration/oauth-routes.test.ts` (9) drives the OIDC surface (flow start, link with
   password, tampered/missing state, linked login with and without MFA, cross-tenant/duplicate
   link rejection, one-time MFA ticket with replay rejection, credential-version invalidation).
+- **Cursor pagination everywhere:** every tenant list endpoint (`calls`, `leads`, `customers`,
+  `appointments`, `users`, `knowledge`, `notifications`, `properties`, `usage`) now returns
+  `data`/`nextCursor`/`hasMore` and accepts an opaque keyset cursor `(created_at, id)` alongside
+  the legacy `page`/`limit` window. Stable across inserts, index-backed, validated (400 on
+  malformed input) and never a way around the tenant predicate; the dashboard table uses cursors
+  for forward pages and offsets on the known last page.
 - **PII/secret log audit gate:** `scripts/ci/pii-log-audit.mjs` scans every structured log call
   site and fails on raw request bodies, credential keys or unmasked personal data; self-tested by
   `tests/unit/pii-log-audit.test.ts` and wired into CI.
