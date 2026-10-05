@@ -105,7 +105,7 @@ abstract class BaseSttProvider implements STTProvider {
           language,
           response_format: "verbose_json",
         },
-        { timeout: options.timeoutMs },
+        options.timeoutMs === undefined ? undefined : { timeout: options.timeoutMs },
       );
       const duration = typeof response.duration === "number" ? response.duration : null;
       logInfo("STT transcription completed", {
