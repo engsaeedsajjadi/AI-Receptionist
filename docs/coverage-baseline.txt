@@ -12,14 +12,14 @@ Scope
   (product code only; no exclusions were added, no test was skipped to reach
   these numbers — see scripts/ci/check-test-results.mjs, which fails on any skip)
 
-Latest measured result (final clean run on this branch head, 18 migrations)
+Latest measured result (final clean run on this branch head, 19 migrations)
 ----------------------------------------------------------------
-  statements : 92.03%  (15833/17204)
-  lines      : 92.03%  (15833/17204)
-  functions  : 93.90%  (847/902)
-  branches   : 81.30%  (4533/5575)
-  test files : 91 passed / 0 failed
-  tests      : 773 passed / 0 failed / 0 skipped
+  statements : 92.19%  (15961/17313)
+  lines      : 92.19%  (15961/17313)
+  functions  : 93.81%  (849/905)
+  branches   : 81.58%  (4602/5641)
+  test files : 93 passed / 0 failed
+  tests      : 786 passed / 0 failed / 0 skipped
 
 Threshold gate status: PASS for lines, functions, branches and statements (80 each).
 
@@ -34,6 +34,7 @@ History on this branch
   after injection/index-audit suites    : statements/lines 90.40%, branches 80.78% (4121/5101), functions 93.14%
   after SCIM/OAuth/PII/white-label/voice-safety suites: statements/lines 91.97% (15447/16794), branches 81.12% (4332/5340), functions 94.02% (834/887); 86 files / 752 tests / 0 skipped
   after cursor pagination + explainable scoring: statements/lines 92.03% (15833/17204), branches 81.30% (4533/5575), functions 93.90% (847/902); 91 files / 773 tests / 0 skipped
+  after inbound telephony hardening         : statements/lines 92.19% (15961/17313), branches 81.58% (4602/5641), functions 93.81% (849/905); 93 files / 786 tests / 0 skipped
 
 How the gap was closed
 ----------------------
@@ -53,12 +54,15 @@ How the gap was closed
 
 Remaining lowest-covered modules (branch %, measured on the run above)
 ----------------------------------------------------------------------
-  src/app/api/v1/webhooks/voice/inbound/route.ts    25.00%   (4/16)   provider webhook failure branches
   src/app/api/v1/knowledge/upload/route.ts          38.46%   (5/13)   upload rejection branches
   src/lib/monitoring.ts                             47.05%   (8/17)   exporter failure paths
   src/lib/services/customers.ts                     52.00%  (13/25)   dedup merge edge cases
   src/app/api/v1/crm/[entity]/route.ts              57.14%  (12/21)   generic CRM passthrough
   src/lib/oidc.ts                                   57.14%   (8/14)   IdP error mapping (needs live IdP for the rest)
+  src/lib/services/knowledge.ts                     ~69%             ingestion failure branches
+
+  (src/app/api/v1/webhooks/voice/inbound/route.ts moved 25% → 75.51% branches,
+   statements 67.28% → 92.12%, with the 9-case inbound webhook suite)
 
 Reproduce
 ---------

@@ -5,6 +5,22 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Fixed / hardened — inbound telephony routing
+- One phone number belongs to one tenant: partial unique index on
+  `businesses.phone` (migration 0018), canonical storage on
+  `PUT /api/v1/business`, 400 for unusable input and 409 `PHONE_TAKEN` clashes.
+- Inbound calls resolve the dialled number in raw, national or E.164 form;
+  ambiguous matches are refused (503) rather than routed arbitrarily, and a
+  tenant pending deletion or deleted is never answered.
+- Every inbound failure is answered in TwiML the caller can hear (provider
+  config, signature, payload, media outage, quota) instead of a JSON body;
+  media infrastructure is validated before admission so an outage no longer
+  reserves quota or leaves a phantom call row.
+- The suspend/reactivate switch now stays inside the offboarding state machine:
+  no reactivation of a pending-deletion tenant, no deleted-tenant wake-up, and
+  `status` is kept in step with `isActive` (new `tenantServingState` gate).
+
+
 ### Added — explainable lead scoring
 - Deterministic `lead-score/v1` rubric (`src/lib/scoring.ts`): every point is a
   named factor with a reason; the same signals always produce the same score, an
