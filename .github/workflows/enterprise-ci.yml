@@ -12,7 +12,7 @@ concurrency:
 jobs:
   validation:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -37,22 +37,46 @@ jobs:
       REQUIRE_INTEGRATION_TESTS: '1'
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
+      # 1–2 · install + static gates
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
+      # 3 · secrets never land in git history
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'
+        continue-on-error: false
+      # 4–6 · migrations must apply twice on a fresh database and stay safe
+      - run: node scripts/ci/check-migration-safety.mjs
       - run: npm run db:migrate
       - run: npm run db:migrate
+      # 7 · index audit: tenant-leading indexes + hot-path indexes must exist
+      - run: node scripts/ci/index-audit.mjs
+      # 7b · PII/secret log audit: no raw request bodies, credentials or unmasked PII
+      - run: node scripts/ci/pii-log-audit.mjs
+      # 8–10 · tests with coverage thresholds (80/80/80/80) + skip guard
       - run: npm run test:coverage -- --reporter=default --reporter=json --outputFile=test-results/vitest.json
       - if: always()
         run: node scripts/ci/check-test-results.mjs test-results/vitest.json
+      # 10 · live suites must fail fast without credentials (never silently pass)
+      - name: Live suites refuse to run without configuration
+        run: |
+          for suite in llm embedding stt tts smtp oauth storage telephony; do
+            node scripts/ci/check-live-suite-fails.mjs "$suite"
+          done
+      # 11–12 · production build + dependency audit
       - if: always()
         run: npm run build
       - if: always()
         run: npm audit --omit=dev --audit-level=high
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -60,4 +84,105 @@ jobs:
           path: |
             test-results/
             coverage/
+          retention-days: 14
+
+  browser-journeys:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: validation
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: ai_test
+          POSTGRES_PASSWORD: test-only-ci
+          POSTGRES_DB: ai_receptionist_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U ai_test -d ai_receptionist_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      DATABASE_URL: postgresql://ai_test:test-only-ci@127.0.0.1:5432/ai_receptionist_test
+      TEST_DATABASE_URL: postgresql://ai_test:test-only-ci@127.0.0.1:5432/ai_receptionist_test
+      REDIS_URL: redis://127.0.0.1:6379
+      APP_URL: http://127.0.0.1:3100
+      E2E_PORT: '3100'
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run db:migrate
+      # The browser suite boots `next dev` (E2E_MODE default); the production
+      # build is already validated in the `validation` job.
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:browser
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-evidence
+          path: |
+            test-results/
+            playwright-report/
+          retention-days: 14
+
+  container-and-restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: validation
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: ai_test
+          POSTGRES_PASSWORD: test-only-ci
+          POSTGRES_DB: ai_receptionist_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U ai_test -d ai_receptionist_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      DATABASE_URL: postgresql://ai_test:test-only-ci@127.0.0.1:5432/ai_receptionist_test
+      TEST_DATABASE_URL: postgresql://ai_test:test-only-ci@127.0.0.1:5432/ai_receptionist_test
+      REDIS_URL: redis://127.0.0.1:6379
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run db:migrate
+      # Backup → restore into an isolated database → validate → migrate → health
+      - run: bash scripts/ci/restore-drill.sh
+      - run: docker build -t ai-receptionist:ci .
+      - name: Container image vulnerability scan (Trivy)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ai-receptionist:ci
+          format: table
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+          ignore-unfixed: true
+      - name: SBOM (CycloneDX)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ai-receptionist:ci
+          format: cyclonedx-json
+          output-file: test-results/sbom.cyclonedx.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deployment-evidence
+          path: |
+            test-results/
+            backups/
           retention-days: 14
