@@ -1,5 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
-import { AUTH_FILE } from "./tests/browser/auth-state";
+import { AUTH_FILE, BASE_URL, E2E_PORT } from "./tests/browser/auth-state";
 
 /**
  * Browser journeys for the Persian/RTL dashboard.
@@ -19,8 +19,7 @@ import { AUTH_FILE } from "./tests/browser/auth-state";
  * the CI `validation` job. Optional: PLAYWRIGHT_BASE_URL to target an
  * already-running deployment.
  */
-const PORT = Number(process.env.E2E_PORT ?? 3100);
-const BASE_URL = process.env.PLAYWRIGHT_BASE_URL ?? `http://127.0.0.1:${PORT}`;
+const PORT = E2E_PORT;
 
 export default defineConfig({
   testDir: "./tests/browser",
