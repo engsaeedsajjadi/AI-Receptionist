@@ -101,7 +101,13 @@ describe("answer claim verification", () => {
     expect(VerificationInputSchema.safeParse({ answer: "x", evidence: [] }).success).toBe(true);
     expect(VerificationInputSchema.safeParse({ answer: "", evidence: [] }).success).toBe(false);
     expect(VerificationInputSchema.safeParse({ answer: "x", evidence: [], extra: 1 }).success).toBe(false);
-    expect(VerificationInputSchema.safeParse({ answer: "x", evidence: [{ id: "not-a-uuid", content: "c" }] }).success).toBe(false);
+    // Evidence ids are bounded strings (chunk uuids or synthetic ids for
+    // tool-carried evidence) — never empty, never unbounded, never extra keys.
+    expect(VerificationInputSchema.safeParse({ answer: "x", evidence: [{ id: "tool:search_knowledge", content: "c" }] }).success).toBe(true);
+    expect(VerificationInputSchema.safeParse({ answer: "x", evidence: [{ id: "", content: "c" }] }).success).toBe(false);
+    expect(VerificationInputSchema.safeParse({ answer: "x", evidence: [{ id: "a".repeat(201), content: "c" }] }).success).toBe(false);
+    // A document reference, when present, must still be a real uuid.
+    expect(VerificationInputSchema.safeParse({ answer: "x", evidence: [{ id: evidenceId, content: "c", documentId: "not-a-uuid" }] }).success).toBe(false);
     expect(VerificationInputSchema.safeParse({ answer: "x", evidence: [{ id: evidenceId, content: "c", extra: 1 }] }).success).toBe(false);
     expect(() => verifyClaims({ answer: "x", evidence: "not-an-array" })).toThrow();
   });

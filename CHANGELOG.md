@@ -5,6 +5,23 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Fixed — retrieval ACL fail-open and unenforced grounding
+- `hybridSearch` accepted an optional ACL `scope`; when omitted the predicate
+  became `TRUE`, silently removing every ROLE/AGENT/PRIVATE/CATEGORY
+  restriction. The AI runtime, the `search_knowledge` tool and the knowledge
+  search API all omitted it. `scope` is now required (compile-time fail-closed),
+  with `runtimePrincipal()` for the caller-facing AI, the verified session role
+  for the API, and the answering agent for tools.
+- The agent turn now verifies its claims against the retrieved evidence
+  (`verifyClaims`) and replaces an unsupported answer with the extractive
+  excerpts before the caller hears it (documented 0.6 support gate, verdict and
+  ratio logged); the turn result exposes `verification` and `retrieval`.
+- Governed retrieval (`searchKnowledgeGoverned`) is now the runtime path:
+  reranking when configured, a retrieval event per turn, `markEvidenceUsed` for
+  the documents that reached the answer, and degradation to "no evidence" (not a
+  failed call) when retrieval fails.
+
+
 ### Fixed — malware scanning was never actually applied to uploads
 - `ingestFile` (the only file-ingestion path) now scans before extracting,
   archiving or indexing: an infected file is rejected 400 `MALWARE_DETECTED`,

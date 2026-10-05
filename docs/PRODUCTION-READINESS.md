@@ -17,13 +17,13 @@ Node 22.
 | `npm ci` | pass |
 | `npx tsc --noEmit` (`npm run typecheck`) | pass, 0 errors |
 | `npx eslint .` (`npm run lint`) | pass, 0 problems |
-| `npx vitest run` | **798 tests / 95 files passed, 0 skipped, 0 failed** |
-| `npx vitest run --coverage` | **statements 92.30% · lines 92.30% · functions 94.03% · branches 81.88% (16048/17386, 852/906, 4665/5697)** — all four 80% thresholds pass, 0 skipped; see `docs/coverage-baseline.txt` |
+| `npx vitest run` | **804 tests / 96 files passed, 0 skipped, 0 failed** |
+| `npx vitest run --coverage` | **statements 92.23% · lines 92.23% · functions 94.04% · branches 81.97% (16112/17468, 853/907, 4674/5702)** — all four 80% thresholds pass, 0 skipped; see `docs/coverage-baseline.txt` |
 | `npm run db:migrate` (twice) | pass; migrations `0014`–`0018` apply cleanly on a fresh and on a restored database |
 | `node scripts/ci/check-migration-safety.mjs` | pass (no `db:push` in deploy paths, journal/snapshot coverage complete, destructive statements justified) |
 | `node scripts/ci/index-audit.mjs` | pass (50 tenant tables tenant-indexed, 181 public indexes, forced-index plans available, incl. the keyset pagination window) |
 | `node scripts/ci/pii-log-audit.mjs` | pass — every structured log call site is free of raw request bodies, credential keys and unmasked personal data (0 waivers) |
-| `node scripts/ci/check-test-results.mjs test-results/vitest.json` | pass — 274 suites / 798 tests, 0 skipped, all required integration + e2e files executed |
+| `node scripts/ci/check-test-results.mjs test-results/vitest.json` | pass — 276 suites / 804 tests, 0 skipped, all required integration + e2e files executed |
 | `bash scripts/ci/restore-drill.sh` | **pass** — backup → isolated restore → sentinel tenant round-trip → migrate ×2 → health checks |
 | `for s in llm embedding stt tts smtp oauth storage telephony; do node scripts/ci/check-live-suite-fails.mjs $s; done` | **8/8 suites fail loudly without credentials** (never skip-green) |
 | `npm run build` | pass (production build, 51 routes) |
