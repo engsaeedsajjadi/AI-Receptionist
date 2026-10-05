@@ -19,6 +19,9 @@ import { normalizeForSearch, normalizePersianText } from "@/lib/normalization";
 import { expectedEmbeddingDimensions, getEmbeddingProvider } from "@/lib/providers/embeddings";
 import { getStorageProvider, tenantKey } from "@/lib/providers/storage";
 import { recordEmbeddingUsage } from "@/lib/services/usage";
+import { knowledgeAccessPredicate, knowledgeLifecyclePredicate, knowledgeMetadataPredicate, type KnowledgeMetadataFilters, type RetrievalPrincipal } from "@/lib/rag/access";
+import { recordStoredObjectStandalone, forgetStoredObjectStandalone } from "@/lib/services/storage-usage";
+import { enqueueOutbox } from "@/lib/services/outbox";
 
 export type IngestFileInput = {
   businessId: string;
@@ -129,10 +132,21 @@ export async function ingestFile(input: IngestFileInput) {
     });
 
     // Archive the original file (best effort — extracted content is already stored).
+    // Successful uploads are metered into `storage_bytes`; a rejected quota
+    // rolls the accounting back with the transaction that recorded it.
     let storageKey: string | null = null;
     try {
       storageKey = tenantKey(input.businessId, "knowledge", doc.id, validated.filename);
       await getStorageProvider().upload({ key: storageKey, data: input.buffer, contentType: validated.mimeType });
+      await recordStoredObjectStandalone({
+        businessId: input.businessId,
+        key: storageKey,
+        bytes: input.buffer.length,
+        contentType: validated.mimeType,
+        category: "knowledge",
+        sourceType: "knowledge_document",
+        sourceId: doc.id,
+      });
     } catch (err) {
       logWarn("Knowledge original archival failed (content already indexed)", {
         requestId: input.requestId,
@@ -265,6 +279,7 @@ export async function deleteDocument(businessId: string, documentId: string): Pr
   if (doc.storageKey) {
     try {
       await getStorageProvider().delete(doc.storageKey);
+      await forgetStoredObjectStandalone(businessId, doc.storageKey);
     } catch (err) {
       logWarn("Knowledge storage cleanup failed", {
         businessId,
@@ -302,8 +317,13 @@ type VectorRow = {
   similarity: string | number;
 };
 
-async function vectorSearch(businessId: string, embedding: number[], limit: number): Promise<RetrievedChunk[]> {
+async function vectorSearch(businessId: string, embedding: number[], limit: number, scope?: RetrievalScope): Promise<RetrievedChunk[]> {
   const literal = `[${embedding.join(",")}]`;
+  // ACL + lifecycle + metadata predicates are part of the SQL: unauthorized
+  // documents never enter the candidate set (no retrieve-then-filter).
+  const access = scope ? knowledgeAccessPredicate(scope.principal, "kd") : sql`TRUE`;
+  const lifecycle = knowledgeLifecyclePredicate(scope?.filters ?? { tags: [], includeDrafts: false }, new Date(), "kd");
+  const metadata = knowledgeMetadataPredicate(scope?.filters ?? { tags: [], includeDrafts: false }, "kd");
   const rows = await db.execute<VectorRow>(sql`
     SELECT kc.id, kc.document_id, kc.content, kd.title,
            1 - (kc.embedding <=> ${literal}::vector) AS similarity
@@ -311,7 +331,9 @@ async function vectorSearch(businessId: string, embedding: number[], limit: numb
     JOIN knowledge_documents kd ON kd.id = kc.document_id
     WHERE kc.business_id = ${businessId}
       AND kd.business_id = ${businessId}
-      AND kd.status = 'indexed'
+      AND ${lifecycle}
+      AND ${access}
+      ${metadata ? sql`AND ${metadata}` : sql``}
       AND kc.embedding IS NOT NULL
     ORDER BY kc.embedding <=> ${literal}::vector
     LIMIT ${limit}
@@ -327,7 +349,7 @@ async function vectorSearch(businessId: string, embedding: number[], limit: numb
   }));
 }
 
-async function keywordSearch(businessId: string, query: string, limit: number): Promise<RetrievedChunk[]> {
+async function keywordSearch(businessId: string, query: string, limit: number, scope?: RetrievalScope): Promise<RetrievedChunk[]> {
   const normalized = normalizeForSearch(query);
   const terms = normalized.split(" ").filter((t) => t.length >= 2).slice(0, 8);
   if (terms.length === 0) return [];
@@ -354,8 +376,10 @@ async function keywordSearch(businessId: string, query: string, limit: number): 
       and(
         eq(knowledgeChunks.businessId, businessId),
         eq(knowledgeDocuments.businessId, businessId),
-        eq(knowledgeDocuments.status, "indexed"),
         or(...termPatterns.map((p) => ilike(knowledgeChunks.content, p))),
+        knowledgeLifecyclePredicate(scope?.filters ?? { tags: [], includeDrafts: false }),
+        scope ? knowledgeAccessPredicate(scope.principal) : sql`TRUE`,
+        knowledgeMetadataPredicate(scope?.filters ?? { tags: [], includeDrafts: false }),
       ),
     )
     .orderBy(desc(matchCount), desc(knowledgeChunks.createdAt))
@@ -401,12 +425,17 @@ export function reciprocalRankFuse(rankedLists: RetrievedChunk[][], k: number = 
   return [...fused.values()].sort((a, b) => b.rrf - a.rrf).map(({ chunk, rrf }) => ({ ...chunk, score: rrf }));
 }
 
+/** Access + metadata scope applied inside every retrieval query. */
+export type RetrievalScope = { principal: RetrievalPrincipal; filters: KnowledgeMetadataFilters };
+
 export async function hybridSearch(input: {
   businessId: string;
   query: string;
   topK?: number;
   minSimilarity?: number;
   requestId?: string;
+  /** ACL + structured metadata scope. Omit only for trusted server-side callers. */
+  scope?: RetrievalScope;
   /**
    * Deterministic embedding override for tests (mirrors the agent `llm?`
    * override pattern). Production callers omit it and always use the
@@ -428,7 +457,7 @@ export async function hybridSearch(input: {
       ? await input.embed(normalized)
       : (await meteredEmbeddings(input.businessId, getEmbeddingProvider(), [normalized], { requestId: input.requestId }))[0].embedding;
     assertDimensions(embedding);
-    vectorResults = (await vectorSearch(input.businessId, embedding, topK)).filter((r) => r.score >= minSimilarity);
+    vectorResults = (await vectorSearch(input.businessId, embedding, topK, input.scope)).filter((r) => r.score >= minSimilarity);
   } catch (err) {
     // Degraded mode: embedding unavailable → keyword-only retrieval.
     degraded = true;
@@ -441,7 +470,7 @@ export async function hybridSearch(input: {
     });
   }
 
-  const keywordResults = await keywordSearch(input.businessId, normalized, topK);
+  const keywordResults = await keywordSearch(input.businessId, normalized, topK, input.scope);
 
   // Fuse by rank (RRF, k=60): vector list is ranked by cosine similarity,
   // keyword list by term match-count. In degraded mode the vector list is
