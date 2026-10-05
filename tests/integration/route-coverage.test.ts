@@ -37,15 +37,22 @@ async function resetRedis() {
   if (client) await client.flushall().catch(() => undefined);
 }
 
-/** Business hours must be open for the appointment routes to accept a booking. */
+/**
+ * Business hours must be open for the appointment routes to accept a booking.
+ *
+ * The shape here is the one `SchedulingConfigSchema` actually parses
+ * (`scheduling.days`, keyed 0=Sunday..6=Saturday with the default
+ * 09:00–18:00 fallback). Writing the day names instead would be silently ignored
+ * and make this suite pass or fail depending on the wall-clock time.
+ */
 async function openAllWeek(businessId: string) {
-  const hours = Object.fromEntries(
-    ["saturday", "sunday", "monday", "tuesday", "wednesday", "thursday", "friday"].map((day) => [day, { enabled: true, start: "00:00", end: "23:59" }]),
+  const days = Object.fromEntries(
+    Array.from({ length: 7 }, (_, day) => [String(day), { enabled: true, start: "00:00", end: "23:59" }]),
   );
   const [row] = await db.select().from(businesses).where(eq(businesses.id, businessId));
   await db
     .update(businesses)
-    .set({ settings: { ...(row.settings as Record<string, unknown>), scheduling: { timezone: "Asia/Tehran", hours } }, updatedAt: new Date() })
+    .set({ settings: { ...(row.settings as Record<string, unknown>), scheduling: { timezone: "Asia/Tehran", days } }, updatedAt: new Date() })
     .where(eq(businesses.id, businessId));
 }
 

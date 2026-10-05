@@ -1,14 +1,15 @@
 import { inventoryQuota } from "@/lib/services/quotas";
-import { and, desc, eq, ne } from "drizzle-orm";
+import { and, desc, eq, ne, sql } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/db";
 import { users } from "@/db/schema";
-import { ApiError, mapUniqueViolation, ok, paginated, parseJsonWith, parsePagination } from "@/lib/api";
+import { ApiError, mapUniqueViolation, ok, parseJsonWith } from "@/lib/api";
 import { getAuthContext, hashPassword, validatePasswordPolicy } from "@/lib/auth";
 import { normalizePersianText, normalizePhone } from "@/lib/normalization";
 import { hasRole } from "@/lib/permissions";
 import { checkGlobalPublicRateLimit, withApiHandling } from "@/lib/server-core";
+import { cursorPage, keysetCondition, parseListWindow } from "@/lib/pagination";
 
 function publicUser(u: typeof users.$inferSelect) {
   return {
@@ -29,17 +30,26 @@ export async function GET(req: NextRequest) {
     await checkGlobalPublicRateLimit(req);
     const auth = await getAuthContext(req);
     if (!hasRole(auth.role, "MANAGER")) throw new ApiError(403, "FORBIDDEN", "Insufficient permissions");
-    const { page, limit, offset } = parsePagination(req);
+    const listWindow = parseListWindow(req);
+    const conditions = [eq(users.businessId, auth.businessId)];
+    if (listWindow.cursor) conditions.push(keysetCondition({ createdAt: users.createdAt, id: users.id }, listWindow.cursor));
 
-    const rows = await db
-      .select()
-      .from(users)
-      .where(eq(users.businessId, auth.businessId))
-      .orderBy(desc(users.createdAt))
-      .limit(limit)
-      .offset(offset);
+    const [rows, total] = await Promise.all([
+      db
+        .select()
+        .from(users)
+        .where(and(...conditions))
+        .orderBy(desc(users.createdAt), desc(users.id))
+        .limit(listWindow.cursor ? listWindow.limit + 1 : listWindow.limit)
+        .offset(listWindow.cursor ? 0 : listWindow.offset),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(users)
+        .where(and(...conditions))
+        .then((r) => r[0]?.count ?? 0),
+    ]);
 
-    return ok(paginated(rows.map(publicUser), page, limit, offset + rows.length));
+    return ok(cursorPage({ rows: rows.map(publicUser), limit: listWindow.limit, page: listWindow.page, extra: Boolean(listWindow.cursor), total }));
   });
 }
 

@@ -53,6 +53,16 @@ const PLAN_QUERIES = [
     "SELECT kc.id FROM knowledge_chunks kc WHERE kc.business_id = (SELECT id FROM businesses LIMIT 1) LIMIT 10",
     "knowledge_chunks",
   ],
+  [
+    // The keyset window every list endpoint uses (src/lib/pagination.ts): the
+    // relaxed tuple comparison must stay index-backed as tenants grow.
+    "keyset cursor window",
+    `SELECT id FROM leads
+      WHERE business_id = (SELECT id FROM businesses LIMIT 1)
+        AND (created_at < '2026-01-01T00:00:00Z' OR (created_at = '2026-01-01T00:00:00Z' AND id < gen_random_uuid()))
+      ORDER BY created_at DESC, id DESC LIMIT 20`,
+    "leads",
+  ],
 ];
 
 const pool = new Pool({ connectionString: databaseUrl });

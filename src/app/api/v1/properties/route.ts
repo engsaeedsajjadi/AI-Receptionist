@@ -1,18 +1,19 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { db } from "@/db";
 import { properties } from "@/db/schema";
-import { ApiError, ok, paginated, parseJsonWith, parsePagination } from "@/lib/api";
+import { ApiError, ok, parseJsonWith } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
 import { hasRole } from "@/lib/permissions";
 import { checkGlobalPublicRateLimit, withApiHandling } from "@/lib/server-core";
 import { PropertyUpsertSchema, createProperty } from "@/lib/services/properties";
+import { cursorPage, keysetCondition, parseListWindow } from "@/lib/pagination";
 
 export async function GET(req: NextRequest) {
   return withApiHandling(async () => {
     await checkGlobalPublicRateLimit(req);
     const auth = await getAuthContext(req);
-    const { page, limit, offset } = parsePagination(req);
+    const listWindow = parseListWindow(req);
 
     const conditions = [eq(properties.businessId, auth.businessId)];
     const txn = req.nextUrl.searchParams.get("transaction_type");
@@ -23,15 +24,26 @@ export async function GET(req: NextRequest) {
     if (available === "true") conditions.push(eq(properties.isAvailable, true));
     if (available === "false") conditions.push(eq(properties.isAvailable, false));
 
-    const rows = await db
-      .select()
-      .from(properties)
-      .where(and(...conditions))
-      .orderBy(desc(properties.createdAt))
-      .limit(limit)
-      .offset(offset);
+    if (listWindow.cursor) {
+      conditions.push(keysetCondition({ createdAt: properties.createdAt, id: properties.id }, listWindow.cursor));
+    }
 
-    return ok(paginated(rows, page, limit, offset + rows.length + (rows.length === limit ? 1 : 0)));
+    const [rows, total] = await Promise.all([
+      db
+        .select()
+        .from(properties)
+        .where(and(...conditions))
+        .orderBy(desc(properties.createdAt), desc(properties.id))
+        .limit(listWindow.cursor ? listWindow.limit + 1 : listWindow.limit)
+        .offset(listWindow.cursor ? 0 : listWindow.offset),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(properties)
+        .where(and(...conditions))
+        .then((r) => r[0]?.count ?? 0),
+    ]);
+
+    return ok(cursorPage({ rows, limit: listWindow.limit, page: listWindow.page, extra: Boolean(listWindow.cursor), total }));
   });
 }
 
