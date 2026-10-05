@@ -6,9 +6,10 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-  # gitleaks-action@v2 needs to read the pull request's commits (its breaking
-  # change of 2025-09 requires GITHUB_TOKEN for pull_request scans).
-  pull-requests: read
+  # gitleaks-action@v2 needs a token to scan pull-request commits (its breaking
+  # change of 2025-09) and publishes what it finds as a pull-request comment, so
+  # a failing scan is reviewable without downloading the job log.
+  pull-requests: write
 concurrency:
   group: enterprise-${{ github.ref }}
   cancel-in-progress: true

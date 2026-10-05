@@ -78,7 +78,10 @@ describe.skipIf(!hasTestDatabase())("inbound voice webhook", () => {
   function stubVoiceEnv(overrides: Record<string, string> = {}) {
     vi.stubEnv("TELEPHONY_PROVIDER", "twilio");
     vi.stubEnv("VOICE_PROVIDER", "twilio");
-    vi.stubEnv("TWILIO_ACCOUNT_SID", "AC00000000000000000000000000000000");
+    // Deliberately not shaped like a real Twilio SID (`AC` + 32 hex): the value
+    // only has to be non-empty, and a realistic-looking placeholder trips secret
+    // scanners even though it is not a credential.
+    vi.stubEnv("TWILIO_ACCOUNT_SID", "AC-test-account-sid-placeholder");
     vi.stubEnv("TWILIO_AUTH_TOKEN", AUTH_TOKEN);
     vi.stubEnv("APP_URL", "http://localhost:3000");
     vi.stubEnv("VOICE_MEDIA_PUBLIC_URL", "wss://media.example.test/media");
