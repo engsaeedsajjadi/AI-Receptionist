@@ -10,6 +10,10 @@ pnpm-debug.log*
 coverage
 dist
 storage
+# Database dumps and browser evidence are operational artifacts, never sources.
+backups/
+playwright-report/
+blob-report/
 
 *.tsbuildinfo
 test-results/

@@ -18,7 +18,18 @@
     "maintenance": "tsx scripts/maintenance.ts",
     "test:coverage": "vitest run --coverage",
     "worker": "tsx scripts/worker.ts",
-    "test:live:ai": "vitest run --config vitest.live.config.ts"
+    "test:live:ai": "vitest run --config vitest.live.config.ts",
+    "test:live:llm": "vitest run --config vitest.live.config.ts tests/live/llm.acceptance.ts",
+    "test:live:embedding": "vitest run --config vitest.live.config.ts tests/live/embedding.acceptance.ts",
+    "test:live:stt": "vitest run --config vitest.live.config.ts tests/live/stt.acceptance.ts",
+    "test:live:tts": "vitest run --config vitest.live.config.ts tests/live/tts.acceptance.ts",
+    "test:live:smtp": "vitest run --config vitest.live.config.ts tests/live/smtp.acceptance.ts",
+    "test:live:oauth": "vitest run --config vitest.live.config.ts tests/live/oauth.acceptance.ts",
+    "test:live:storage": "vitest run --config vitest.live.config.ts tests/live/storage.acceptance.ts",
+    "test:live:telephony": "vitest run --config vitest.live.config.ts tests/live/telephony.acceptance.ts",
+    "test:browser": "playwright test",
+    "test:load": "node scripts/load/smoke.mjs",
+    "test:browser:install": "playwright install --with-deps chromium"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.936.0",
@@ -47,6 +58,7 @@
     "zod": "^4.3.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/postcss": "4.1.17",
     "@types/node": "22.19.15",
     "@types/nodemailer": "^8.0.2",
