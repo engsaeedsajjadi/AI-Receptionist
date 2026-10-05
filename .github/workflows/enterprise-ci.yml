@@ -67,7 +67,10 @@ jobs:
       # 7b · PII/secret log audit: no raw request bodies, credentials or unmasked PII
       - run: node scripts/ci/pii-log-audit.mjs
       # 8–10 · tests with coverage thresholds (80/80/80/80) + skip guard
-      - run: npm run test:coverage -- --reporter=default --reporter=json --outputFile=test-results/vitest.json
+      # The github-actions reporter publishes each failing test as an annotation,
+      # so a red suite is diagnosable from the pull request (job logs and the
+      # uploaded artifact are not always reachable).
+      - run: npm run test:coverage -- --reporter=default --reporter=github-actions --reporter=json --outputFile=test-results/vitest.json
       - if: always()
         run: node scripts/ci/check-test-results.mjs test-results/vitest.json
       # 10 · live suites must fail fast without credentials (never silently pass)
