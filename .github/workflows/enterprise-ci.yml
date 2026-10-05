@@ -179,9 +179,9 @@ jobs:
           sudo install -m 0755 /tmp/trivy /usr/local/bin/trivy
           trivy --version
       - name: Container image vulnerability scan (Trivy)
-        run: |
-          set -o pipefail
-          trivy image --exit-code 1 --severity CRITICAL,HIGH --ignore-unfixed --format table ai-receptionist:ci | tee /tmp/trivy-report.txt
+        # Single scan, JSON report: the publish step below renders the findings as
+        # a markdown table (a full table over ~400 node packages would bury them).
+        run: trivy image --exit-code 1 --severity CRITICAL,HIGH --ignore-unfixed --format json --output /tmp/trivy.json ai-receptionist:ci
       # A red scan must be reviewable without the job log: publish the table on the
       # pull request that triggered the run (this step never changes the outcome).
       - name: Publish Trivy findings on the pull request
@@ -190,16 +190,29 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          test -s /tmp/trivy-report.txt || echo "no report captured" > /tmp/trivy-report.txt
-          {
-            echo '### Container image scan (Trivy) failed'
-            echo
-            echo '`trivy image --severity CRITICAL,HIGH --ignore-unfixed`'
-            echo
-            echo '```'
-            head -c 60000 /tmp/trivy-report.txt
-            echo '```'
-          } > /tmp/trivy-comment.md
+          node -e '
+            const fs = require("fs");
+            let report = { Results: [] };
+            try { report = JSON.parse(fs.readFileSync("/tmp/trivy.json", "utf8")); } catch {}
+            const rows = [];
+            for (const result of report.Results ?? []) {
+              for (const v of result.Vulnerabilities ?? []) {
+                rows.push(`| ${result.Target} | ${v.PkgName} | ${v.InstalledVersion} | ${v.Severity} | ${v.VulnerabilityID} | ${v.FixedVersion ?? "no fix"} |`);
+              }
+            }
+            const lines = [
+              "### Container image scan (Trivy) failed",
+              "",
+              "`trivy image --severity CRITICAL,HIGH --ignore-unfixed` — every finding below has a fixed version available:",
+              "",
+            ];
+            if (rows.length) {
+              lines.push("| Target | Package | Installed | Severity | ID | Fixed in |", "| --- | --- | --- | --- | --- | --- |", ...rows);
+            } else {
+              lines.push("No CRITICAL/HIGH vulnerabilities with a fix were parsed from the report.");
+            }
+            fs.writeFileSync("/tmp/trivy-comment.md", lines.join("\n"));
+          '
           gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/trivy-comment.md
       - name: SBOM (CycloneDX)
         uses: anchore/sbom-action@v0

@@ -11,20 +11,24 @@ import { expectRtlDocument, login, seed, watchFailures } from "./helpers";
  */
 
 test.describe("۱ — ورود و کنترل دسترسی", () => {
+  // These journeys are about the login form, so they must not inherit the
+  // session captured for the rest of the suite.
+  test.use({ storageState: { cookies: [], origins: [] } });
+
   test("صفحه ورود فارسی، راست‌چین و دارای برچسب است", async ({ page }) => {
     await page.goto("/dashboard/login");
     await expectRtlDocument(page);
     await expect(page.getByRole("heading", { name: "ورود به داشبورد" })).toBeVisible();
     await expect(page.getByLabel("ایمیل")).toHaveAttribute("type", "email");
     await expect(page.getByLabel("گذرواژه")).toHaveAttribute("type", "password");
-    await expect(page.getByRole("button", { name: /ورود/ })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "ورود", exact: true })).toBeEnabled();
   });
 
   test("گذرواژه نادرست با پیام خطای قابل‌مشاهده رد می‌شود", async ({ page }) => {
     await page.goto("/dashboard/login");
     await page.getByLabel("ایمیل").fill(seed().adminEmail);
     await page.getByLabel("گذرواژه").fill("Wrong-Password-1!");
-    await page.getByRole("button", { name: /ورود/ }).click();
+    await page.getByRole("button", { name: "ورود", exact: true }).click();
     await expect(page.locator("p.text-red-700, [role=alert]").first()).toBeVisible();
     await expect(page).toHaveURL(/\/dashboard\/login/);
   });
@@ -52,6 +56,12 @@ test.describe("۱ — ورود و کنترل دسترسی", () => {
     await expect(page.getByRole("link", { name: "تماس‌ها", exact: true })).toBeVisible();
   });
 
+});
+
+// Logout starts from the reused session (no extra sign-in: the login endpoint is
+// rate limited to 5 attempts per minute per IP, and the login journeys above
+// already use three of them).
+test.describe("۱ — پایان نشست", () => {
   test("خروج، نشست را پایان می‌دهد و دسترسی را می‌بندد", async ({ page }) => {
     await login(page);
     await page.getByRole("button", { name: "خروج" }).click();

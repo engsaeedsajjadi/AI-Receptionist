@@ -7,13 +7,18 @@ import { expectRtlDocument, login } from "./helpers";
  */
 
 test.describe("۴ — واکنش‌گرایی و راست‌چین در موبایل", () => {
-  test("صفحه ورود در موبایل بدون سرریز افقی نمایش داده می‌شود", async ({ page }) => {
-    await page.goto("/dashboard/login");
-    await expectRtlDocument(page);
-    await expect(page.getByLabel("ایمیل")).toBeVisible();
-    await expect(page.getByLabel("گذرواژه")).toBeVisible();
-    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
-    expect(overflow).toBeLessThanOrEqual(2);
+  test.describe("صفحه ورود", () => {
+    // The login form is only reachable without a session.
+    test.use({ storageState: { cookies: [], origins: [] } });
+
+    test("صفحه ورود در موبایل بدون سرریز افقی نمایش داده می‌شود", async ({ page }) => {
+      await page.goto("/dashboard/login");
+      await expectRtlDocument(page);
+      await expect(page.getByLabel("ایمیل")).toBeVisible();
+      await expect(page.getByLabel("گذرواژه")).toBeVisible();
+      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      expect(overflow).toBeLessThanOrEqual(2);
+    });
   });
 
   test("ناوبری داشبورد در موبایل قابل استفاده است", async ({ page }) => {

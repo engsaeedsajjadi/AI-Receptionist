@@ -13,6 +13,7 @@ storage
 # Database dumps and browser evidence are operational artifacts, never sources.
 backups/
 playwright-report/
+.auth/
 blob-report/
 
 *.tsbuildinfo

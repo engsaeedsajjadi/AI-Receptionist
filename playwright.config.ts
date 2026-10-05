@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+import { AUTH_FILE } from "./tests/browser/auth-state";
 
 /**
  * Browser journeys for the Persian/RTL dashboard.
@@ -44,13 +45,23 @@ export default defineConfig({
   },
   projects: [
     {
+      // One real sign-in per run; the journeys then reuse the session (the login
+      // endpoint allows 5 attempts per minute per IP and the suite has fifteen
+      // journeys). Journeys that exercise the login form itself opt out with
+      // `test.use({ storageState: { cookies: [], origins: [] } })`.
+      name: "setup",
+      testMatch: /auth\.setup\.ts/,
+    },
+    {
       name: "chromium-desktop",
-      use: { ...devices["Desktop Chrome"], viewport: { width: 1366, height: 900 } },
+      dependencies: ["setup"],
+      use: { ...devices["Desktop Chrome"], viewport: { width: 1366, height: 900 }, storageState: AUTH_FILE },
     },
     {
       name: "chromium-mobile",
+      dependencies: ["setup"],
       // RTL/responsive QA: a narrow Persian phone viewport must stay usable.
-      use: { ...devices["Pixel 7"], locale: "fa-IR", timezoneId: "Asia/Tehran" },
+      use: { ...devices["Pixel 7"], locale: "fa-IR", timezoneId: "Asia/Tehran", storageState: AUTH_FILE },
       testMatch: /responsive\.spec\.ts/,
     },
   ],
