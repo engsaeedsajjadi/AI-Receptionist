@@ -17,13 +17,13 @@ Node 22.
 | `npm ci` | pass |
 | `npx tsc --noEmit` (`npm run typecheck`) | pass, 0 errors |
 | `npx eslint .` (`npm run lint`) | pass, 0 problems |
-| `npx vitest run` | **752 tests / 86 files passed, 0 skipped, 0 failed** |
-| `npx vitest run --coverage` | **statements 91.97% · lines 91.97% · functions 94.02% · branches 81.12% (15447/16794, 834/887, 4332/5340)** — all four 80% thresholds pass; see `docs/coverage-baseline.txt` |
-| `npm run db:migrate` (twice) | pass; migrations `0014`–`0016` apply cleanly on a fresh and on a restored database |
+| `npx vitest run` | **773 tests / 91 files passed, 0 skipped, 0 failed** |
+| `npx vitest run --coverage` | **statements 92.03% · lines 92.03% · functions 93.90% · branches 81.30% (15833/17204, 847/902, 4533/5575)** — all four 80% thresholds pass, 0 skipped; see `docs/coverage-baseline.txt` |
+| `npm run db:migrate` (twice) | pass; migrations `0014`–`0017` apply cleanly on a fresh and on a restored database |
 | `node scripts/ci/check-migration-safety.mjs` | pass (no `db:push` in deploy paths, journal/snapshot coverage complete, destructive statements justified) |
-| `node scripts/ci/index-audit.mjs` | pass (50 tenant tables tenant-indexed, 180 public indexes, forced-index plans available) |
+| `node scripts/ci/index-audit.mjs` | pass (50 tenant tables tenant-indexed, 180 public indexes, forced-index plans available, incl. the keyset pagination window) |
 | `node scripts/ci/pii-log-audit.mjs` | pass — every structured log call site is free of raw request bodies, credential keys and unmasked personal data (0 waivers) |
-| `node scripts/ci/check-test-results.mjs test-results/vitest.json` | pass — 256 suites / 752 tests, 0 skipped, all required integration + e2e files executed |
+| `node scripts/ci/check-test-results.mjs test-results/vitest.json` | pass — 266 suites / 773 tests, 0 skipped, all required integration + e2e files executed |
 | `bash scripts/ci/restore-drill.sh` | **pass** — backup → isolated restore → sentinel tenant round-trip → migrate ×2 → health checks |
 | `for s in llm embedding stt tts smtp oauth storage telephony; do node scripts/ci/check-live-suite-fails.mjs $s; done` | **8/8 suites fail loudly without credentials** (never skip-green) |
 | `npm run build` | pass (production build, 51 routes) |
@@ -31,6 +31,9 @@ Node 22.
 | `npx playwright test --list` | 30 tests in 3 spec files discovered (desktop + mobile projects) |
 | `npx playwright test` | **BLOCKED in this sandbox** — Chromium cannot be installed (upstream download/apt failure). Runs in CI job `browser-journeys` via `npx playwright install --with-deps chromium`. |
 | `npm audit --omit=dev --audit-level=high` | pass (0 high/critical in production dependencies) |
+| `curl /api/health/live` · `/api/health/ready` | 200 `{"status":"live"}` · 200 `{"status":"ready", checks: postgres, migrations, storage, provider-config, redis}` (dev server, 18 migrations applied) |
+| `curl /api/metrics` (with and without token) | 401 without `Authorization: Bearer $METRICS_TOKEN`, 200 with it (Prometheus text exposition) |
+| `VOICE_MEDIA_TOKEN=… npx tsx scripts/media-server.ts` then `curl /healthz` | 200 `{"status":"ok","sessions":0,"capacity":100,"provider":"dev","codec":"mulaw","sampleRate":8000}`; without `VOICE_MEDIA_TOKEN` the process refuses to start; unauthenticated `/media` request → 404 |
 
 ## P0 — blocking gates
 
