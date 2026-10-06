@@ -241,3 +241,19 @@ jobs:
             test-results/
             backups/
           retention-days: 14
+
+
+  source-archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build source ZIP
+        run: git archive --format=zip --prefix=AI-Receptionist-arena-final/ -o AI-Receptionist-arena-final.zip HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: project-source-zip
+          path: AI-Receptionist-arena-final.zip
+          retention-days: 14
