@@ -18,7 +18,7 @@ export type RuntimeReadiness = {
  * stays a separate gate so a filled API key can never be mistaken for a tested
  * PSTN/payment/storage integration.
  */
-export function runtimeReadiness(env: NodeJS.ProcessEnv = process.env): RuntimeReadiness {
+export function runtimeReadiness(env: Record<string, string | undefined> = process.env): RuntimeReadiness {
   const value = (key: string) => (env[key] ?? "").trim();
   const enabled = (key: string, fallback = false) => {
     const raw = value(key);

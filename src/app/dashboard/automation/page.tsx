@@ -35,8 +35,23 @@ export default function AutomationPage() {
   }, [apiJson]);
 
   useEffect(() => {
-    refresh().catch((err: Error) => setMessage(err.message));
-  }, [refresh]);
+    let cancelled = false;
+    Promise.all([
+      apiJson<{ jobs: Job[] }>("/api/v1/automation/jobs"),
+      apiJson<{ scheduled: Scheduled[] }>("/api/v1/notifications/schedule"),
+    ])
+      .then(([queue, notifications]) => {
+        if (cancelled) return;
+        setJobs(queue.jobs);
+        setScheduled(notifications.scheduled);
+      })
+      .catch((err: Error) => {
+        if (!cancelled) setMessage(err.message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [apiJson]);
 
   return (
     <div>

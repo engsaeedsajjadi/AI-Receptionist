@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/components/dashboard/auth";
 import { Badge, Card, EmptyState, LoadingState, PageHeader, formatDateTime } from "@/components/dashboard/ui";
 
@@ -168,32 +168,44 @@ export default function AgentPage() {
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
 
-  const loadAgents = useCallback(async () => {
-    const rows = await apiJson<Agent[]>("/api/v1/agents");
-    setAgents(rows);
-    setSelected((current) => {
-      const next = rows.find((row) => row.id === current?.id) ?? rows[0] ?? null;
-      if (next) setForm(agentForm(next));
-      return next;
-    });
-  }, [apiJson]);
-
-  const loadVersions = useCallback(async (agentId: string) => {
+  const refreshVersions = async (agentId: string) => {
     const result = await apiJson<{ versions: AgentVersion[] }>(`/api/v1/agents/${agentId}/versions`);
     setVersions(result.versions);
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    apiJson<Agent[]>("/api/v1/agents")
+      .then((rows) => {
+        if (cancelled) return;
+        setAgents(rows);
+        const first = rows[0] ?? null;
+        setSelected(first);
+        if (first) setForm(agentForm(first));
+      })
+      .catch(() => {
+        if (!cancelled) setAgents([]);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [apiJson]);
 
   useEffect(() => {
-    loadAgents().catch(() => setAgents([]));
-  }, [loadAgents]);
-
-  useEffect(() => {
-    if (!selected) {
-      setVersions([]);
-      return;
-    }
-    loadVersions(selected.id).catch(() => setVersions([]));
-  }, [selected?.id, loadVersions]);
+    const agentId = selected?.id;
+    if (!agentId) return;
+    let cancelled = false;
+    apiJson<{ versions: AgentVersion[] }>(`/api/v1/agents/${agentId}/versions`)
+      .then((result) => {
+        if (!cancelled) setVersions(result.versions);
+      })
+      .catch(() => {
+        if (!cancelled) setVersions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [apiJson, selected?.id]);
 
   useEffect(() => () => {
     if (previewUrl) URL.revokeObjectURL(previewUrl);
@@ -229,7 +241,7 @@ export default function AgentPage() {
       setSelected(updated);
       setAgents((rows) => rows?.map((row) => row.id === updated.id ? updated : row) ?? rows);
       setForm(agentForm(updated));
-      await loadVersions(updated.id);
+      await refreshVersions(updated.id);
       setMessage("پیکربندی و نسخه جدید ذخیره شد.");
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "ذخیره ناموفق بود.");
@@ -479,7 +491,7 @@ export default function AgentPage() {
                               setForm(agentForm(updated));
                               setAgents((rows) => rows?.map((row) => row.id === updated.id ? updated : row) ?? rows);
                               setMessage("نسخه انتخابی بازگردانی شد و نسخه جدیدی از وضعیت قبلی ثبت شد.");
-                              return loadVersions(updated.id);
+                              return refreshVersions(updated.id);
                             })
                             .catch((err: Error) => setMessage(err.message));
                         }}>بازگردانی</button>
