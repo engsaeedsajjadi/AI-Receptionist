@@ -47,15 +47,16 @@ function windowKey(prefix: string, windowSeconds: number): string {
 }
 
 /**
- * Browser E2E creates many isolated real sessions from one loopback IP.
- * Production can never use this escape hatch: both NODE_ENV and loopback host
- * are checked in addition to the explicit CI-only flag.
+ * Browser E2E deliberately creates many isolated real sessions from one CI
+ * runner. The bypass is impossible in production and requires both an explicit
+ * E2E flag and a CI/test-process marker. We intentionally do not key this off
+ * req.nextUrl.hostname: Next dev may normalize/proxy the request host, which
+ * made the old loopback check flaky even though the suite was running locally.
  */
-function browserE2eBypass(req: NextRequest): boolean {
+function browserE2eBypass(): boolean {
   if (process.env.NODE_ENV === "production") return false;
   if (process.env.E2E_RATE_LIMIT_BYPASS !== "true") return false;
-  const host = req.nextUrl.hostname.toLowerCase();
-  return host === "localhost" || host === "127.0.0.1" || host === "::1";
+  return process.env.CI === "true" || process.env.E2E_MODE === "test";
 }
 
 /**
@@ -68,7 +69,7 @@ export async function enforceRateLimit(
   scope?: string,
 ): Promise<{ limit: number; remaining: number; retryAfter?: number }> {
   const { limit, windowSeconds } = PRESETS[preset];
-  if (browserE2eBypass(req)) {
+  if (browserE2eBypass()) {
     return { limit, remaining: limit };
   }
   const key = windowKey(`${preset}:${scope ?? clientIp(req)}`, windowSeconds);
