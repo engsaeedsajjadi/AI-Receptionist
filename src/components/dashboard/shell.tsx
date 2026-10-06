@@ -10,6 +10,7 @@ import { LoadingState } from "@/components/dashboard/ui";
 
 const NAV: Array<{ href: string; label: string; roles?: Array<UserRole> }> = [
   { href: "/dashboard", label: "نمای کلی" },
+  { href: "/dashboard/onboarding", label: "راه‌اندازی", roles: ["ADMIN", "MANAGER"] },
   { href: "/dashboard/calls", label: "تماس‌ها" },
   { href: "/dashboard/crm", label: "فرصت‌ها و پیگیری" },
   { href: "/dashboard/leads", label: "سرنخ‌ها" },
@@ -74,7 +75,7 @@ export function DashboardShell({ children }: { children: ReactNode }) {
           <p className="mt-1 truncate text-xs text-slate-300">
             {user.name} — {user.role}
           </p>
-          <nav className="mt-4 space-y-1">
+          <nav className="mt-4 space-y-1" aria-label="ناوبری اصلی داشبورد">
             {visibleNav.map((n) => {
               const active = pathname === n.href;
               return (
@@ -100,7 +101,7 @@ export function DashboardShell({ children }: { children: ReactNode }) {
       </aside>
 
       <div className="min-w-0 flex-1">
-        <div className="mb-4 flex gap-2 overflow-x-auto md:hidden">
+        <nav className="mb-4 flex gap-2 overflow-x-auto md:hidden" aria-label="ناوبری موبایل">
           {visibleNav.map((n) => (
             <Link
               key={n.href}
@@ -110,8 +111,10 @@ export function DashboardShell({ children }: { children: ReactNode }) {
               {n.label}
             </Link>
           ))}
-        </div>
-        {children}
+        </nav>
+        <main id="main-content" tabIndex={-1}>
+          {children}
+        </main>
       </div>
     </div>
   );

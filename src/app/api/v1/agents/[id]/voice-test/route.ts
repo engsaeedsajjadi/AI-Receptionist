@@ -35,7 +35,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     if (file.size <= 0 || file.size > MAX_AUDIO_BYTES) {
       throw new AppError(413, "PAYLOAD_TOO_LARGE", "Voice test audio must be between 1 byte and 4 MiB");
     }
-    const mime = (file.type || "application/octet-stream").toLowerCase();
+    const mime = (file.type || "application/octet-stream").toLowerCase().split(";")[0].trim();
     if (!ALLOWED_AUDIO_TYPES.has(mime)) {
       throw new AppError(415, "UNSUPPORTED_MEDIA_TYPE", "Unsupported voice-test audio format");
     }
