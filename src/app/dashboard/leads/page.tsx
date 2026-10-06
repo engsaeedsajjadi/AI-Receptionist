@@ -25,6 +25,8 @@ type Lead = {
   notes: string | null;
   score: number;
   scoreRationale: ScoreRationale | null;
+  customerName: string | null;
+  customerPhone: string | null;
   createdAt: string;
 };
 
@@ -211,6 +213,7 @@ export default function LeadsPage() {
           { key: "type", label: "نوع", options: ["BUY", "RENT", "SELL", "OTHER"].map((s) => ({ value: s, label: s })) },
         ]}
         columns={[
+          { key: "customerPhone", label: "تماس", render: (r) => <span dir="ltr">{r.customerPhone ?? "—"}</span> },
           { key: "status", label: "وضعیت", render: (r) => <Badge tone={r.status === "LOST" ? "red" : r.status === "WON" ? "green" : "blue"}>{r.status}</Badge> },
           { key: "type", label: "نوع", render: (r) => <span>{r.type}</span> },
           {

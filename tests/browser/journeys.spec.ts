@@ -76,6 +76,8 @@ test.describe("۲ — داده‌های عملیاتی (فارسی)", () => {
     await page.getByRole("link", { name: "سرنخ‌ها", exact: true }).click();
     await expect(page.getByRole("heading", { name: "سرنخ‌ها" })).toBeVisible();
     await expect(page.getByText("09121112233")).toBeVisible();
+    const leadRow = page.getByRole("row").filter({ hasText: "09121112233" });
+    await leadRow.getByRole("button", { name: "جزئیات" }).click();
 
     const note = `یادداشت آزمایشی ${Date.now()}`;
     await page.getByPlaceholder("یادداشت جدید…").fill(note);
@@ -83,7 +85,9 @@ test.describe("۲ — داده‌های عملیاتی (فارسی)", () => {
     await expect(page.getByText(note)).toBeVisible({ timeout: 15_000 });
     // Survives a reload ⇒ it was persisted, not just echoed locally.
     await page.reload();
-    await page.getByRole("button", { name: "یادداشت‌ها" }).first().click();
+    const reloadedLeadRow = page.getByRole("row").filter({ hasText: "09121112233" });
+    await reloadedLeadRow.getByRole("button", { name: "جزئیات" }).click();
+    await page.getByRole("button", { name: /یادداشت‌ها/ }).first().click();
     await expect(page.getByText(note)).toBeVisible({ timeout: 15_000 });
   });
 
@@ -91,7 +95,8 @@ test.describe("۲ — داده‌های عملیاتی (فارسی)", () => {
     await authenticateSeeded(page);
     await page.getByRole("link", { name: "مشتریان", exact: true }).click();
     await expect(page.getByText(seed().customerPhone)).toBeVisible();
-    await page.getByText(seed().customerPhone).first().click();
+    const customerRow = page.getByRole("row").filter({ hasText: seed().customerPhone });
+    await customerRow.getByRole("button", { name: "جزئیات" }).click();
     await expect(page.getByText(/سرنخ‌ها \(\d+\)/)).toBeVisible({ timeout: 15_000 });
     await expect(page.getByText(/تماس‌ها \(\d+\)/)).toBeVisible();
   });
@@ -146,7 +151,7 @@ test.describe("۳ — پیکربندی (نوشتن و بازخوانی)", () => 
     const greetingField = page.locator("textarea").first();
     await greetingField.fill(greeting);
     await page.getByRole("button", { name: /ذخیره/ }).first().click();
-    await expect(page.getByText(/ذخیره|به‌روزرسانی/).first()).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole("status")).toContainText("پیکربندی و نسخه جدید ذخیره شد.", { timeout: 15_000 });
     await page.reload();
     await expect(page.locator("textarea").first()).toHaveValue(greeting, { timeout: 15_000 });
   });

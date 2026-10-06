@@ -119,6 +119,10 @@ jobs:
       REDIS_URL: redis://127.0.0.1:6379
       APP_URL: http://127.0.0.1:3100
       E2E_PORT: '3100'
+      # Playwright deliberately opens many independent rotating-refresh sessions
+      # from the same loopback IP. The application honors this only outside
+      # production and only for localhost/127.0.0.1.
+      E2E_RATE_LIMIT_BYPASS: 'true'
       NEXT_TELEMETRY_DISABLED: '1'
     steps:
       - uses: actions/checkout@v4

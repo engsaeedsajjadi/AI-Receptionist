@@ -47,6 +47,18 @@ function windowKey(prefix: string, windowSeconds: number): string {
 }
 
 /**
+ * Browser E2E creates many isolated real sessions from one loopback IP.
+ * Production can never use this escape hatch: both NODE_ENV and loopback host
+ * are checked in addition to the explicit CI-only flag.
+ */
+function browserE2eBypass(req: NextRequest): boolean {
+  if (process.env.NODE_ENV === "production") return false;
+  if (process.env.E2E_RATE_LIMIT_BYPASS !== "true") return false;
+  const host = req.nextUrl.hostname.toLowerCase();
+  return host === "localhost" || host === "127.0.0.1" || host === "::1";
+}
+
+/**
  * Redis-backed fixed-window rate limiter.
  * Throws 429 AppError (with Retry-After details) when the limit is exceeded.
  */
@@ -56,6 +68,9 @@ export async function enforceRateLimit(
   scope?: string,
 ): Promise<{ limit: number; remaining: number; retryAfter?: number }> {
   const { limit, windowSeconds } = PRESETS[preset];
+  if (browserE2eBypass(req)) {
+    return { limit, remaining: limit };
+  }
   const key = windowKey(`${preset}:${scope ?? clientIp(req)}`, windowSeconds);
   const count = await redisIncr(key, windowSeconds + 5);
   if (count > limit) {

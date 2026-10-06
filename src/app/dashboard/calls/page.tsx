@@ -161,6 +161,7 @@ export default function CallsPage() {
           { key: "phoneNumber", label: "شماره", render: (row) => <span dir="ltr">{row.phoneNumber}</span> },
           { key: "status", label: "وضعیت", render: (row) => <Badge tone={STATUS_TONE[row.status] ?? "slate"}>{row.status}</Badge> },
           { key: "durationSeconds", label: "مدت (ثانیه)", render: (row) => <span>{row.durationSeconds ?? "—"}</span> },
+          { key: "summary", label: "خلاصه", render: (row) => <span>{row.summary || "—"}</span> },
           { key: "createdAt", label: "زمان", render: (row) => <span>{formatDateTime(row.createdAt)}</span> },
         ]}
         renderDetail={(row) => (

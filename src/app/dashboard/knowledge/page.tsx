@@ -52,6 +52,7 @@ function UploadForm({ onDone }: { onDone: () => void }) {
       <div className="mt-2 flex flex-wrap gap-2">
         <input
           type="file"
+          aria-label="انتخاب فایل پایگاه دانش"
           accept=".pdf,.docx,.txt,.md,.markdown"
           onChange={(e) => setFile(e.target.files?.[0] ?? null)}
           className="text-sm"

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useState, type ReactNode } from "react";
 import { useAuth } from "@/components/dashboard/auth";
 
 export function Card({ title, value, sub }: { title: string; value: ReactNode; sub?: string }) {
@@ -272,8 +272,8 @@ export function ResourceTable<T extends { id: string }>({
             </thead>
             <tbody>
               {data.map((row) => (
-                <>
-                  <tr key={row.id} className="border-b border-slate-50 hover:bg-slate-50">
+                <Fragment key={row.id}>
+                  <tr className="border-b border-slate-50 hover:bg-slate-50">
                     {columns.map((c) => (
                       <td key={c.key} className="max-w-64 truncate px-4 py-2.5">
                         {c.render ? c.render(row) : String((row as Record<string, unknown>)[c.key] ?? "—")}
@@ -302,7 +302,7 @@ export function ResourceTable<T extends { id: string }>({
                       </td>
                     </tr>
                   ) : null}
-                </>
+                </Fragment>
               ))}
             </tbody>
           </table>
