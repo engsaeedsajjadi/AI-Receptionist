@@ -45,7 +45,7 @@ export function registerDefaultOutboxHandlers(): void {
       title?: string;
       message?: string;
       userId?: string | null;
-      channel?: "email" | "internal";
+      channel?: "email" | "internal" | "sms" | "telegram" | "whatsapp";
     };
     if (!payload.title || !payload.message) return;
     await notify({
