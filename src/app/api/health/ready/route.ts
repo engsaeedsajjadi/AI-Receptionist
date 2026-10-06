@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { checkDbHealth } from "@/db";
+import { checkDbHealth, checkMigrationsHealth } from "@/db";
 import { ok } from "@/lib/api";
 import { getEnv, isProduction } from "@/lib/env";
 import { checkRedisHealth } from "@/lib/redis";
@@ -8,6 +8,28 @@ import { checkGlobalPublicRateLimit, withApiHandling } from "@/lib/server-core";
 export const dynamic = "force-dynamic";
 
 type Check = { name: string; ok: boolean; latencyMs?: number; error?: string; configured?: boolean };
+
+/**
+ * Storage readiness: the resolved provider must be constructible and, for the
+ * local provider, its directory must exist and be writable (a live S3 probe is
+ * deliberately not part of readiness — the operator reaches it via /ready
+ * only after configuration, and object-store latency must not restart pods).
+ */
+async function checkStorageHealth(): Promise<{ ok: boolean; configured: boolean; error?: string }> {
+  try {
+    const { getStorageProvider } = await import("@/lib/providers/storage");
+    const provider = getStorageProvider();
+    if (provider.name === "local") {
+      const { access, mkdir } = await import("node:fs/promises");
+      const dir = getEnv().LOCAL_STORAGE_DIR;
+      await mkdir(dir, { recursive: true });
+      await access(dir);
+    }
+    return { ok: true, configured: true };
+  } catch (err) {
+    return { ok: false, configured: false, error: err instanceof Error ? err.message : "storage_unavailable" };
+  }
+}
 
 /**
  * Readiness: verifies required dependencies.
@@ -25,6 +47,18 @@ export async function GET(req: NextRequest) {
 
     const db = await checkDbHealth();
     checks.push({ name: "postgres", ok: db.ok, latencyMs: db.latencyMs, error: db.error });
+
+    // Schema compatibility: the app refuses to report ready when the database
+    // has not had every migration this build expects applied.
+    const migrations = await checkMigrationsHealth();
+    checks.push({
+      name: "migrations",
+      ok: migrations.ok,
+      error: migrations.ok ? undefined : `applied ${migrations.applied}/${migrations.expected}${migrations.error ? ` (${migrations.error})` : ""}`,
+    });
+
+    const storage = await checkStorageHealth();
+    checks.push({ name: "storage", ok: storage.ok, error: storage.error, configured: storage.configured });
 
     let envOk = true;
     let providerInfo: Record<string, string> = {};

@@ -122,7 +122,7 @@ services:
   worker:
     build: .
     restart: always
-    command: ["node", "--import", "tsx", "scripts/worker.ts"]
+    command: ["node", "runtime/worker.js"]
     environment:
       <<: *app-environment
       RUN_MIGRATIONS: "false"
@@ -161,7 +161,7 @@ services:
     # Gateways connect via VOICE_MEDIA_PUBLIC_URL (nginx /media → media:3001).
     build: .
     restart: always
-    command: ["npx", "tsx", "scripts/media-server.ts"]
+    command: ["node", "runtime/media-server.js"]
     depends_on:
       postgres:
         condition: service_healthy

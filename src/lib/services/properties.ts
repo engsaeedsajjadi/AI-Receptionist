@@ -4,6 +4,7 @@ import { z } from "zod";
 import { db } from "@/db";
 import { properties } from "@/db/schema";
 import { AppError } from "@/lib/errors";
+import { parseWith } from "@/lib/api";
 import {
   normalizeForSearch,
   normalizePersianText,
@@ -46,8 +47,9 @@ export const PropertyUpsertSchema = z.object({
   priceCurrency: z.enum(["TOMAN", "RIAL"]).default("TOMAN"),
   area: z.union([z.string(), z.number()]),
   bedrooms: z.number().int().min(0).max(50).default(0),
-  bathrooms: z.number().int().min(0).max(50).optional(),
-  yearBuilt: z.number().int().min(1300).max(1500).optional(),
+  /** `null` explicitly clears the value (0 is a valid bathroom count). */
+  bathrooms: z.number().int().min(0).max(50).nullish(),
+  yearBuilt: z.number().int().min(1300).max(1500).nullish(),
   features: z.array(z.string().max(50)).max(50).default([]),
   isAvailable: z.boolean().default(true),
   metadata: z.record(z.string(), z.unknown()).default({}),
@@ -65,7 +67,7 @@ function escapeLike(pattern: string): string {
  */
 export async function searchProperties(businessId: string, raw: unknown) {
   assertTenantScope(businessId);
-  const filters = PropertySearchSchema.parse(raw);
+  const filters = parseWith(PropertySearchSchema, raw);
   const conditions: SQL[] = [eq(properties.businessId, businessId), eq(properties.isAvailable, true)];
 
   const txn = filters.transactionType ?? filters.listingStatus;
@@ -133,7 +135,7 @@ export async function searchProperties(businessId: string, raw: unknown) {
 
 export async function createProperty(businessId: string, raw: unknown) {
   assertTenantScope(businessId);
-  const input = PropertyUpsertSchema.parse(raw);
+  const input = parseWith(PropertyUpsertSchema, raw);
   const price = parsePrice(input.price)?.amountToman;
   const area = parseArea(input.area);
   if (price == null || price <= 0) throw new AppError(400, "VALIDATION_ERROR", "Invalid property price");
@@ -179,7 +181,9 @@ export async function getProperty(businessId: string, propertyId: string) {
 
 export async function updateProperty(businessId: string, propertyId: string, raw: unknown) {
   assertTenantScope(businessId);
-  const input = PropertyUpsertSchema.partial().parse(raw);
+  // Validated through the shared boundary: a malformed patch is a 400 with
+  // field details, never a raw ZodError escaping as a 500.
+  const input = parseWith(PropertyUpsertSchema.partial(), raw);
   const patch: Partial<typeof properties.$inferInsert> = { updatedAt: new Date() };
   if (input.title !== undefined) patch.title = normalizePersianText(input.title);
   if (input.description !== undefined) patch.description = input.description ? normalizePersianText(input.description) : null;

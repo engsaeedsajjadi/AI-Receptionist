@@ -8,6 +8,7 @@ import { logInfo, logWarn } from "@/lib/logger";
 import { normalizePhone } from "@/lib/normalization";
 import { getVoiceProvider } from "@/lib/providers/voice";
 import { enqueueAutomationEvent as emitAutomationEvent, prepareAutomationEvent } from "@/lib/services/jobs";
+import { enqueueOutbox } from "@/lib/services/outbox";
 import { notifyCallbackRequested, notifyHumanHandoff } from "@/lib/services/notifications";
 
 export type CallStatus = typeof calls.$inferSelect.status;
@@ -227,6 +228,14 @@ export async function requestTransfer(
       },
       { idempotencyKey: `human-handoff:${callId}:transferred` },
     );
+    await db.transaction(async (tx) => {
+      await enqueueOutbox(tx, {
+        businessId,
+        topic: "call.handoff_requested",
+        idempotencyKey: `call.handoff_requested:${callId}:transferred`,
+        payload: { businessId, id: callId, callId, destination, status: "transferred", phone: call.phoneNumber },
+      });
+    });
     logInfo("Call transferred to human", {
       requestId: opts?.requestId,
       businessId,
@@ -236,6 +245,7 @@ export async function requestTransfer(
     });
     return { status: "TRANSFERRED", destination, message: "در حال انتقال تماس به همکار ما. لطفاً منتظر بمانید." };
   } catch (err) {
+    const error = err instanceof Error ? err.message.slice(0, 300) : "transfer_failed";
     await db
       .update(calls)
       .set({ status: "TRANSFER_FAILED" })
@@ -262,6 +272,7 @@ export async function requestTransfer(
     // Failed-transfer key carries the attempt instant: retries of a failed
     // transfer are distinct logical events (each attempt notifies once),
     // while retries of THIS emit share the computed key.
+    const failedAt = Date.now();
     await emitAutomationEvent(
       "human-handoff",
       {
@@ -271,8 +282,17 @@ export async function requestTransfer(
         destination,
         status: "failed",
       },
-      { idempotencyKey: `human-handoff:${callId}:failed:${Date.now()}` },
+      { idempotencyKey: `human-handoff:${callId}:failed:${failedAt}` },
     );
+    await db.transaction(async (tx) => {
+      await enqueueOutbox(tx, {
+        businessId,
+        topic: "call.handoff_requested",
+        idempotencyKey: `call.handoff_requested:${callId}:failed:${failedAt}`,
+        payload: { businessId, id: callId, callId, destination, status: "failed", reason: error,
+          phone: call.phoneNumber },
+      });
+    });
     logWarn("Call transfer failed; callback registered", {
       requestId: opts?.requestId,
       businessId,
@@ -375,6 +395,18 @@ export async function completeCall(
     if (!row) return null;
     if (event) await tx.insert(automationJobs).values(event)
       .onConflictDoNothing({ target: [automationJobs.businessId, automationJobs.idempotencyKey] });
+    // Transactional outbox: external consumers (tenant webhooks, integrations)
+    // see the completion event only if the completion itself committed.
+    await enqueueOutbox(tx, {
+      businessId,
+      topic: "call.completed",
+      idempotencyKey: `call.completed:${callId}`,
+      payload: {
+        businessId, id: callId, callId, phone: call.phoneNumber, status: row.status,
+        durationSeconds: row.durationSeconds, summary, externalCallId: call.externalCallId,
+        transcriptAvailable: Boolean(row.transcript),
+      },
+    });
     return row;
   });
   if (!updated) return getCall(businessId, callId);

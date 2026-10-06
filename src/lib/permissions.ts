@@ -17,6 +17,32 @@ const grants: Record<UserRole, Permission[]> = {
   TENANT_ADMIN: resources.flatMap((r) => [`${r}:read`, `${r}:write`] as Permission[]),
   ADMIN: [], SUPER_ADMIN: [],
 };
+/** Every permission a tenant role may legitimately carry. */
+export const KNOWN_PERMISSIONS: ReadonlySet<string> = new Set<string>([
+  "agents:execute",
+  ...resources.flatMap((resource) => [`${resource}:read`, `${resource}:write`]),
+]);
+
+/**
+ * True when a permission string belongs to the documented catalog. Custom roles
+ * must not be able to invent privileges (e.g. `tenants:read`) that some future
+ * route might start honouring.
+ */
+export function isKnownPermission(permission: string): boolean {
+  return KNOWN_PERMISSIONS.has(permission);
+}
+
+/**
+ * Machine-to-machine scopes. These are credential scopes (API keys and service
+ * accounts), not role permissions: an integration needs to call a specific
+ * provisioning surface without being a person.
+ */
+export const INTEGRATION_SCOPES = ["scim:provision", "webhooks:write", "exports:read"] as const;
+
+export function isKnownScope(scope: string): boolean {
+  return KNOWN_PERMISSIONS.has(scope) || (INTEGRATION_SCOPES as readonly string[]).includes(scope);
+}
+
 export function permissionsFor(role: UserRole): Set<Permission> {
   return new Set([...(grants[role] ?? []), ...(inherited[role] ?? []).flatMap((parent) => [...permissionsFor(parent)])]);
 }

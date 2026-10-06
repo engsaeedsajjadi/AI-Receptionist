@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "build:runtime": "esbuild scripts/migrate.ts scripts/worker.ts scripts/media-server.ts scripts/platform-admin.ts scripts/maintenance.ts --outdir=runtime --bundle --platform=node --format=cjs --packages=external --tsconfig=tsconfig.json --log-level=warning",
     "start": "next start -H 0.0.0.0",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
@@ -18,7 +19,20 @@
     "maintenance": "tsx scripts/maintenance.ts",
     "test:coverage": "vitest run --coverage",
     "worker": "tsx scripts/worker.ts",
-    "test:live:ai": "vitest run --config vitest.live.config.ts"
+    "test:live:ai": "vitest run --config vitest.live.config.ts",
+    "test:live:llm": "vitest run --config vitest.live.config.ts tests/live/llm.acceptance.ts",
+    "test:live:embedding": "vitest run --config vitest.live.config.ts tests/live/embedding.acceptance.ts",
+    "test:live:stt": "vitest run --config vitest.live.config.ts tests/live/stt.acceptance.ts",
+    "test:live:tts": "vitest run --config vitest.live.config.ts tests/live/tts.acceptance.ts",
+    "test:live:smtp": "vitest run --config vitest.live.config.ts tests/live/smtp.acceptance.ts",
+    "test:live:oauth": "vitest run --config vitest.live.config.ts tests/live/oauth.acceptance.ts",
+    "test:live:storage": "vitest run --config vitest.live.config.ts tests/live/storage.acceptance.ts",
+    "test:live:telephony": "vitest run --config vitest.live.config.ts tests/live/telephony.acceptance.ts",
+    "test:browser": "playwright test",
+    "test:load": "node scripts/load/smoke.mjs",
+    "test:browser:install": "playwright install --with-deps chromium",
+    "test:staging": "node scripts/release/staging-acceptance.mjs",
+    "release:verify": "npm run lint && npm run typecheck && npm run test:coverage && npm run build"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.936.0",
@@ -44,9 +58,11 @@
     "react": "19.2.6",
     "react-dom": "19.2.6",
     "ws": "^8.21.3",
-    "zod": "^4.3.5"
+    "zod": "^4.3.5",
+    "source-map-js": "1.2.2"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/postcss": "4.1.17",
     "@types/node": "22.19.15",
     "@types/nodemailer": "^8.0.2",
@@ -56,6 +72,7 @@
     "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "3.2.7",
     "drizzle-kit": "0.31.10",
+    "esbuild": "^0.28.2",
     "eslint": "9.39.4",
     "eslint-config-next": "^16.3.8",
     "postcss": "^8.5.23",

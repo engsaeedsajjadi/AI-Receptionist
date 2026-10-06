@@ -8,7 +8,9 @@ import { getStorageProvider, tenantKey } from "@/lib/providers/storage";
 import type { LLMProvider } from "@/lib/providers/llm";
 import { redisDel, redisGet, redisSet } from "@/lib/redis";
 import { runAgentTurn } from "@/lib/services/agent";
+import { assertVoiceAllowed } from "@/lib/voice/voice-safety";
 import { recordUsage } from "@/lib/services/usage";
+import { addSttSeconds } from "@/lib/services/voice-usage";
 import { toSpokenPersian } from "@/lib/voice/cleaner";
 import { normalizeTelephonyAudio, type AudioCodec } from "@/lib/voice/audio";
 
@@ -31,6 +33,12 @@ export type VoiceTurnInput = {
   language?: string;
   /** TTS voice override. */
   voice?: string;
+  /**
+   * Audio format requested from TTS. Defaults to `mp3` (gateway playback).
+   * Telephony bridges that must encode μ-law request `pcm` so the audio can be
+   * resampled and G.711-encoded without a transcoding dependency.
+   */
+  ttsFormat?: "mp3" | "wav" | "opus" | "pcm";
   requestId: string;
   actor?: string;
   /** Provider overrides for tests. */
@@ -158,6 +166,11 @@ export async function runVoiceTurn(input: VoiceTurnInput): Promise<VoiceTurnResu
         durationSeconds: sttDurationSeconds,
       },
     });
+    // Accumulate provider-reported transcription seconds on the call row so the
+    // call-ended settlement can bill trusted STT usage (never a text heuristic).
+    if (input.callId && sttDurationSeconds != null && sttDurationSeconds > 0) {
+      await addSttSeconds(input.businessId, input.callId, sttDurationSeconds);
+    }
   } else {
     transcript = (input.transcript as string).trim();
   }
@@ -185,9 +198,16 @@ export async function runVoiceTurn(input: VoiceTurnInput): Promise<VoiceTurnResu
   // 3. Reply → speakable text → speech.
   const spokenText = toSpokenPersian(agentResult.reply) || agentResult.reply.trim().slice(0, 500);
   const t2 = Date.now();
+  // Honor the tenant-configured agent voice (guarded: a cloned voice id requires
+  // the platform opt-in plus recorded consent — see voice-safety.ts).
+  let voice = input.voice;
+  if (!voice && agentResult.voiceId) {
+    await assertVoiceAllowed({ businessId: input.businessId, voiceId: agentResult.voiceId });
+    voice = agentResult.voiceId;
+  }
   const ttsResult = await meteredSpeech(input.businessId, tts, spokenText, {
-    voice: input.voice,
-    format: "mp3",
+    voice,
+    format: input.ttsFormat ?? "mp3",
     requestId: input.requestId,
     businessId: input.businessId,
     callId: input.callId,
@@ -215,7 +235,7 @@ export async function runVoiceTurn(input: VoiceTurnInput): Promise<VoiceTurnResu
       "calls",
       input.callId ?? "adhoc",
       "replies",
-      `${input.eventId ?? input.requestId}.mp3`,
+      `${input.eventId ?? input.requestId}.${input.ttsFormat === "pcm" ? "pcm" : input.ttsFormat === "wav" ? "wav" : input.ttsFormat === "opus" ? "opus" : "mp3"}`,
     );
     await getStorageProvider().upload({ key, data: ttsResult.audio, contentType: ttsResult.mimeType });
     audioUrl = await getStorageProvider().getSignedUrl(key);

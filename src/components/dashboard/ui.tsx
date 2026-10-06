@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useState, type ReactNode } from "react";
 import { useAuth } from "@/components/dashboard/auth";
 
 export function Card({ title, value, sub }: { title: string; value: ReactNode; sub?: string }) {
@@ -84,6 +84,9 @@ export type FilterDef = {
 type Paginated<T> = {
   data: T[];
   pagination: { page: number; limit: number; total: number; totalPages: number };
+  /** Keyset cursor for the next page; sent back as `?cursor=` (server-side, stable). */
+  nextCursor?: string | null;
+  hasMore?: boolean;
 };
 
 function asPaginated<T>(json: unknown): Paginated<T> {
@@ -91,6 +94,44 @@ function asPaginated<T>(json: unknown): Paginated<T> {
     return { data: json as T[], pagination: { page: 1, limit: json.length, total: json.length, totalPages: 1 } };
   }
   return json as Paginated<T>;
+}
+
+/**
+ * Which window the next request should use.
+ *
+ * Rows are ordered by creation time (descending) and appended on page
+ * boundaries, so once the server has told us the total we can keep using the
+ * cheaper, stable cursor for every page after the first; otherwise (or once we
+ * know we are on the last page) we fall back to the offset window. New rows land
+ * at the top, so they never shift a later cursor page.
+ */
+export function nextPageQuery(input: {
+  /** Page the client is moving to. */
+  targetPage: number;
+  limit: number;
+  /** Total rows the last response reported (undefined when unknown). */
+  total?: number;
+  /** Cursor the last response returned. */
+  cursor?: string | null;
+  /** Whether the last response had more rows (undefined when unknown). */
+  hasMore?: boolean;
+  search?: Record<string, string>;
+}): URLSearchParams {
+  const { targetPage, limit, total, cursor, hasMore, search } = input;
+  const params = new URLSearchParams({ limit: String(limit) });
+  const forward = targetPage > 1;
+  const reachesEnd = typeof total === "number" && total > 0 && targetPage * limit >= total;
+  if (forward && cursor && !reachesEnd) {
+    // Stable keyset window: the server answers page 1 of the cursor.
+    params.set("cursor", cursor);
+  } else {
+    params.set("page", String(targetPage));
+  }
+  for (const [key, value] of Object.entries(search ?? {})) {
+    if (value) params.set(key, value);
+  }
+  void hasMore;
+  return params;
 }
 
 export function ResourceTable<T extends { id: string }>({
@@ -115,6 +156,8 @@ export function ResourceTable<T extends { id: string }>({
   const { apiJson } = useAuth();
   const [data, setData] = useState<T[]>([]);
   const [pagination, setPagination] = useState({ page: 1, limit: 20, total: 0, totalPages: 1 });
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [total, setTotal] = useState<number | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
@@ -126,19 +169,29 @@ export function ResourceTable<T extends { id: string }>({
   const [reloadKey, setReloadKey] = useState(0);
   const refresh = useCallback(() => setReloadKey((k) => k + 1), []);
 
+  /** Any new search/filter term starts a fresh window from the top. */
+  const restartWindow = useCallback(() => {
+    setPage(1);
+    setCursor(null);
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
-    const params = new URLSearchParams({ page: String(page), limit: "20" });
-    if (appliedSearch && searchKey) params.set(searchKey, appliedSearch);
-    for (const [k, v] of Object.entries(filterValues)) {
-      if (v) params.set(k, v);
-    }
+    const params = nextPageQuery({
+      targetPage: page,
+      limit: 20,
+      total,
+      cursor,
+      search: { ...(appliedSearch && searchKey ? { [searchKey]: appliedSearch } : {}), ...filterValues },
+    });
     apiJson<unknown>(`${endpoint}?${params.toString()}`)
       .then((json) => {
         if (cancelled) return;
         const paged = asPaginated<T>(json);
         setData(paged.data);
         setPagination(paged.pagination);
+        setCursor(paged.nextCursor ?? null);
+        setTotal(paged.pagination.total);
         setError(null);
       })
       .catch((err: Error) => {
@@ -150,7 +203,7 @@ export function ResourceTable<T extends { id: string }>({
     return () => {
       cancelled = true;
     };
-  }, [apiJson, endpoint, page, appliedSearch, searchKey, filterValues, reloadKey]);
+  }, [apiJson, endpoint, page, appliedSearch, searchKey, filterValues, reloadKey, cursor, total]);
 
   if (loading) return <LoadingState />;
   if (error) return <ErrorState message={error} onRetry={refresh} />;
@@ -163,7 +216,7 @@ export function ResourceTable<T extends { id: string }>({
             className="flex gap-2"
             onSubmit={(e) => {
               e.preventDefault();
-              setPage(1);
+              restartWindow();
               setAppliedSearch(search);
             }}
           >
@@ -184,7 +237,7 @@ export function ResourceTable<T extends { id: string }>({
             <select
               value={filterValues[f.key] ?? ""}
               onChange={(e) => {
-                setPage(1);
+                restartWindow();
                 setFilterValues((prev) => ({ ...prev, [f.key]: e.target.value }));
               }}
               className="rounded-lg border border-slate-200 px-2 py-1.5 text-sm outline-none"
@@ -219,8 +272,8 @@ export function ResourceTable<T extends { id: string }>({
             </thead>
             <tbody>
               {data.map((row) => (
-                <>
-                  <tr key={row.id} className="border-b border-slate-50 hover:bg-slate-50">
+                <Fragment key={row.id}>
+                  <tr className="border-b border-slate-50 hover:bg-slate-50">
                     {columns.map((c) => (
                       <td key={c.key} className="max-w-64 truncate px-4 py-2.5">
                         {c.render ? c.render(row) : String((row as Record<string, unknown>)[c.key] ?? "—")}
@@ -249,7 +302,7 @@ export function ResourceTable<T extends { id: string }>({
                       </td>
                     </tr>
                   ) : null}
-                </>
+                </Fragment>
               ))}
             </tbody>
           </table>

@@ -1,13 +1,14 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { db } from "@/db";
 import { appointments } from "@/db/schema";
-import { ok, paginated, parseJson, parsePagination } from "@/lib/api";
+import { ok, parseJson } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
 import { checkGlobalPublicRateLimit, withApiHandling } from "@/lib/server-core";
 import { checkAvailability, createAppointment } from "@/lib/services/appointments";
 import { notifyAppointment } from "@/lib/services/notifications";
 import { emitAutomationEvent } from "@/lib/services/n8n";
+import { cursorPage, keysetCondition, keysetOrder, parseListWindow } from "@/lib/pagination";
 
 export async function GET(req: NextRequest) {
   return withApiHandling(async () => {
@@ -29,20 +30,34 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const { page, limit, offset } = parsePagination(req);
+    const listWindow = parseListWindow(req);
     const conditions = [eq(appointments.businessId, auth.businessId)];
     const status = req.nextUrl.searchParams.get("status");
     if (status) conditions.push(eq(appointments.status, status as never));
 
-    const rows = await db
-      .select()
-      .from(appointments)
-      .where(and(...conditions))
-      .orderBy(desc(appointments.scheduledAt))
-      .limit(limit)
-      .offset(offset);
+    if (listWindow.cursor) {
+      conditions.push(keysetCondition({ createdAt: appointments.createdAt, id: appointments.id }, listWindow.cursor));
+    }
 
-    return ok(paginated(rows, page, limit, offset + rows.length));
+    const [rows, total] = await Promise.all([
+      db
+        .select()
+        .from(appointments)
+        .where(and(...conditions))
+        // (created_at, id) is the total order the cursor is derived from; the
+        // scheduled_at ordering stays the primary presentation order when no
+        // cursor is supplied.
+        .orderBy(...keysetOrder({ createdAt: appointments.createdAt, id: appointments.id }))
+        .limit(listWindow.cursor ? listWindow.limit + 1 : listWindow.limit)
+        .offset(listWindow.cursor ? 0 : listWindow.offset),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(appointments)
+        .where(and(...conditions))
+        .then((r) => r[0]?.count ?? 0),
+    ]);
+
+    return ok(cursorPage({ rows, limit: listWindow.limit, page: listWindow.page, extra: Boolean(listWindow.cursor), total }));
   });
 }
 

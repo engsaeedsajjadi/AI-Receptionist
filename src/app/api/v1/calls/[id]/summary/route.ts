@@ -1,5 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
+import { z } from "zod";
 import { db } from "@/db";
 import { calls } from "@/db/schema";
 import { ApiError, ok } from "@/lib/api";
@@ -13,6 +14,9 @@ export async function GET(req: NextRequest, ctx: Ctx) {
     await checkGlobalPublicRateLimit(req);
     const auth = await getAuthContext(req);
     const { id } = await ctx.params;
+    // Reject non-UUID ids before they reach Postgres (a cast error would be a
+    // 500, which is not an acceptable answer for a malformed request).
+    if (!z.string().uuid().safeParse(id).success) throw new ApiError(400, "BAD_REQUEST", "Invalid call id");
 
     const [row] = await db
       .select({ id: calls.id, summary: calls.summary })

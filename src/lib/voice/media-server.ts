@@ -4,7 +4,13 @@ import { db } from "@/db";
 import { calls } from "@/db/schema";
 import { logInfo, logWarn } from "@/lib/logger";
 import { runVoiceTurn, type VoiceTurnInput, type VoiceTurnResult } from "@/lib/voice/turn";
-import { EnergyVAD, type AudioCodec } from "@/lib/voice/audio";
+import {
+  EnergyVAD,
+  mulawFrames,
+  pcmToTelephonyMulaw,
+  type AudioCodec,
+} from "@/lib/voice/audio";
+import { twilioMediaFrameToAudio } from "@/lib/providers/telephony/twilio";
 import { VoiceStateMachine, type VoiceSessionState } from "@/lib/voice/state";
 import { verifyMediaSessionToken } from "@/lib/voice/media-auth";
 
@@ -71,6 +77,10 @@ export type MediaServerOptions = {
   allowStaticToken?: boolean;
   maxConcurrentSessions?: number;
   onSessionClosed?: () => void;
+  /** TTS sample rate for raw PCM output (Twilio bridging resamples to 8 kHz). */
+  ttsPcmSampleRate?: number;
+  /** Called when a caller asks for a human (DTMF 0 or an explicit handoff frame). */
+  onHandoffRequest?: (context: { businessId: string; callId: string; digits: string }) => Promise<{ destination?: string | null } | void>;
 };
 
 type StartMessage = {
@@ -86,6 +96,9 @@ type StartMessage = {
   codec?: AudioCodec;
   sampleRate?: number;
 };
+
+/** Envelope event names owned by the Twilio Media Streams protocol. */
+const TWILIO_EVENTS = new Set(["connected", "start", "media", "dtmf", "mark", "stop"]);
 
 const DEFAULT_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_MAX_BUFFER_BYTES = 2 * 1024 * 1024;
@@ -151,6 +164,9 @@ export class MediaSession {
   private turnInFlight = false;
   private turnSeq = 0;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Twilio Media Streams bridge state (null for the app-native protocol). */
+  private twilioStream: { streamSid: string } | null = null;
+  private dtmfDigits = "";
 
   constructor(
     private readonly socket: MediaSocket,
@@ -158,7 +174,8 @@ export class MediaSession {
       Pick<MediaServerOptions,
         "idleTimeoutMs" | "maxBufferBytes" | "maxFrameBytes" | "vadEnabled" |
         "vadSpeechThreshold" | "vadSilenceMs" | "vadMinSpeechMs" | "vadMaxUtteranceMs" |
-        "defaultCodec" | "defaultSampleRate" | "allowStaticToken" | "maxConcurrentSessions" | "onSessionClosed"
+        "defaultCodec" | "defaultSampleRate" | "allowStaticToken" | "maxConcurrentSessions" | "onSessionClosed" |
+        "ttsPcmSampleRate" | "onHandoffRequest"
       >,
   ) {
     sessionSeq += 1;
@@ -197,9 +214,85 @@ export class MediaSession {
         this.sendError("INVALID_JSON", "Message is not valid JSON");
         return;
       }
+      // Twilio Media Streams use `event`; app-native control frames use `type`.
+      // Route by protocol so both can share the session (a bridge receives
+      // Twilio envelopes for audio and `utterance-end` from our own VAD).
+      if (msg.type === undefined && typeof msg.event === "string" && TWILIO_EVENTS.has(msg.event)) {
+        await this.handleTwilioEnvelope(msg);
+        return;
+      }
       await this.dispatch(msg);
     } catch (err) {
       this.sendError("INTERNAL_ERROR", err instanceof Error ? err.message : "session_error");
+    }
+  }
+
+  /**
+   * Bridge a Twilio Media Streams envelope into the internal session protocol.
+   * PSTN audio (8 kHz μ-law) arrives base64-encoded inside `media` events.
+   */
+  private async handleTwilioEnvelope(envelope: Record<string, unknown>): Promise<void> {
+    const frame = twilioMediaFrameToAudio(envelope);
+    if (!frame) return;
+    switch (frame.type) {
+      case "start": {
+        const payload = frame.payload;
+        this.twilioStream = { streamSid: payload.streamSid ?? "" };
+        await this.handleStart({
+          type: "start",
+          token: payload.token,
+          businessId: payload.businessId,
+          callId: payload.callId || undefined,
+          externalCallId: payload.externalCallId || undefined,
+          language: payload.language,
+          codec: "mulaw",
+          sampleRate: 8000,
+        });
+        break;
+      }
+      case "audio":
+        await this.appendAudio(frame.audio);
+        break;
+      case "dtmf":
+        await this.handleDtmf(frame.digits);
+        break;
+      case "stop":
+        this.close(1000, "twilio-stop");
+        break;
+    }
+  }
+
+  /**
+   * Caller pressed a key. `0` is the platform-wide "talk to a human" digit:
+   * the session records it and asks the app for a transfer destination, then
+   * reports the handoff over the bridge (Twilio dials it).
+   */
+  private async handleDtmf(digits: string): Promise<void> {
+    this.dtmfDigits = `${this.dtmfDigits}${digits}`.slice(-32);
+    this.send({ type: "dtmf", digits: this.dtmfDigits });
+    if (!digits.includes("0")) return;
+    const resolution = this.resolution;
+    if (!resolution) return;
+    try {
+      const result = await this.opts.onHandoffRequest?.({
+        businessId: resolution.businessId,
+        callId: resolution.callId,
+        digits: this.dtmfDigits,
+      });
+      logInfo("Caller requested a human via DTMF", {
+        businessId: resolution.businessId,
+        callId: resolution.callId,
+        operation: "voice.media.dtmf",
+        status: result?.destination ? "handoff" : "no_destination",
+      });
+    } catch (err) {
+      logWarn("Handoff request failed", {
+        businessId: resolution.businessId,
+        callId: resolution.callId,
+        operation: "voice.media.dtmf",
+        status: "error",
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -212,10 +305,79 @@ export class MediaSession {
 
   private send(obj: Record<string, unknown>): void {
     if (this.closed || this.socket.readyState !== MediaSocketOpen) return;
+    if (this.twilioStream) {
+      this.sendTwilio(obj);
+      return;
+    }
     this.socket.send(JSON.stringify(obj));
   }
 
+  /**
+   * Twilio Media Streams accept only `media` (base64 μ-law), `mark` and `clear`.
+   * Agent audio in raw PCM is resampled to 8 kHz and G.711-encoded; nothing else
+   * is transmitted (diagnostics stay in our own logs to avoid protocol misuse).
+   */
+  private sendTwilio(obj: Record<string, unknown>): void {
+    const streamSid = this.twilioStream?.streamSid ?? "";
+    if (obj.type === "barge-in-ack" || obj.type === "turn-superseded") {
+      // Interrupting playback: drop queued audio instead of letting the caller
+      // hear the rest of the previous answer.
+      this.socket.send(JSON.stringify({ event: "clear", streamSid }));
+      logInfo("Twilio media cleared on barge-in", {
+        businessId: this.resolution?.businessId,
+        callId: this.resolution?.callId,
+        operation: "voice.media.clear",
+        status: "ok",
+      });
+      return;
+    }
+    if (obj.type !== "agent-audio") return;
+    const inline = obj.audio;
+    const mimeType = typeof obj.mimeType === "string" ? obj.mimeType : "";
+    if (typeof inline !== "string" || inline.length === 0) {
+      if (obj.audioUrl) {
+        logWarn("Twilio bridge cannot fetch provider audio URLs; configure TTS format pcm", {
+          businessId: this.resolution?.businessId,
+          callId: this.resolution?.callId,
+          operation: "voice.media.egress",
+          status: "unsupported_url",
+        });
+      }
+      return;
+    }
+    const raw = Buffer.from(inline, "base64");
+    let mulaw: Buffer;
+    if (mimeType === "audio/pcm") {
+      mulaw = pcmToTelephonyMulaw(raw, this.opts.ttsPcmSampleRate ?? 24_000, 8_000);
+    } else if (mimeType === "audio/x-mulaw" || mimeType === "audio/basic") {
+      mulaw = raw;
+    } else {
+      logWarn("Twilio bridge received non-PCM audio; set TTS format to pcm for streaming", {
+        businessId: this.resolution?.businessId,
+        callId: this.resolution?.callId,
+        operation: "voice.media.egress",
+        status: "unsupported_format",
+      });
+      return;
+    }
+    for (const frame of mulawFrames(mulaw)) {
+      this.socket.send(JSON.stringify({ event: "media", streamSid, media: { payload: frame.toString("base64") } }));
+    }
+    this.socket.send(JSON.stringify({ event: "mark", streamSid, mark: { name: `turn-${this.turnSeq}` } }));
+  }
+
   private sendError(code: string, message: string, fatal = false): void {
+    if (this.twilioStream) {
+      // Twilio's wire protocol has no error channel; record it locally so
+      // operators can see why a bridge session failed.
+      logWarn("Media bridge error", {
+        businessId: this.resolution?.businessId,
+        callId: this.resolution?.callId,
+        operation: "voice.media.error",
+        status: code,
+        error: message,
+      });
+    }
     this.send({ type: "error", code, message });
     if (fatal) this.close(4400 + (code === "UNAUTHORIZED" ? 1 : 0), code);
   }
@@ -475,6 +637,9 @@ export class MediaSession {
         eventId: input.eventId,
         language: this.language,
         voice: this.voice,
+        // A telephony bridge must transcode to μ-law itself, so ask TTS for raw
+        // PCM instead of a container format it cannot decode.
+        ttsFormat: this.twilioStream ? "pcm" : undefined,
         requestId,
         actor: "media-server",
       });
@@ -544,7 +709,8 @@ export class MediaServer {
     Pick<MediaServerOptions,
       "idleTimeoutMs" | "maxBufferBytes" | "maxFrameBytes" | "vadEnabled" |
       "vadSpeechThreshold" | "vadSilenceMs" | "vadMinSpeechMs" | "vadMaxUtteranceMs" |
-      "defaultCodec" | "defaultSampleRate" | "allowStaticToken" | "maxConcurrentSessions" | "onSessionClosed"
+      "defaultCodec" | "defaultSampleRate" | "allowStaticToken" | "maxConcurrentSessions" | "onSessionClosed" |
+      "ttsPcmSampleRate" | "onHandoffRequest"
     >;
 
   constructor(opts: MediaServerOptions) {
@@ -565,6 +731,8 @@ export class MediaServer {
       allowStaticToken: opts.allowStaticToken ?? false,
       maxConcurrentSessions: opts.maxConcurrentSessions ?? 100,
       onSessionClosed: opts.onSessionClosed ?? (() => undefined),
+      ttsPcmSampleRate: opts.ttsPcmSampleRate ?? 24_000,
+      onHandoffRequest: opts.onHandoffRequest,
     };
   }
 

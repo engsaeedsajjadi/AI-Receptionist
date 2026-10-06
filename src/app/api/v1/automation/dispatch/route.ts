@@ -11,7 +11,7 @@ import { dispatchAutomationEvent } from "@/lib/services/notifications";
 const payloadSchema = z.object({
   businessId: z.string().uuid(),
   event: z.string().min(1).max(50),
-  channel: z.enum(["email", "sms", "telegram"]),
+  channel: z.enum(["email", "sms", "telegram", "whatsapp"]),
   recipient: z.string().min(1).max(255),
   title: z.string().max(255).optional(),
   message: z.string().min(1).max(8000),

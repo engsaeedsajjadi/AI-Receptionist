@@ -30,7 +30,14 @@ export async function POST(req: NextRequest) {
         return ok({ secret, otpauthUrl: `otpauth://totp/${encodeURIComponent(`AI Receptionist:${user.email}`)}?secret=${secret}&issuer=AI%20Receptionist&algorithm=SHA1&digits=6&period=30` });
       }
       if (!user.mfaSecret || !body.code) throw new AppError(400, "BAD_REQUEST", "Configure and verify the authenticator first");
-      const step = matchingTotpStep(decryptMfa(user.mfaSecret, user.id), body.code, user.mfaLastStep);
+      let step: number | null = null;
+      try {
+        step = matchingTotpStep(decryptMfa(user.mfaSecret, user.id), body.code, user.mfaLastStep);
+      } catch {
+        // Corrupt/undecryptable secret: deny (and only recovery codes can still
+        // disable MFA). Never a 500 and never a bypass.
+        step = null;
+      }
       const recoveryValid = body.action === "disable" && user.mfaRecoveryHashes.includes(digestIdentity(body.code));
       if (step === null && !recoveryValid) throw new AppError(401, "INVALID_CREDENTIALS", "Invalid or reused code");
       if (body.action === "confirm" && user.mfaEnabled) throw new AppError(409, "CONFLICT", "MFA already enabled");

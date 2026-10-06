@@ -4,6 +4,7 @@ import { closeDb, db } from "@/db";
 import { knowledgeChunks, knowledgeDocuments } from "@/db/schema";
 import { ensureDbReady, hasTestDatabase, itDb, truncateAll } from "../helpers/db";
 import { createBusiness, createKnowledgeDoc } from "../helpers/fixtures";
+import { runtimePrincipal } from "@/lib/rag/access";
 
 const runIntegration = hasTestDatabase();
 
@@ -35,7 +36,12 @@ describe.skipIf(!runIntegration)("knowledge retrieval (real database)", () => {
 
   itDb("falls back to keyword search when embeddings are unavailable (degraded)", async () => {
     const { hybridSearch } = await import("@/lib/services/knowledge");
-    const result = await hybridSearch({ businessId, query: "آپارتمان سعادت‌آباد", topK: 5 });
+    const result = await hybridSearch({
+      businessId,
+      query: "آپارتمان سعادت‌آباد",
+      topK: 5,
+      scope: { principal: runtimePrincipal(), filters: { tags: [], includeDrafts: false } },
+    });
     // In CI without embedding keys, the provider throws → degraded keyword mode.
     expect(result.chunks.length).toBeGreaterThan(0);
     expect(result.chunks[0].content).toContain("سعادت‌آباد");
@@ -43,7 +49,12 @@ describe.skipIf(!runIntegration)("knowledge retrieval (real database)", () => {
 
   itDb("returns empty results for unrelated queries", async () => {
     const { hybridSearch } = await import("@/lib/services/knowledge");
-    const result = await hybridSearch({ businessId, query: "zxqv-unrelated-terms-here", topK: 5 });
+    const result = await hybridSearch({
+      businessId,
+      query: "zxqv-unrelated-terms-here",
+      topK: 5,
+      scope: { principal: runtimePrincipal(), filters: { tags: [], includeDrafts: false } },
+    });
     expect(result.chunks).toEqual([]);
   });
 
@@ -62,7 +73,12 @@ describe.skipIf(!runIntegration)("knowledge retrieval (real database)", () => {
     const all = await seed("آپارتمان فروشی در تهران با سند آماده", 0);
     const two = await seed("آپارتمان در تهران", 1);
     const one = await seed("آپارتمان نوساز", 2);
-    const result = await hybridSearch({ businessId: biz.id, query: "آپارتمان تهران فروشی", topK: 5 });
+    const result = await hybridSearch({
+      businessId: biz.id,
+      query: "آپارتمان تهران فروشی",
+      topK: 5,
+      scope: { principal: runtimePrincipal(), filters: { tags: [], includeDrafts: false } },
+    });
     expect(result.degraded).toBe(true); // dev embedding provider throws in tests
     expect(result.chunks.map((c) => c.id)).toEqual([all.id, two.id, one.id]);
     expect(result.chunks.map((c) => c.source)).toEqual(["keyword", "keyword", "keyword"]);
@@ -103,6 +119,7 @@ describe.skipIf(!runIntegration)("knowledge retrieval (real database)", () => {
       query: "آپارتمان تهران فروشی",
       topK: 5,
       embed: async () => queryVec,
+      scope: { principal: runtimePrincipal(), filters: { tags: [], includeDrafts: false } },
     });
     expect(result.degraded).toBe(false);
     // V1 = 1/61+1/62 ≈ 0.03252 > B = 1/62+1/63 ≈ 0.03200 > K1 = 1/61 ≈ 0.01639.

@@ -4,6 +4,7 @@ import { db } from "@/db";
 import { identityTokens, refreshTokens, users } from "@/db/schema";
 import { hashPassword, validatePasswordPolicy } from "@/lib/auth";
 import { AppError } from "@/lib/errors";
+import { logWarn } from "@/lib/logger";
 import { EmailNotificationProvider } from "@/lib/providers/notifications";
 import { decryptMfa, digestIdentity, matchingTotpStep } from "@/lib/mfa";
 
@@ -51,7 +52,19 @@ export async function verifyMfaLogin(userId: string, code?: string): Promise<voi
       await tx.update(users).set({ mfaRecoveryHashes: user.mfaRecoveryHashes.filter((h) => h !== recoveryHash) }).where(eq(users.id, user.id));
       return true;
     }
-    const step = matchingTotpStep(decryptMfa(user.mfaSecret, user.id), code, user.mfaLastStep);
+    let step: number | null = null;
+    try {
+      step = matchingTotpStep(decryptMfa(user.mfaSecret, user.id), code, user.mfaLastStep);
+    } catch {
+      // A secret that cannot be decrypted (corrupt value, rotated encryption key)
+      // must deny the login — never authenticate and never surface as a 500.
+      logWarn("MFA secret could not be decrypted during login", {
+        businessId: user.businessId,
+        operation: "mfa.verify",
+        status: "error",
+      });
+      return false;
+    }
     if (step === null) return false;
     await tx.update(users).set({ mfaLastStep: step }).where(eq(users.id, user.id));
     return true;

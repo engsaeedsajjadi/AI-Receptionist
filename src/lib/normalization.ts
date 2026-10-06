@@ -368,6 +368,29 @@ export function toE164Iran(phone: string | null | undefined): string | null {
   return `+98${normalized.slice(1)}`;
 }
 
+/**
+ * Storage forms a dialled number may legitimately be recorded in.
+ *
+ * Telephony providers always send E.164 (`+982188776655`) while tenants commonly
+ * store the national form (`02188776655`); `businesses.phone` is operator-entered
+ * and was historically not normalised. Resolving a call against every plausible
+ * spelling of the same number avoids the worst failure mode of all: a paying
+ * tenant whose number "isn't registered" and whose calls are rejected.
+ */
+export function dialedNumberCandidates(input: string | null | undefined): string[] {
+  if (input == null) return [];
+  const raw = String(input).trim();
+  const out = new Set<string>();
+  if (raw) out.add(raw);
+  const national = normalizePhone(raw);
+  if (national) {
+    out.add(national);
+    const e164 = toE164Iran(national);
+    if (e164) out.add(e164);
+  }
+  return [...out];
+}
+
 /** Mask a phone for display/logging: 0912****345. */
 export function maskPhone(phone: string | null | undefined): string {
   const normalized = normalizePhone(phone);

@@ -91,7 +91,12 @@ describe.skipIf(!runIntegration)("maintenance sweep (real database)", () => {
   itDb("ADMIN sweep reaps stuck rows and prunes expired tokens", async () => {
     const res = await maintenance(req(adminToken));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ reapedTransfers: 1, reapedNotifications: 1, prunedTokens: 1 });
+    const body = await res.json();
+    expect(body).toMatchObject({ reapedTransfers: 1, reapedNotifications: 1, prunedTokens: 1 });
+    // The sweep also drives the outbox, outbound webhooks and export retention.
+    expect(body.outbox).toMatchObject({ processed: expect.any(Number), delivered: expect.any(Number), dead: expect.any(Number) });
+    expect(body.webhooks).toMatchObject({ attempted: expect.any(Number), delivered: expect.any(Number) });
+    expect(body.purgedExports).toEqual(expect.any(Number));
 
     const [call] = await db.select().from(calls).where(eq(calls.id, stuckCallId)).limit(1);
     expect(call.status).toBe("TRANSFER_FAILED");
@@ -103,6 +108,9 @@ describe.skipIf(!runIntegration)("maintenance sweep (real database)", () => {
   itDb("second sweep is a no-op (idempotent)", async () => {
     const res = await maintenance(req(adminToken));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ reapedTransfers: 0, reapedNotifications: 0, prunedTokens: 0 });
+    const body = await res.json();
+    expect(body).toMatchObject({ reapedTransfers: 0, reapedNotifications: 0, prunedTokens: 0 });
+    expect(body.webhooks.attempted).toBe(0);
+    expect(body.purgedExports).toBe(0);
   });
 });

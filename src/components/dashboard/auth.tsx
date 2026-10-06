@@ -2,6 +2,7 @@
 import type { UserRole } from "@/lib/permissions";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createSessionBus, type SessionBus } from "@/lib/cross-tab";
 
 export type DashboardUser = {
   id: string;
@@ -42,6 +43,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   const refreshInFlight = useRef<Promise<string | null> | null>(null);
+  const busRef = useRef<SessionBus | null>(null);
   const doRefresh = useCallback(async (): Promise<string | null> => {
     try {
       const res = await fetch("/api/v1/auth/refresh", {
@@ -93,6 +95,42 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [refresh, fetchMe]);
 
+  // Cross-tab session coordination: a logout in another tab must not leave this
+  // tab holding a revoked session, and a login elsewhere should hydrate this tab.
+  useEffect(() => {
+    const bus = createSessionBus();
+    busRef.current = bus;
+    const unsubscribe = bus.subscribe((event) => {
+      if (event.type === "logout") {
+        // The refresh cookie is gone; drop the in-memory access token now
+        // instead of waiting for the next 401.
+        accessToken.current = null;
+        setUser(null);
+        setBusinessName(null);
+        return;
+      }
+      void (async () => {
+        const token = await refresh();
+        if (!token) {
+          accessToken.current = null;
+          setUser(null);
+          return;
+        }
+        try {
+          await fetchMe(token);
+        } catch {
+          accessToken.current = null;
+          setUser(null);
+        }
+      })();
+    });
+    return () => {
+      unsubscribe();
+      bus.close();
+      busRef.current = null;
+    };
+  }, [refresh, fetchMe]);
+
   const login = useCallback(
     async (email: string, password: string, code?: string) => {
       const res = await fetch("/api/v1/auth/login", {
@@ -104,6 +142,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const body = (await res.json()) as { accessToken: string };
       accessToken.current = body.accessToken;
       await fetchMe(body.accessToken);
+      busRef.current?.announce("login");
     },
     [fetchMe],
   );
@@ -117,6 +156,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     accessToken.current = null;
     setUser(null);
     setBusinessName(null);
+    busRef.current?.announce("logout");
   }, []);
 
   const api = useCallback(

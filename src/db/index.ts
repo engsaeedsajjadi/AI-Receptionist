@@ -66,6 +66,27 @@ export async function checkDbHealth(): Promise<{ ok: boolean; latencyMs?: number
   }
 }
 
+/**
+ * Migration compatibility: number of migration files shipped with this build
+ * versus the migrations recorded as applied in the database. A mismatch means
+ * the app is running against a schema it was not built for.
+ */
+export async function checkMigrationsHealth(): Promise<{ ok: boolean; expected: number; applied: number; pending: number; error?: string }> {
+  try {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const journalPath = join(process.cwd(), "drizzle", "meta", "_journal.json");
+    const journal = JSON.parse(readFileSync(journalPath, "utf8")) as { entries?: unknown[] };
+    const expected = journal.entries?.length ?? 0;
+    const { sql } = await import("drizzle-orm");
+    const result = await getDb().execute(sql`SELECT count(*)::int AS count FROM drizzle.__drizzle_migrations`);
+    const applied = Number((result.rows[0] as { count?: number } | undefined)?.count ?? 0);
+    return { ok: applied >= expected, expected, applied, pending: Math.max(0, expected - applied) };
+  } catch (err) {
+    return { ok: false, expected: 0, applied: 0, pending: 0, error: err instanceof Error ? err.message : "migrations_unreadable" };
+  }
+}
+
 /** Test-only: close pool. */
 export async function closeDb(): Promise<void> {
   const g = globalThis as GlobalDb;

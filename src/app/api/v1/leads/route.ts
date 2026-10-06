@@ -1,9 +1,9 @@
-import { and, desc, eq, gte, ilike, sql } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, gte, ilike, sql } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/db";
-import { leads } from "@/db/schema";
-import { ApiError, ok, paginated, parseJsonWith, parsePagination } from "@/lib/api";
+import { customers, leads } from "@/db/schema";
+import { ApiError, ok, parseJsonWith } from "@/lib/api";
 import { assertUserInBusiness, getAuthContext } from "@/lib/auth";
 import { hasRole } from "@/lib/permissions";
 import { findOrCreateCustomer } from "@/lib/services/customers";
@@ -12,12 +12,13 @@ import { createOrUpdateLead, normalizeLeadExtraction } from "@/lib/services/lead
 import { notifyNewLead } from "@/lib/services/notifications";
 import { emitAutomationEvent } from "@/lib/services/n8n";
 import { checkGlobalPublicRateLimit, withApiHandling } from "@/lib/server-core";
+import { cursorPage, keysetCondition, keysetOrder, parseListWindow } from "@/lib/pagination";
 
 export async function GET(req: NextRequest) {
   return withApiHandling(async () => {
     await checkGlobalPublicRateLimit(req);
     const auth = await getAuthContext(req);
-    const { page, limit, offset } = parsePagination(req);
+    const window = parseListWindow(req);
 
     const status = req.nextUrl.searchParams.get("status");
     const source = req.nextUrl.searchParams.get("source");
@@ -34,12 +35,28 @@ export async function GET(req: NextRequest) {
     if (score) conditions.push(gte(leads.score, Number(score)));
     if (location) conditions.push(ilike(leads.location, `%${normalizePersianText(location)}%`));
 
+    if (window.cursor) conditions.push(keysetCondition({ createdAt: leads.createdAt, id: leads.id }, window.cursor));
+
     const [rows, total] = await Promise.all([
-      db.select().from(leads).where(and(...conditions)).orderBy(desc(leads.createdAt)).limit(limit).offset(offset),
+      db
+        .select({
+          ...getTableColumns(leads),
+          customerName: customers.name,
+          customerPhone: customers.phone,
+        })
+        .from(leads)
+        .leftJoin(
+          customers,
+          and(eq(leads.customerId, customers.id), eq(leads.businessId, customers.businessId)),
+        )
+        .where(and(...conditions))
+        .orderBy(...keysetOrder({ createdAt: leads.createdAt, id: leads.id }))
+        .limit(window.cursor ? window.limit + 1 : window.limit)
+        .offset(window.cursor ? 0 : window.offset),
       db.select({ count: sql<number>`count(*)::int` }).from(leads).where(and(...conditions)).then((r) => r[0]?.count ?? 0),
     ]);
 
-    return ok(paginated(rows, page, limit, total));
+    return ok(cursorPage({ rows, limit: window.limit, page: window.page, extra: Boolean(window.cursor), total }));
   });
 }
 

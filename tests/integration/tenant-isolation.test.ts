@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect } from "vitest";
 import { closeDb } from "@/db";
 import { ensureDbReady, hasTestDatabase, itDb, truncateAll } from "../helpers/db";
+import { runtimePrincipal } from "@/lib/rag/access";
 import {
   createBusiness,
   createCall,
@@ -108,7 +109,12 @@ describe.skipIf(!runIntegration)("tenant isolation (real database)", () => {
   itDb("knowledge retrieval never crosses tenants", async () => {
     const { hybridSearch } = await import("@/lib/services/knowledge");
     // Degraded (keyword) mode still enforces tenant filtering.
-    const result = await hybridSearch({ businessId: businessB.id, query: "ساعات کاری", topK: 10 });
+    const result = await hybridSearch({
+      businessId: businessB.id,
+      query: "ساعات کاری",
+      topK: 10,
+      scope: { principal: runtimePrincipal(), filters: { tags: [], includeDrafts: false } },
+    });
     for (const chunk of result.chunks) {
       const { db } = await import("@/db");
       const { knowledgeDocuments } = await import("@/db/schema");
