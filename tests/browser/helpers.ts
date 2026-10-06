@@ -1,9 +1,6 @@
 import { readFileSync } from "node:fs";
 import { expect, type Page } from "@playwright/test";
-import { issueAuthTokens, REFRESH_COOKIE_NAME } from "@/lib/auth";
-import type { UserRole } from "@/lib/permissions";
 import type { BrowserSeed } from "./global-setup";
-import { BASE_URL } from "./auth-state";
 
 export function seed(): BrowserSeed {
   return JSON.parse(readFileSync("test-results/browser-seed.json", "utf8")) as BrowserSeed;
@@ -27,39 +24,21 @@ export async function loginThroughForm(
 }
 
 /**
- * Mint a unique real refresh session for one browser journey.
- *
- * Rotating refresh tokens cannot safely be copied through a static Playwright
- * storageState file: the first browser context rotates the token and every later
- * context would replay the revoked predecessor. Each test therefore receives a
- * fresh server-issued refresh token. This bypasses only the public login rate
- * limiter; token issuance, DB persistence, rotation, revocation and the browser
- * refresh flow are exactly the production code paths.
+ * Start every browser journey through the same public login path used by a real
+ * user. Directly minting refresh tokens from Playwright's runner process made
+ * the test depend on cross-process DB/session timing before the Next dev server
+ * ever saw the login. The E2E workflow has a loopback-only, non-production
+ * rate-limit escape hatch, so repeated real logins remain deterministic while
+ * password validation, session persistence, cookie issuance and refresh
+ * rotation are all exercised exactly as production code does.
  */
 export async function authenticateSeeded(page: Page, identity: "admin" | "viewer" = "admin") {
   const fixture = seed();
-  const isViewer = identity === "viewer";
-  const role: UserRole = isViewer ? "VIEWER" : "ADMIN";
-  const tokens = await issueAuthTokens({
-    userId: isViewer ? fixture.viewerUserId : fixture.adminUserId,
-    businessId: fixture.businessId,
-    role,
-    userAgent: "playwright-e2e",
-  });
-
-  await page.context().addCookies([
-    {
-      name: REFRESH_COOKIE_NAME,
-      value: tokens.refreshToken,
-      url: BASE_URL,
-      httpOnly: true,
-      secure: BASE_URL.startsWith("https://"),
-      sameSite: "Lax",
-    },
-  ]);
-
-  await page.goto("/dashboard");
-  await expect(page.getByRole("heading", { name: SIGNED_IN_HEADING })).toBeVisible({ timeout: 20_000 });
+  await loginThroughForm(
+    page,
+    identity === "viewer" ? fixture.viewerEmail : fixture.adminEmail,
+    identity === "viewer" ? fixture.viewerPassword : fixture.adminPassword,
+  );
 }
 
 export async function expectRtlDocument(page: Page) {

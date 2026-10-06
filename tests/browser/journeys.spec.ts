@@ -81,7 +81,7 @@ test.describe("۲ — داده‌های عملیاتی (فارسی)", () => {
 
     const note = `یادداشت آزمایشی ${Date.now()}`;
     await page.getByPlaceholder("یادداشت جدید…").fill(note);
-    await page.getByRole("button", { name: "افزودن" }).first().click();
+    await page.getByRole("button", { name: "ثبت", exact: true }).click();
     await expect(page.getByText(note)).toBeVisible({ timeout: 15_000 });
     // Survives a reload ⇒ it was persisted, not just echoed locally.
     await page.reload();

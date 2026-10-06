@@ -13,6 +13,33 @@ type ScoreRationale = {
   rubricVersion: string;
 };
 
+function normalizeScoreRationale(value: unknown): ScoreRationale | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<ScoreRationale>;
+  if (
+    typeof candidate.score !== "number" ||
+    typeof candidate.baseline !== "number" ||
+    !Array.isArray(candidate.factors) ||
+    typeof candidate.explanation !== "string" ||
+    typeof candidate.rubricVersion !== "string"
+  ) {
+    return null;
+  }
+  return {
+    score: candidate.score,
+    baseline: candidate.baseline,
+    factors: candidate.factors.filter(
+      (item): item is ScoreFactor =>
+        Boolean(item) &&
+        typeof item.factor === "string" &&
+        typeof item.reason === "string" &&
+        typeof item.points === "number",
+    ),
+    explanation: candidate.explanation,
+    rubricVersion: candidate.rubricVersion,
+  };
+}
+
 type Lead = {
   id: string;
   status: string;
@@ -24,7 +51,7 @@ type Lead = {
   bedrooms: number | null;
   notes: string | null;
   score: number;
-  scoreRationale: ScoreRationale | null;
+  scoreRationale: ScoreRationale | Record<string, unknown> | null;
   customerName: string | null;
   customerPhone: string | null;
   createdAt: string;
@@ -35,7 +62,7 @@ const LEAD_STATUSES = ["NEW", "CONTACTED", "QUALIFIED", "VISIT_REQUESTED", "VISI
 /** Score + the rubric factors behind it, and a deliberate, explained recompute. */
 function LeadScorePanel({ lead, refresh }: { lead: Lead; refresh: () => void }) {
   const { apiJson } = useAuth();
-  const [rationale, setRationale] = useState<ScoreRationale | null>(lead.scoreRationale ?? null);
+  const [rationale, setRationale] = useState<ScoreRationale | null>(() => normalizeScoreRationale(lead.scoreRationale));
   const [score, setScore] = useState(lead.score ?? 0);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
