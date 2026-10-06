@@ -30,7 +30,7 @@ export default defineConfig({
     {
       name: "chromium-desktop",
       dependencies: ["setup"],
-      testMatch: /(?:journeys|accessibility|responsive)\.spec\.ts/,
+      testMatch: /(?:journeys|accessibility|responsive|pwa)\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], viewport: { width: 1366, height: 900 } },
     },
     {

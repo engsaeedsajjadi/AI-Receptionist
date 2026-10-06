@@ -14,6 +14,11 @@ type State = {
   };
   agents: Array<{ id: string; name: string; isActive: boolean; voiceId: string }>;
   knowledgeTotal: number;
+  readiness: {
+    coreReady: boolean;
+    providers: Record<string, { provider: string; configured: boolean; requiredForVoiceGoLive: boolean; note: string }>;
+    liveAcceptance: Record<string, string>;
+  };
 };
 
 export default function OnboardingPage() {
@@ -28,8 +33,9 @@ export default function OnboardingPage() {
       apiJson<{ settings: State["settings"] }>("/api/v1/business/settings"),
       apiJson<State["agents"]>("/api/v1/agents"),
       apiJson<{ pagination: { total: number } }>("/api/v1/knowledge?limit=1"),
-    ]).then(([business, settings, agents, knowledge]) => {
-      if (!cancelled) setState({ business, settings: settings.settings, agents, knowledgeTotal: knowledge.pagination.total });
+      apiJson<State["readiness"]>("/api/v1/business/readiness"),
+    ]).then(([business, settings, agents, knowledge, readiness]) => {
+      if (!cancelled) setState({ business, settings: settings.settings, agents, knowledgeTotal: knowledge.pagination.total, readiness });
     }).catch((err: Error) => {
       if (!cancelled) setError(err.message);
     });
@@ -71,6 +77,23 @@ export default function OnboardingPage() {
               </Link>
             ))}
           </div>
+          <section className="mt-4 rounded-2xl bg-white p-4 ring-1 ring-slate-200">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="font-semibold">آمادگی Providerها</h2>
+              <strong className={state.readiness.coreReady ? "text-emerald-700" : "text-amber-700"}>
+                {state.readiness.coreReady ? "Core Config Ready" : "نیازمند پیکربندی"}
+              </strong>
+            </div>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {Object.entries(state.readiness.providers).map(([key, item]) => (
+                <div key={key} className="rounded-xl border p-3 text-xs">
+                  <div className="flex items-center justify-between gap-2"><strong dir="ltr">{key}</strong><span>{item.configured ? "✓" : "!"}</span></div>
+                  <p className="mt-1" dir="ltr">{item.provider}</p>
+                  <p className="mt-1 text-slate-500">{item.note}</p>
+                </div>
+              ))}
+            </div>
+          </section>
           <section className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm">
             <h2 className="font-semibold">Gate نهایی Go-Live</h2>
             <p className="mt-2 leading-7">Go-Live فقط بعد از تست تماس واقعی PSTN، مقایسه CDR، تست STT/TTS، webhook، انتقال به انسان و مشاهده usage/billing انجام شود. این صفحه موفقیت سرویس بیرونی را جعل نمی‌کند.</p>
