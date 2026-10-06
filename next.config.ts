@@ -1,13 +1,11 @@
 import type { NextConfig } from "next";
 
+const isProduction = process.env.NODE_ENV === "production";
+
 /**
- * Content-Security-Policy notes
- * -----------------------------
- * Next.js injects inline bootstrap scripts, so `script-src` must allow
- * 'unsafe-inline' (a nonce pipeline would require middleware that rewrites every
- * document). Everything else is locked down: no external script/frame/object
- * origins, no cross-origin form targets, and `connect-src 'self'` so a stolen
- * token cannot be exfiltrated to a third-party origin from the browser.
+ * Production CSP stays strict. Development needs unsafe-eval + websocket
+ * connectivity for the React/Next development runtime; allowing those only in
+ * development keeps browser E2E deterministic without weakening production.
  */
 const CSP = [
   "default-src 'self'",
@@ -17,19 +15,15 @@ const CSP = [
   "img-src 'self' data: blob:",
   "font-src 'self' data:",
   "style-src 'self' 'unsafe-inline'",
-  "script-src 'self' 'unsafe-inline'",
-  "connect-src 'self'",
+  isProduction ? "script-src 'self' 'unsafe-inline'" : "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+  isProduction ? "connect-src 'self'" : "connect-src 'self' ws: wss:",
+  "worker-src 'self' blob:",
   "form-action 'self'",
-  "upgrade-insecure-requests",
+  ...(isProduction ? ["upgrade-insecure-requests"] : []),
 ].join("; ");
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
-  /**
-   * Dev-server origin allowlist. The app is developed behind the sandbox/preview
-   * proxy, so cross-origin requests for `/_next/*` from the preview host must be
-   * accepted instead of rejected (which would break the live preview).
-   */
   allowedDevOrigins: (process.env.ALLOWED_DEV_ORIGINS ?? "*.e2b.app,localhost,127.0.0.1")
     .split(",")
     .map((origin) => origin.trim())
@@ -37,7 +31,6 @@ const nextConfig: NextConfig = {
   async headers() {
     return [
       {
-        // Baseline hardening for pages + API.
         source: "/:path*",
         headers: [
           { key: "Content-Security-Policy", value: CSP },
@@ -47,15 +40,15 @@ const nextConfig: NextConfig = {
           { key: "Referrer-Policy", value: "no-referrer" },
           { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
           { key: "Cross-Origin-Resource-Policy", value: "same-origin" },
-          { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=()" },
+          {
+            key: "Permissions-Policy",
+            value: "camera=(self), microphone=(self), geolocation=(), payment=()",
+          },
         ],
       },
       {
-        // Never let a proxy or browser cache tenant data or credentials.
         source: "/api/:path*",
-        headers: [
-          { key: "Cache-Control", value: "no-store, max-age=0" },
-        ],
+        headers: [{ key: "Cache-Control", value: "no-store, max-age=0" }],
       },
     ];
   },

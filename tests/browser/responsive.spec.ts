@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { expectRtlDocument, login } from "./helpers";
+import { authenticateSeeded, expectRtlDocument } from "./helpers";
 
 /**
  * RTL / responsive QA on a narrow Persian phone viewport (project: chromium-mobile).
@@ -22,7 +22,7 @@ test.describe("۴ — واکنش‌گرایی و راست‌چین در موبا
   });
 
   test("ناوبری داشبورد در موبایل قابل استفاده است", async ({ page }) => {
-    await login(page);
+    await authenticateSeeded(page);
     await expectRtlDocument(page);
     // The compact, horizontally scrollable navigation replaces the sidebar below md.
     const nav = page.getByRole("link", { name: "سرنخ‌ها", exact: true }).first();
@@ -33,7 +33,7 @@ test.describe("۴ — واکنش‌گرایی و راست‌چین در موبا
   });
 
   test("جدول‌های داده در موبایل سرریز افقی صفحه ایجاد نمی‌کنند", async ({ page }) => {
-    await login(page);
+    await authenticateSeeded(page);
     await page.goto("/dashboard/calls");
     await expect(page.getByRole("heading", { name: "تماس‌ها" })).toBeVisible();
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);

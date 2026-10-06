@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { login } from "./helpers";
+import { authenticateSeeded } from "./helpers";
 
 /**
  * WCAG 2.2 AA structural checks (no axe-core dependency required).
@@ -23,7 +23,7 @@ const PAGES = [
 test.describe("۵ — دسترس‌پذیری (WCAG 2.2 AA ساختاری)", () => {
   for (const target of PAGES) {
     test(`ساختار دسترس‌پذیر صفحه ${target.path}`, async ({ page }) => {
-      await login(page);
+      await authenticateSeeded(page);
       await page.goto(target.path);
       await expect(page.getByRole("heading", { name: target.heading }).first()).toBeVisible({ timeout: 20_000 });
 

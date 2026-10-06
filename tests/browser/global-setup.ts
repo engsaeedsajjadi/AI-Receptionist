@@ -15,8 +15,10 @@ export const SEED_FILE = path.join(process.cwd(), "test-results", "browser-seed.
 export type BrowserSeed = {
   businessId: string;
   businessName: string;
+  adminUserId: string;
   adminEmail: string;
   adminPassword: string;
+  viewerUserId: string;
   viewerEmail: string;
   viewerPassword: string;
   agentName: string;
@@ -56,14 +58,24 @@ export default async function globalSetup(): Promise<void> {
   const viewerEmail = `viewer-${Date.now().toString(36)}@e2e.example.com`;
   const adminPassword = "BrowserTest1234!";
   const viewerPassword = "BrowserTest1234!";
-  await db.insert(users).values([
+  const [adminUser, viewerUser] = await db.insert(users).values([
     { businessId: business.id, name: "مدیر آژانس", email: adminEmail, passwordHash: await hashPassword(adminPassword), role: "ADMIN", emailVerifiedAt: new Date() },
     { businessId: business.id, name: "کارشناس", email: viewerEmail, passwordHash: await hashPassword(viewerPassword), role: "VIEWER", emailVerifiedAt: new Date() },
-  ]);
+  ]).returning({ id: users.id });
 
   const seed = await seedBrowserTenant(business.id, businessName);
   mkdirSync(path.dirname(SEED_FILE), { recursive: true });
-  const payload: BrowserSeed = { businessId: business.id, businessName, adminEmail, adminPassword, viewerEmail, viewerPassword, ...seed };
+  const payload: BrowserSeed = {
+    businessId: business.id,
+    businessName,
+    adminUserId: adminUser.id,
+    adminEmail,
+    adminPassword,
+    viewerUserId: viewerUser.id,
+    viewerEmail,
+    viewerPassword,
+    ...seed,
+  };
   writeFileSync(SEED_FILE, JSON.stringify(payload, null, 2), "utf8");
   await closeDb();
 }

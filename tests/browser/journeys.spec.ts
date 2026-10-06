@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { expectRtlDocument, login, seed, watchFailures } from "./helpers";
+import { authenticateSeeded, expectRtlDocument, loginThroughForm, seed, watchFailures } from "./helpers";
 
 /**
  * Persian (fa-IR) RTL journeys over the real dashboard.
@@ -34,7 +34,7 @@ test.describe("۱ — ورود و کنترل دسترسی", () => {
   });
 
   test("ورود موفق به داشبورد می‌رسد و نام کسب‌وکار نمایش داده می‌شود", async ({ page }) => {
-    await login(page);
+    await loginThroughForm(page);
     await expectRtlDocument(page);
     await expect(page.getByRole("heading", { name: "نمای کلی" })).toBeVisible();
     await expect(page.getByText(seed().businessName)).toBeVisible();
@@ -47,7 +47,7 @@ test.describe("۱ — ورود و کنترل دسترسی", () => {
   });
 
   test("نقش مشاهده‌گر پیوندهای مدیریتی را نمی‌بیند", async ({ page }) => {
-    await login(page, seed().viewerEmail, seed().viewerPassword);
+    await authenticateSeeded(page, "viewer");
     await expect(page.getByText(seed().businessName)).toBeVisible();
     for (const label of ["کاربران", "تنظیمات", "صورتحساب", "سهمیه‌ها", "مستأجرها"]) {
       await expect(page.getByRole("link", { name: label, exact: true })).toHaveCount(0);
@@ -58,12 +58,11 @@ test.describe("۱ — ورود و کنترل دسترسی", () => {
 
 });
 
-// Logout starts from the reused session (no extra sign-in: the login endpoint is
-// rate limited to 5 attempts per minute per IP, and the login journeys above
-// already use three of them).
+// Logout gets its own refresh session. A rotated refresh token must never be
+// reused across BrowserContexts because replay detection intentionally revokes it.
 test.describe("۱ — پایان نشست", () => {
   test("خروج، نشست را پایان می‌دهد و دسترسی را می‌بندد", async ({ page }) => {
-    await login(page);
+    await authenticateSeeded(page);
     await page.getByRole("button", { name: "خروج" }).click();
     await expect(page).toHaveURL(/\/dashboard\/login/, { timeout: 20_000 });
     await page.goto("/dashboard");
@@ -73,7 +72,7 @@ test.describe("۱ — پایان نشست", () => {
 
 test.describe("۲ — داده‌های عملیاتی (فارسی)", () => {
   test("فهرست سرنخ‌ها سرنخ تازه را نشان می‌دهد و یادداشت جدید ذخیره می‌شود", async ({ page }) => {
-    await login(page);
+    await authenticateSeeded(page);
     await page.getByRole("link", { name: "سرنخ‌ها", exact: true }).click();
     await expect(page.getByRole("heading", { name: "سرنخ‌ها" })).toBeVisible();
     await expect(page.getByText("09121112233")).toBeVisible();
@@ -89,7 +88,7 @@ test.describe("۲ — داده‌های عملیاتی (فارسی)", () => {
   });
 
   test("مشتری با سابقه تماس و نوبت نمایش داده می‌شود", async ({ page }) => {
-    await login(page);
+    await authenticateSeeded(page);
     await page.getByRole("link", { name: "مشتریان", exact: true }).click();
     await expect(page.getByText(seed().customerPhone)).toBeVisible();
     await page.getByText(seed().customerPhone).first().click();
@@ -98,7 +97,7 @@ test.describe("۲ — داده‌های عملیاتی (فارسی)", () => {
   });
 
   test("نوبت زمان‌بندی‌شده و بررسی ظرفیت روز کار می‌کند", async ({ page }) => {
-    await login(page);
+    await authenticateSeeded(page);
     await page.getByRole("link", { name: "نوبت‌ها", exact: true }).click();
     await expect(page.getByRole("heading", { name: "نوبت‌ها" })).toBeVisible();
     await expect(page.getByText("بازدید آپارتمان سعادت‌آباد")).toBeVisible();
@@ -110,7 +109,7 @@ test.describe("۲ — داده‌های عملیاتی (فارسی)", () => {
   });
 
   test("تماس تکمیل‌شده با مدت و خلاصه فارسی دیده می‌شود", async ({ page }) => {
-    await login(page);
+    await authenticateSeeded(page);
     await page.getByRole("link", { name: "تماس‌ها", exact: true }).click();
     await expect(page.getByRole("heading", { name: "تماس‌ها" })).toBeVisible();
     await expect(page.getByText("09121112233").first()).toBeVisible();
@@ -118,7 +117,7 @@ test.describe("۲ — داده‌های عملیاتی (فارسی)", () => {
   });
 
   test("پایگاه دانش سند فارسی را فهرست می‌کند و جست‌وجوی آزمایشی پاسخ می‌دهد", async ({ page }) => {
-    await login(page);
+    await authenticateSeeded(page);
     await page.getByRole("link", { name: "پایگاه دانش", exact: true }).click();
     await expect(page.getByText(seed().knowledgeTitle)).toBeVisible();
     await page.getByPlaceholder("سؤال خود را بنویسید…").fill("کمیسیون فروش چند درصد است؟");
@@ -129,7 +128,7 @@ test.describe("۲ — داده‌های عملیاتی (فارسی)", () => {
   });
 
   test("مصرف سرویس‌ها فهرست یا وضعیت خالی صادقانه نمایش می‌دهد", async ({ page }) => {
-    await login(page);
+    await authenticateSeeded(page);
     const failures = watchFailures(page);
     await page.getByRole("link", { name: "مصرف", exact: true }).click();
     await expect(page.getByRole("heading", { name: "مصرف" })).toBeVisible();
@@ -140,7 +139,7 @@ test.describe("۲ — داده‌های عملیاتی (فارسی)", () => {
 
 test.describe("۳ — پیکربندی (نوشتن و بازخوانی)", () => {
   test("پیکربندی منشی هوشمند ذخیره می‌شود", async ({ page }) => {
-    await login(page);
+    await authenticateSeeded(page);
     await page.getByRole("link", { name: "منشی هوشمند", exact: true }).click();
     await expect(page.getByRole("heading", { name: /پیکربندی/ })).toBeVisible();
     const greeting = `سلام، این یک پیام آزمایشی ${Date.now()} است.`;
@@ -153,7 +152,7 @@ test.describe("۳ — پیکربندی (نوشتن و بازخوانی)", () => 
   });
 
   test("تنظیمات انتقال تماس ذخیره و پس از بارگذاری مجدد خوانده می‌شود", async ({ page }) => {
-    await login(page);
+    await authenticateSeeded(page);
     await page.getByRole("link", { name: "تنظیمات", exact: true }).click();
     await expect(page.getByRole("heading", { name: /تنظیمات/ }).first()).toBeVisible();
     const number = `0912${String(Date.now()).slice(-7)}`;
@@ -166,7 +165,7 @@ test.describe("۳ — پیکربندی (نوشتن و بازخوانی)", () => 
   });
 
   test("کاربر جدید با نقش کارشناس ساخته می‌شود", async ({ page }) => {
-    await login(page);
+    await authenticateSeeded(page);
     await page.getByRole("link", { name: "کاربران", exact: true }).click();
     await expect(page.getByRole("heading", { name: "کاربران" })).toBeVisible();
     const email = `e2e-agent-${Date.now()}@example.com`;
@@ -178,7 +177,7 @@ test.describe("۳ — پیکربندی (نوشتن و بازخوانی)", () => 
   });
 
   test("امنیت حساب وضعیت دومرحله‌ای و نشست‌ها را نشان می‌دهد", async ({ page }) => {
-    await login(page);
+    await authenticateSeeded(page);
     await page.getByRole("link", { name: "امنیت حساب", exact: true }).click();
     await expect(page.getByRole("heading", { name: "امنیت و نشست‌ها" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "احراز هویت دومرحله‌ای" })).toBeVisible();
