@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EnergyVAD, type VADConfig } from "@/lib/voice/audio";
+import { EnergyVAD, telephonyAudioDurationSeconds, type VADConfig } from "@/lib/voice/audio";
 
 const voiceFrame = Buffer.alloc(160, 0);
 const silenceFrame = Buffer.alloc(160, 0xff);
@@ -66,5 +66,22 @@ describe("VAD safety boundaries", () => {
     }
     expect(vad.process(silenceFrame).utteranceEnd).toBe(true);
     expect(vad.isActive).toBe(false);
+  });
+});
+
+describe("auditable uncompressed STT duration fallback", () => {
+  it("computes one second from 8000 G.711 mulaw bytes at 8000 Hz", () => {
+    expect(telephonyAudioDurationSeconds(Buffer.alloc(8_000, 0xff), "mulaw", 8_000)).toBe(1);
+  });
+
+  it("computes one second from 16000 PCM16 bytes at 8000 Hz", () => {
+    expect(telephonyAudioDurationSeconds(Buffer.alloc(16_000), "pcm_s16le", 8_000)).toBe(1);
+  });
+
+  it("refuses unknown audio, invalid rates, partial PCM samples, and empty frames", () => {
+    expect(telephonyAudioDurationSeconds(Buffer.from([1, 2]), "unknown", 8_000)).toBeNull();
+    expect(telephonyAudioDurationSeconds(Buffer.from([1, 2]), "mulaw", 0)).toBeNull();
+    expect(telephonyAudioDurationSeconds(Buffer.from([1, 2, 3]), "pcm_s16le", 8_000)).toBeNull();
+    expect(telephonyAudioDurationSeconds(Buffer.alloc(0), "mulaw", 8_000)).toBeNull();
   });
 });
