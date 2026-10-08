@@ -27,7 +27,7 @@ const createdBusinessIds: string[] = [];
 class FakeSTT implements STTProvider {
   readonly name = "fake";
   calls = 0;
-  constructor(private text: string, private duration = 3) {}
+  constructor(private text: string, private duration: number | null = 3) {}
   async transcribe(): Promise<TranscriptionResult> {
     this.calls++;
     return {
@@ -36,7 +36,7 @@ class FakeSTT implements STTProvider {
       status: "final",
       confidence: 0.99,
       durationSeconds: this.duration,
-      usage: { audioSeconds: this.duration },
+      usage: this.duration == null ? {} : { audioSeconds: this.duration },
       provider: "fake",
       model: "fake-stt",
     };
@@ -198,6 +198,28 @@ describe.skipIf(!hasTestDatabase())("voice turn pipeline (real database, fake pr
     const usage = await db.select().from(usageRecords).where(eq(usageRecords.businessId, business.id));
     const types = usage.map((u) => u.type).sort();
     expect(types).toEqual(["llm_input_tokens", "llm_output_tokens", "stt_minutes", "tts_characters"]);
+  });
+
+  itDb("accounts for real mulaw seconds when the STT provider reports duration=null", async () => {
+    const { business, agent, call } = await setup("Voice Biz Missing Duration");
+    const result = await runVoiceTurn({
+      businessId: business.id,
+      agentId: agent.id,
+      callId: call.id,
+      audio: Buffer.alloc(8_000, 0xff), // one second at 8 kHz (deterministic test fixture)
+      audioCodec: "mulaw",
+      audioSampleRate: 8_000,
+      eventId: `evt-${Date.now()}-duration-fallback`,
+      requestId: `req-${Date.now()}-duration-fallback`,
+      stt: new FakeSTT("برای فردا ساعت ده وقت ملاقات می‌خواهم", null),
+      tts: new FakeTTS(),
+      llm: new FakeLLM([{ content: "چه نامی برای رزرو ثبت کنم؟" }]),
+    });
+    expect(result.sttDurationSeconds).toBe(1);
+    expect(result.usage.sttMinutes).toBeCloseTo(1 / 60, 8);
+    const sttRecords = await db.select().from(usageRecords)
+      .where(and(eq(usageRecords.businessId, business.id), eq(usageRecords.type, "stt_minutes")));
+    expect(sttRecords).toHaveLength(1);
   });
 
   itDb("transcript input skips STT but still runs agent + TTS", async () => {

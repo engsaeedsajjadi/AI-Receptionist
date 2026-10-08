@@ -61,8 +61,11 @@ export type VADConfig = {
  * it only detects speech/silence boundaries from audio energy.
  */
 export class EnergyVAD {
-  private speechMs = 0;
+  /** Continuous candidate speech: isolated loud frames must not add up to a turn. */
+  private candidateSpeechMs = 0;
   private silenceMs = 0;
+  /** Wall-clock audio duration from the first frame of the active speech segment. */
+  private utteranceMs = 0;
   private active = false;
 
   constructor(private readonly config: VADConfig) {}
@@ -72,8 +75,9 @@ export class EnergyVAD {
   }
 
   reset(): void {
-    this.speechMs = 0;
+    this.candidateSpeechMs = 0;
     this.silenceMs = 0;
+    this.utteranceMs = 0;
     this.active = false;
   }
 
@@ -86,16 +90,29 @@ export class EnergyVAD {
     const speech = frameRms(frame, this.config.codec) >= this.config.speechThreshold;
 
     if (speech) {
-      this.speechMs += durationMs;
       this.silenceMs = 0;
-      if (this.speechMs >= this.config.minSpeechMs) this.active = true;
+      if (this.active) {
+        this.utteranceMs += durationMs;
+      } else {
+        this.candidateSpeechMs += durationMs;
+        if (this.candidateSpeechMs >= this.config.minSpeechMs) {
+          this.active = true;
+          this.utteranceMs = this.candidateSpeechMs;
+        }
+      }
     } else if (this.active) {
       this.silenceMs += durationMs;
+      this.utteranceMs += durationMs;
+    } else {
+      // Before activation, require contiguous candidate speech instead of
+      // accumulating unrelated noise spikes across arbitrary silence.
+      this.candidateSpeechMs = 0;
     }
 
     const utteranceEnd = this.active && (
       this.silenceMs >= this.config.silenceMs ||
-      this.speechMs >= this.config.maxUtteranceMs
+      // Cap elapsed audio (including internal pauses), not only voiced frames.
+      this.utteranceMs >= this.config.maxUtteranceMs
     );
 
     if (utteranceEnd) this.reset();
@@ -103,6 +120,18 @@ export class EnergyVAD {
   }
 }
 
+
+/**
+ * Duration measured from the original uncompressed telephony samples.
+ * Use this only when a speech provider leaves durationSeconds unknown.
+ * Compressed/unknown audio is deliberately not guessed for billing.
+ */
+export function telephonyAudioDurationSeconds(input: Buffer, codec: AudioCodec, sampleRate: number): number | null {
+  if (!input.length || !Number.isInteger(sampleRate) || sampleRate < 8_000 || sampleRate > 48_000) return null;
+  if (codec === "mulaw") return input.length / sampleRate;
+  if (codec === "pcm_s16le" && input.length % 2 === 0) return input.length / (2 * sampleRate);
+  return null;
+}
 
 /** Convert G.711 μ-law mono audio to PCM16 little-endian. */
 export function mulawToPcm16(input: Buffer): Buffer {
