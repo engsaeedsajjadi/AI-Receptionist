@@ -12,7 +12,7 @@ import { assertVoiceAllowed } from "@/lib/voice/voice-safety";
 import { recordUsage } from "@/lib/services/usage";
 import { addSttSeconds } from "@/lib/services/voice-usage";
 import { toSpokenPersian } from "@/lib/voice/cleaner";
-import { normalizeTelephonyAudio, type AudioCodec } from "@/lib/voice/audio";
+import { normalizeTelephonyAudio, telephonyAudioDurationSeconds, type AudioCodec } from "@/lib/voice/audio";
 
 export type VoiceTurnInput = {
   businessId: string;
@@ -150,7 +150,16 @@ export async function runVoiceTurn(input: VoiceTurnInput): Promise<VoiceTurnResu
     latency.stt = Date.now() - t0;
     transcript = (sttResult.text ?? "").trim();
     sttLanguage = sttResult.language;
-    sttDurationSeconds = sttResult.durationSeconds;
+    // Prefer the provider's duration when valid. Some Gemini STT responses
+    // report null; for raw telephone codecs the sample count is an auditable
+    // duration source. Never estimate compressed/unknown formats.
+    const providerDuration = sttResult.durationSeconds;
+    sttDurationSeconds =
+      typeof providerDuration === "number" && Number.isFinite(providerDuration) && providerDuration > 0
+        ? providerDuration
+        : input.audioCodec
+          ? telephonyAudioDurationSeconds(input.audio as Buffer, input.audioCodec, input.audioSampleRate ?? 8_000)
+          : null;
     sttMinutes = sttDurationSeconds != null ? sttDurationSeconds / 60 : 0;
     await recordUsage({
       businessId: input.businessId,
