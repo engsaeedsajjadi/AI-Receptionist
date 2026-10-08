@@ -52,7 +52,7 @@ describe("Live: telephony provider (Twilio)", () => {
       To: to,
       From: from,
       Timeout: "20",
-      Twiml: "<Response><Say language=\\"en-US\\">This is an authorized connectivity test of the AI receptionist telephone line.</Say><Hangup/></Response>",
+      Twiml: '<Response><Say language="en-US">This is an authorized connectivity test of the AI receptionist telephone line.</Say><Hangup/></Response>',
     });
     const res = await fetch(`${api}/Calls.json`, {
       method: "POST",
