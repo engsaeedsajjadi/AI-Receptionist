@@ -61,8 +61,11 @@ export type VADConfig = {
  * it only detects speech/silence boundaries from audio energy.
  */
 export class EnergyVAD {
-  private speechMs = 0;
+  /** Continuous candidate speech: isolated loud frames must not add up to a turn. */
+  private candidateSpeechMs = 0;
   private silenceMs = 0;
+  /** Wall-clock audio duration from the first frame of the active speech segment. */
+  private utteranceMs = 0;
   private active = false;
   private noiseFloor: number | null = null;
 
@@ -73,8 +76,9 @@ export class EnergyVAD {
   }
 
   reset(): void {
-    this.speechMs = 0;
+    this.candidateSpeechMs = 0;
     this.silenceMs = 0;
+    this.utteranceMs = 0;
     this.active = false;
     this.noiseFloor = null;
   }
@@ -304,30 +308,36 @@ export class EnergyVAD {
     }
 
     if (speech) {
-      this.speechMs += durationMs;
       this.silenceMs = 0;
-
-      if (this.speechMs >= this.config.minSpeechMs) {
-        this.active = true;
+      if (this.active) {
+        this.utteranceMs += durationMs;
+      } else {
+        this.candidateSpeechMs += durationMs;
+        if (this.candidateSpeechMs >= this.config.minSpeechMs) {
+          this.active = true;
+          this.utteranceMs = this.candidateSpeechMs;
+        }
       }
     } else if (this.active) {
       this.silenceMs += durationMs;
+      this.utteranceMs += durationMs;
     } else {
-      // Before activation, speech must be consecutive.
-      this.speechMs = 0;
+      // Before activation, require contiguous candidate speech instead of
+      // accumulating unrelated noise spikes across arbitrary silence.
+      this.candidateSpeechMs = 0;
     }
 
-    const utteranceEnd =
-      this.active &&
-      (
-        this.silenceMs >= this.config.silenceMs ||
-        this.speechMs >= this.config.maxUtteranceMs
-      );
+    const utteranceEnd = this.active && (
+      this.silenceMs >= this.config.silenceMs ||
+      // Cap elapsed audio (including internal pauses), not only voiced frames.
+      this.utteranceMs >= this.config.maxUtteranceMs
+    );
 
     if (utteranceEnd) {
       // Preserve the learned noise floor across consecutive turns.
-      this.speechMs = 0;
+      this.candidateSpeechMs = 0;
       this.silenceMs = 0;
+      this.utteranceMs = 0;
       this.active = false;
     }
 
