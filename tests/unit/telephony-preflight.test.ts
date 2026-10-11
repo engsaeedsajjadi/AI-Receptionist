@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
 const script = "scripts/telephony-preflight.mjs";
-const baseline = { PATH: process.env.PATH ?? "", NODE_ENV: "test" };
+const baseline = { PATH: process.env.PATH ?? "" };
 
 function run(extra: Record<string, string>) {
   return spawnSync(process.execPath, [script], {
