@@ -1,4 +1,5 @@
-﻿import { z } from "zod";
+import { z } from "zod";
+import { vercelConfigurationIssues } from "./vercel-config";
 
 const nodeEnv = process.env.NODE_ENV ?? "development";
 export const isProduction = nodeEnv === "production";
@@ -188,6 +189,11 @@ function loadEnv(): AppEnv {
     fail(`Invalid environment configuration: ${details}`);
   }
   const e = parsed.data;
+
+  if (isProduction && process.env.VERCEL === "1") {
+    const issues = vercelConfigurationIssues(process.env);
+    if (issues.length) fail(issues.join("; "));
+  }
 
   if (isProduction) {
     if (!e.REDIS_URL) fail("REDIS_URL is required in production");

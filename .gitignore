@@ -24,3 +24,7 @@ test-results/
 zipcheck/
 
 !.env.example
+
+# Vercel local project identity and credentials
+.vercel/
+!docs/vercel.env.example

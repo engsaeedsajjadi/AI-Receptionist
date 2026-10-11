@@ -25,6 +25,10 @@ const CSP = [
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  // Readiness reads the migration journal at runtime in the serverless bundle.
+  outputFileTracingIncludes: {
+    "/api/health/ready": ["./drizzle/meta/_journal.json"],
+  },
   allowedDevOrigins: (process.env.ALLOWED_DEV_ORIGINS ?? "*.e2b.app,localhost,127.0.0.1")
     .split(",")
     .map((origin) => origin.trim())

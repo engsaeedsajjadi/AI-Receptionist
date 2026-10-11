@@ -20,7 +20,7 @@ function getPool(): Pool {
   }
   const pool = new Pool({
     connectionString: databaseUrl,
-    max: Number(process.env.DB_POOL_MAX ?? 10),
+    max: Number(process.env.DB_POOL_MAX ?? (process.env.VERCEL === "1" ? 2 : 10)),
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,
   });
