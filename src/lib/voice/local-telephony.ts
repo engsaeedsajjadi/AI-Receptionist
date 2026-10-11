@@ -38,11 +38,10 @@ export function encodeLocalTelephonyOutput(audio: Buffer, mimeType: string | nul
 }
 
 /** Checks only local provider wiring; no provider requests and no secrets returned. */
-type LocalProviderEnvironment = Partial<Record<
-  "LLM_PROVIDER" | "STT_PROVIDER" | "TTS_PROVIDER" |
-  "COMPATIBLE_LLM_API_KEY" | "COMPATIBLE_LLM_BASE_URL" | "OPENAI_API_KEY",
-  string
->>;
+// A string-indexed environment accepts both NodeJS.ProcessEnv and small
+// isolated test fixtures. The previous weak Partial<Record<...>> rejected
+// ProcessEnv with TS2559 ("no properties in common").
+type LocalProviderEnvironment = Record<string, string | undefined>;
 
 export function assessLocalAgentReadiness(env: LocalProviderEnvironment) {
   const llm = env.LLM_PROVIDER ?? "dev";
