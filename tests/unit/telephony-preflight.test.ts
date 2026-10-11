@@ -8,7 +8,7 @@ function run(extra: Record<string, string>) {
   return spawnSync(process.execPath, [script], {
     encoding: "utf8",
     cwd: process.cwd(),
-    env: { ...baseline, ...extra },
+    env: { ...baseline, ...extra, NODE_ENV: "test" as const },
     timeout: 5000,
   });
 }
