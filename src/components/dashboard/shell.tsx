@@ -58,6 +58,12 @@ const NAV: NavItem[] = [
     href: "/dashboard/agent",
     label: "منشی هوشمند",
   },
+  ...(process.env.NODE_ENV !== "production" ? [{
+    href: "/dashboard/telephony-lab",
+    label: "آزمایشگاه تماس محلی",
+    roles: ["ADMIN", "MANAGER"] as UserRole[],
+    feature: "voice" as keyof DashboardFeatures,
+  }] : []),
   {
     href: "/dashboard/quotas",
     label: "سهمیه‌ها",
