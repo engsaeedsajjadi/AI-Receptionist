@@ -38,7 +38,13 @@ export function encodeLocalTelephonyOutput(audio: Buffer, mimeType: string | nul
 }
 
 /** Checks only local provider wiring; no provider requests and no secrets returned. */
-export function assessLocalAgentReadiness(env: NodeJS.ProcessEnv) {
+type LocalProviderEnvironment = Partial<Record<
+  "LLM_PROVIDER" | "STT_PROVIDER" | "TTS_PROVIDER" |
+  "COMPATIBLE_LLM_API_KEY" | "COMPATIBLE_LLM_BASE_URL" | "OPENAI_API_KEY",
+  string
+>>;
+
+export function assessLocalAgentReadiness(env: LocalProviderEnvironment) {
   const llm = env.LLM_PROVIDER ?? "dev";
   const stt = env.STT_PROVIDER ?? "dev";
   const tts = env.TTS_PROVIDER ?? "dev";
