@@ -165,6 +165,14 @@ export default function AgentPage() {
   const [recording, setRecording] = useState(false);
   const [voiceTest, setVoiceTest] = useState<VoiceTestResult | null>(null);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [recordedAudioUrl, setRecordedAudioUrl] = useState<string | null>(null);
+  const [recordedAudioBytes, setRecordedAudioBytes] = useState(0);
+  const [rawRecordedUrl, setRawRecordedUrl] = useState<string | null>(null);
+  const [micCaptureInfo, setMicCaptureInfo] = useState("Not recorded");
+  const [wavSignalInfo, setWavSignalInfo] = useState("Not analyzed");
+  const [microphoneDevices, setMicrophoneDevices] = useState<Array<{ id: string; label: string }>>([]);
+  const [selectedMicrophoneId, setSelectedMicrophoneId] = useState("");
+  const [microphoneError, setMicrophoneError] = useState<string | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
 
@@ -210,6 +218,15 @@ export default function AgentPage() {
   useEffect(() => () => {
     if (previewUrl) URL.revokeObjectURL(previewUrl);
   }, [previewUrl]);
+
+  useEffect(() => () => {
+    if (recordedAudioUrl) URL.revokeObjectURL(recordedAudioUrl);
+  }, [recordedAudioUrl]);
+
+  // VOICE_UI_HARDENED_216
+  useEffect(() => () => {
+    if (rawRecordedUrl) URL.revokeObjectURL(rawRecordedUrl);
+  }, [rawRecordedUrl]);
 
   const save = async () => {
     if (!selected) return;
@@ -362,6 +379,32 @@ const convertBlobToWav = async (blob: Blob): Promise<Blob> => {
     setVoiceError(null);
     setVoiceTest(null);
     const wavAudio = await convertBlobToWav(audio);
+    const wavBytes = await wavAudio.arrayBuffer();
+    const wavView = new DataView(wavBytes);
+    const sampleRate = wavView.getUint32(24, true);
+    let sumSquares = 0;
+    let peak = 0;
+    let samples = 0;
+    for (let i = 44; i + 1 < wavBytes.byteLength; i += 2) {
+      const sample = wavView.getInt16(i, true) / 32768;
+      sumSquares += sample * sample;
+      peak = Math.max(peak, Math.abs(sample));
+      samples++;
+    }
+    const rms = Math.sqrt(sumSquares / Math.max(1, samples));
+    const duration = samples / Math.max(1, sampleRate);
+    const dbfs = 20 * Math.log10(Math.max(rms, 1e-9));
+    setWavSignalInfo(
+      `Duration: ${duration.toFixed(2)}s | Rate: ${sampleRate} Hz | RMS: ${rms.toFixed(5)} | Peak: ${peak.toFixed(5)} | Level: ${dbfs.toFixed(1)} dBFS | Raw: ${audio.size} bytes | WAV: ${wavAudio.size} bytes`
+    );
+
+    if (process.env.NODE_ENV !== "production") {
+      setRecordedAudioUrl(URL.createObjectURL(wavAudio));
+      setRecordedAudioBytes(wavAudio.size);
+    }
+    if (duration < 0.7 || (rms < 0.001 && peak < 0.008)) {
+      throw new Error("Recording too short or nearly silent. Audio was NOT sent to Gemini. Check the browser microphone input.");
+    }
 
     const formData = new FormData();
     formData.set("audio", wavAudio, "voice-test.wav");
@@ -371,6 +414,41 @@ const convertBlobToWav = async (blob: Blob): Promise<Blob> => {
     setVoiceTest(payload as VoiceTestResult);
   };
 
+  const refreshMicrophoneDevices = async () => {
+    setMicrophoneError(null);
+    if (!navigator.mediaDevices?.getUserMedia || !navigator.mediaDevices?.enumerateDevices) {
+      setMicrophoneError("Browser microphone APIs are unavailable.");
+      return;
+    }
+
+    let permissionStream: MediaStream | null = null;
+    try {
+      permissionStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const devices = (await navigator.mediaDevices.enumerateDevices())
+        .filter(device => device.kind === "audioinput" && Boolean(device.deviceId))
+        .map((device, index) => ({
+          id: device.deviceId,
+          label: device.label || `Microphone ${index + 1}`
+        }));
+
+      setMicrophoneDevices(devices);
+      setSelectedMicrophoneId(previous => {
+        if (devices.some(device => device.id === previous)) return previous;
+        return devices.find(device =>
+          !/stereo\s*mix|wave\s*out\s*mix|what\s*u\s*hear/i.test(device.label)
+        )?.id ?? "";
+      });
+
+      if (!devices.length) {
+        setMicrophoneError("No microphone input device was found.");
+      }
+    } catch (error) {
+      setMicrophoneError(error instanceof Error ? error.message : String(error));
+    } finally {
+      permissionStream?.getTracks().forEach(track => track.stop());
+    }
+  };
+
   const startRecording = async () => {
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
       setVoiceError("مرورگر شما ضبط میکروفون را پشتیبانی نمی‌کند.");
@@ -378,7 +456,22 @@ const convertBlobToWav = async (blob: Blob): Promise<Blob> => {
     }
     try {
       setVoiceError(null);
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      setVoiceTest(null);
+      setRecordedAudioUrl(null);
+      setRecordedAudioBytes(0);
+      setRawRecordedUrl(null);
+      if (!selectedMicrophoneId) {
+        setVoiceError("Select a microphone from the device list first.");
+        return;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { deviceId: { exact: selectedMicrophoneId } }
+      });
+      const track = stream.getAudioTracks()[0];
+      const settings = track?.getSettings();
+      setMicCaptureInfo(
+        `Input: ${track?.label || "unknown"} | rate: ${settings?.sampleRate ?? "unknown"} Hz | channels: ${settings?.channelCount ?? "unknown"} | enabled: ${track?.enabled ?? false} | muted: ${track?.muted ?? true}`
+      );
       const recorder = new MediaRecorder(stream);
       chunksRef.current = [];
       recorderRef.current = recorder;
@@ -388,6 +481,9 @@ const convertBlobToWav = async (blob: Blob): Promise<Blob> => {
       recorder.onstop = () => {
         const mime = recorder.mimeType || "audio/webm";
         const audio = new Blob(chunksRef.current, { type: mime });
+        if (process.env.NODE_ENV !== "production") {
+          setRawRecordedUrl(URL.createObjectURL(audio));
+        }
         stream.getTracks().forEach((track) => track.stop());
         recorderRef.current = null;
         setRecording(false);
@@ -496,6 +592,37 @@ const convertBlobToWav = async (blob: Blob): Promise<Blob> => {
               <section className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200" aria-labelledby="voice-lab-heading">
                 <h2 id="voice-lab-heading" className="font-semibold">آزمایشگاه صوتی</h2>
                 <p className="mt-1 text-xs text-slate-500">پیش‌نمایش TTS و تست میکروفون از همان providerها و quotaهای production استفاده می‌کند؛ در نبود credential خطای واقعی نمایش داده می‌شود.</p>
+                <div className="mt-3 rounded-lg border border-slate-200 p-3">
+                  <p className="mb-2 text-sm font-medium">Microphone selection</p>
+                  <div className="flex flex-wrap gap-2">
+                    <select
+                      aria-label="Select microphone input"
+                      value={selectedMicrophoneId}
+                      onChange={event => setSelectedMicrophoneId(event.target.value)}
+                      className="min-w-48 flex-1 rounded-lg border p-2 text-sm"
+                    >
+                      <option value="">Select microphone...</option>
+                      {microphoneDevices.map(device => (
+                        <option key={device.id} value={device.id}>
+                          {device.label}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => void refreshMicrophoneDevices()}
+                      className="rounded-lg border px-3 py-2 text-sm"
+                    >
+                      Detect microphones
+                    </button>
+                  </div>
+                  {microphoneError ? (
+                    <p role="alert" className="mt-2 text-xs text-rose-700">{microphoneError}</p>
+                  ) : null}
+                  <p className="mt-2 text-xs text-slate-500">
+                    Select your real microphone, not Stereo Mix.
+                  </p>
+                </div>
                 <div className="mt-3 flex flex-wrap gap-2">
                   <button type="button" onClick={() => void previewVoice()} disabled={previewing} className="rounded-lg border px-3 py-2 text-sm">
                     {previewing ? "در حال ساخت صدا…" : "پیش‌نمایش صدا"}
@@ -510,6 +637,28 @@ const convertBlobToWav = async (blob: Blob): Promise<Blob> => {
                 </div>
                 {previewUrl ? <audio className="mt-3 w-full" controls src={previewUrl} /> : null}
                 {voiceError ? <p role="alert" className="mt-2 text-sm text-rose-700">{voiceError}</p> : null}
+                {process.env.NODE_ENV !== "production" ? (
+                  <>
+                <div className="mt-3 rounded-lg border border-sky-200 p-3">
+                  <p className="text-sm font-medium">Microphone input diagnostics</p>
+                  <p className="mt-1 break-words text-xs">{micCaptureInfo}</p>
+                  <p className="mt-1 break-words text-xs">{wavSignalInfo}</p>
+                  {rawRecordedUrl ? (
+                    <div className="mt-2">
+                      <p className="text-sm font-medium">Raw microphone recording</p>
+                      <audio className="mt-1 w-full" controls preload="metadata" src={rawRecordedUrl} />
+                    </div>
+                  ) : null}
+                </div>
+                {recordedAudioUrl ? (
+                  <div className="mt-3 rounded-lg border border-amber-200 p-3">
+                    <p className="text-sm font-medium">Converted WAV (sent to STT only when audio passes validation)</p>
+                    <p className="mt-1 text-xs text-slate-600">Listen for missing words, clipping, or silence. Size: {recordedAudioBytes} bytes</p>
+                    <audio className="mt-2 w-full" controls preload="metadata" src={recordedAudioUrl} />
+                  </div>
+                ) : null}
+                  </>
+                ) : null}
                 {voiceTest ? (
                   <div className="mt-4 space-y-2 rounded-xl bg-slate-50 p-3 text-sm">
                     <p><strong>شنیده شد:</strong> {voiceTest.transcript || "بدون گفتار"}</p>
