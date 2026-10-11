@@ -29,6 +29,7 @@
     "test:live:storage": "vitest run --config vitest.live.config.ts tests/live/storage.acceptance.ts",
     "test:live:telephony": "vitest run --config vitest.live.config.ts tests/live/telephony.acceptance.ts",
     "test:browser": "playwright test",
+    "test:voice:browser": "node tests/browser/voice-microphone-regression.cjs",
     "test:load": "node scripts/load/smoke.mjs",
     "test:browser:install": "playwright install --with-deps chromium",
     "test:staging": "node scripts/release/staging-acceptance.mjs",
