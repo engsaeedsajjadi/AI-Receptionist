@@ -7,7 +7,7 @@ import { ok } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
 import { withApiHandling } from "@/lib/server-core";
 import { runVoiceTurn } from "@/lib/voice/turn";
-import { assessLocalTelephonyInput, encodeLocalTelephonyOutput } from "@/lib/voice/local-telephony";
+import { assessLocalTelephonyInput, assessLocalAgentReadiness, encodeLocalTelephonyOutput } from "@/lib/voice/local-telephony";
 
 /**
  * DEVELOPER LAB ONLY — not Twilio/PSTN, never a production endpoint.
@@ -31,6 +31,18 @@ function assertIsolatedLab() {
   }
 }
 
+export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  return withApiHandling(async () => {
+    assertIsolatedLab();
+    const auth = await getAuthContext(req);
+    const { id } = await ctx.params;
+    const [agent] = await db.select({ id: agents.id }).from(agents)
+      .where(and(eq(agents.id, id), eq(agents.businessId, auth.businessId), eq(agents.isActive, true))).limit(1);
+    if (!agent) throw new AppError(404, "AGENT_NOT_FOUND", "Active agent not found for the current test tenant");
+    return ok(assessLocalAgentReadiness(process.env));
+  });
+}
+
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   return withApiHandling(async (requestId) => {
     assertIsolatedLab();
@@ -46,6 +58,10 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       throw new AppError(415, "UNSUPPORTED_MEDIA_TYPE", "Provide 8 kHz mono G.711 mu-law audio/basic");
     }
     if (file.size > 8_000 * 20) throw new AppError(413, "PAYLOAD_TOO_LARGE", "20 seconds maximum");
+    const readiness = assessLocalAgentReadiness(process.env);
+    if (!readiness.ready) {
+      throw new AppError(503, "PROVIDER_NOT_CONFIGURED", readiness.reasons.join(" | "));
+    }
     const muLaw = Buffer.from(await file.arrayBuffer());
     const input = assessLocalTelephonyInput(muLaw);
 

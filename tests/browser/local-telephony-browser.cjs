@@ -28,6 +28,11 @@ async function main() {
         { id: "test-agent", name: "Test Agent", isActive: true },
       ];
       else if (pathname.includes("/telephony-local-test")) {
+        if (route.request().method() === "GET") {
+          payload = { ready: true, reasons: [], providers: { llm: "compatible", stt: "gemini", tts: "gemini" } };
+          await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(payload) });
+          return;
+        }
         apiCalls++;
         const buffer = route.request().postDataBuffer();
         const body = buffer ? buffer.toString("latin1") : "";
@@ -98,6 +103,7 @@ async function main() {
 
     await page.goto(base + "/dashboard/telephony-lab", { waitUntil: "domcontentloaded", timeout: 45000 });
     await page.getByRole("button", { name: "شناسایی میکروفون‌ها" }).click();
+    await page.getByLabel(/فقط کدک تلفنی و پخش محلی/).check();
     await page.waitForFunction(() => document.querySelector('select[aria-label="میکروفون تماس آزمایشی"]')?.value === "real-mic");
     await page.getByRole("button", { name: "شروع تماس محلی" }).click();
     await page.getByRole("button", { name: "پایان صحبت" }).click();
@@ -108,6 +114,7 @@ async function main() {
     console.log("PROVIDER_REQUESTS_AFTER_CODEC=" + apiCalls);
 
     await page.getByLabel(/مکالمه با Gemini روی دیتابیس ایزوله/).check();
+    await page.getByText("اتصال منشی آماده است. پس از پایان صحبت، صدا برای AI ارسال می‌شود.").waitFor();
     await page.getByLabel(/تأیید می‌کنم که Gemini/).check();
     await page.getByRole("button", { name: "شروع تماس محلی" }).click();
     await page.getByRole("button", { name: "پایان صحبت" }).click();

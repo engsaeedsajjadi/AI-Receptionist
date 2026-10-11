@@ -36,3 +36,27 @@ export function encodeLocalTelephonyOutput(audio: Buffer, mimeType: string | nul
     wav: pcm16ToWav(mulawToPcm16(mulaw), TELEPHONY_RATE),
   };
 }
+
+/** Checks only local provider wiring; no provider requests and no secrets returned. */
+export function assessLocalAgentReadiness(env: NodeJS.ProcessEnv) {
+  const llm = env.LLM_PROVIDER ?? "dev";
+  const stt = env.STT_PROVIDER ?? "dev";
+  const tts = env.TTS_PROVIDER ?? "dev";
+  const reasons: string[] = [];
+  if (llm === "dev") reasons.push("LLM_PROVIDER در محیط توسعه پیکربندی نشده است.");
+  if (stt === "dev") reasons.push("STT_PROVIDER در محیط توسعه پیکربندی نشده است.");
+  if (tts === "dev") reasons.push("TTS_PROVIDER در محیط توسعه پیکربندی نشده است.");
+  if (llm === "compatible" && (!env.COMPATIBLE_LLM_API_KEY || !env.COMPATIBLE_LLM_BASE_URL)) {
+    reasons.push("اتصال LLM سازگار، کلید یا نشانی پایه ندارد.");
+  }
+  if ((stt === "gemini" || tts === "gemini") && !env.COMPATIBLE_LLM_API_KEY) {
+    reasons.push("کلید Gemini برای STT/TTS موجود نیست.");
+  }
+  if ((stt === "compatible" || tts === "compatible") && (!env.COMPATIBLE_LLM_API_KEY || !env.COMPATIBLE_LLM_BASE_URL)) {
+    reasons.push("اتصال STT/TTS سازگار کامل نیست.");
+  }
+  if ((llm === "openai" || stt === "openai" || tts === "openai") && !env.OPENAI_API_KEY) {
+    reasons.push("کلید OpenAI برای ارائه‌دهنده انتخاب‌شده موجود نیست.");
+  }
+  return { ready: reasons.length === 0, reasons, providers: { llm, stt, tts } };
+}

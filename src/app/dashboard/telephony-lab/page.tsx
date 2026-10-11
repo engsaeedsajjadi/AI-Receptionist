@@ -6,6 +6,11 @@ import { useAuth } from "@/components/dashboard/auth";
 
 type Mic = { id: string; label: string };
 type Agent = { id: string; name: string; isActive: boolean };
+type AgentReadiness = {
+  ready: boolean;
+  reasons: string[];
+  providers: { llm: string; stt: string; tts: string };
+};
 type AiResult = {
   heard: boolean;
   transcript: string;
@@ -101,8 +106,11 @@ export default function TelephonyLabPage() {
   const [agentId, setAgentId] = useState("");
   const [mics, setMics] = useState<Mic[]>([]);
   const [micId, setMicId] = useState("");
-  const [mode, setMode] = useState<"codec" | "ai">("codec");
+  const [mode, setMode] = useState<"codec" | "ai">("ai");
   const [allowUsage, setAllowUsage] = useState(false);
+  const [readiness, setReadiness] = useState<AgentReadiness | null>(null);
+  const [readinessError, setReadinessError] = useState("");
+  const [stage, setStage] = useState("پس از انتخاب منشی، اتصال آزمایشی بررسی می‌شود.");
   const [state, setState] = useState<"idle" | "recording" | "processing" | "complete">("idle");
   const [error, setError] = useState("");
   const [result, setResult] = useState<AiResult | null>(null);
@@ -125,6 +133,21 @@ export default function TelephonyLabPage() {
     }).catch(e => { if (mounted) setError(e instanceof Error ? e.message : "فهرست منشی‌ها در دسترس نیست."); });
     return () => { mounted = false; };
   }, [apiJson, loading]);
+
+  useEffect(() => {
+    if (loading || mode !== "ai" || !agentId) {
+      setReadiness(null);
+      setReadinessError("");
+      return;
+    }
+    let current = true;
+    setReadiness(null);
+    setReadinessError("");
+    apiJson<AgentReadiness>(`/api/v1/agents/${agentId}/telephony-local-test`)
+      .then(data => { if (current) setReadiness(data); })
+      .catch(err => { if (current) setReadinessError(err instanceof Error ? err.message : "ارتباط با منشی آزمایشی برقرار نیست."); });
+    return () => { current = false; };
+  }, [apiJson, agentId, loading, mode]);
 
   useEffect(() => () => {
     if (inputUrl) URL.revokeObjectURL(inputUrl);
@@ -163,10 +186,25 @@ export default function TelephonyLabPage() {
     setMetrics(null);
     setInputUrl(null);
     setReplyUrl(null);
+    setStage("در حال آماده‌سازی برای ضبط ...");
     if (!micId) { setError("ابتدا میکروفون واقعی را انتخاب کنید."); return; }
-    if (mode === "ai" && (!allowUsage || !agentId)) {
-      setError("برای آزمایش Gemini، انتخاب منشی و تأیید مصرف API ضروری است.");
-      return;
+    if (mode === "ai") {
+      if (!agentId) {
+        setError("هیچ منشی فعالی در دیتابیس آزمایشی پیدا نشد. ابتدا منشی را در همین محیط ایجاد کنید.");
+        return;
+      }
+      if (readinessError) {
+        setError("اتصال به منشی آزمایشی ناموفق است: " + readinessError);
+        return;
+      }
+      if (!readiness?.ready) {
+        setError(readiness ? readiness.reasons.join(" | ") : "تنظیمات منشی هنوز بررسی نشده‌اند.");
+        return;
+      }
+      if (!allowUsage) {
+        setError("برای ارسال صدای واقعی به Gemini، ابتدا تیک تأیید مصرف API را فعال کنید.");
+        return;
+      }
     }
     try {
       const currentStream = await navigator.mediaDevices.getUserMedia({
@@ -183,11 +221,13 @@ export default function TelephonyLabPage() {
         currentStream.getTracks().forEach(track => track.stop());
         stream.current = null;
         setState("processing");
+        setStage("در حال تبدیل صدای میکروفون به کدک G.711 ...");
         try {
           const audio = await recordedToMulaw(new Blob(chunks, { type: rec.mimeType }));
           setMetrics({ durationSeconds: audio.durationSeconds, rms: audio.rms, bytes: audio.bytes.length });
           setInputUrl(URL.createObjectURL(mulawWav(audio.bytes)));
           if (mode === "ai") {
+            setStage("صدا آماده شد؛ در حال ارسال به منشی و انتظار برای STT، پاسخ و TTS ...");
             const form = new FormData();
             form.append("audio", new Blob([audio.bytes.buffer as ArrayBuffer], { type: "audio/basic" }), "telephone.ulaw");
             const response = await api(`/api/v1/agents/${agentId}/telephony-local-test`, { method: "POST", body: form });
@@ -195,16 +235,20 @@ export default function TelephonyLabPage() {
             if (!response.ok) throw new Error(payload?.error?.message || `Local telephone test failed (${response.status})`);
             const data = payload as AiResult;
             setResult(data);
+            setStage(data.heard ? "پاسخ منشی دریافت شد." : "تشخیص گفتار متنی برنگرداند؛ منشی پاسخی تولید نکرد.");
             if (data.playbackWavBase64) setReplyUrl(URL.createObjectURL(fromBase64(data.playbackWavBase64)));
           }
+          if (mode === "codec") setStage("تست کدک کامل شد؛ این حالت هیچ صدایی به منشی ارسال نمی‌کند.");
           setState("complete");
         } catch (e) {
+          setStage("ارسال یا پردازش صدا ناموفق بود.");
           setError(e instanceof Error ? e.message : "تبدیل یا پردازش صدا ناموفق بود.");
           setState("idle");
         }
       };
       rec.start();
       setState("recording");
+      setStage("در حال ضبط؛ برای ارسال به منشی، پس از گفتن جمله روی «پایان صحبت» کلیک کنید.");
       timeout.current = setTimeout(() => {
         if (rec.state === "recording") rec.stop();
       }, REC_LIMIT_MS);
@@ -231,6 +275,10 @@ export default function TelephonyLabPage() {
       </div>
       <section className="rounded-xl border border-slate-200 bg-white p-5 space-y-4">
         <h2 className="font-semibold">تنظیمات تماس آزمایشی</h2>
+        <p className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-950">
+          برای دریافت پاسخ از منشی باید حالت «مکالمه با Gemini» انتخاب شود. صدا فقط پس از زدن
+          «پایان صحبت» به منشی ارسال می‌شود. حالت «فقط کدک» صدای شما را به منشی نمی‌فرستد.
+        </p>
         <div className="flex flex-wrap gap-3">
           <button type="button" onClick={() => void detectMics()} className="rounded-lg border px-3 py-2 text-sm">شناسایی میکروفون‌ها</button>
           <select aria-label="میکروفون تماس آزمایشی" value={micId} onChange={e => setMicId(e.target.value)} className="min-w-64 flex-1 rounded-lg border p-2">
@@ -246,11 +294,19 @@ export default function TelephonyLabPage() {
         </fieldset>
         {mode === "ai" && (
           <div className="space-y-2 border-r-2 border-amber-500 pr-3">
+            {!agents.length && <p role="alert" className="text-sm text-red-700">در این دیتابیس منشی فعال یافت نشد. از صفحه «منشی هوشمند» یک منشی فعال بسازید.</p>}
             <label className="block text-sm">انتخاب منشی
               <select aria-label="انتخاب منشی آزمایشی" className="mr-2 rounded-lg border p-2" value={agentId} onChange={e => setAgentId(e.target.value)}>
                 {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
               </select>
             </label>
+            <div role="status" aria-label="آمادگی اتصال به منشی" className="rounded-lg bg-slate-50 p-2 text-sm">
+              {readinessError ? <span className="text-red-700">اتصال آماده نیست: {readinessError}</span> :
+                !agentId ? "انتخاب منشی ضروری است." :
+                !readiness ? "در حال بررسی اتصال منشی و دیتابیس آزمایشی ..." :
+                readiness.ready ? "اتصال منشی آماده است. پس از پایان صحبت، صدا برای AI ارسال می‌شود." :
+                <span className="text-red-700">اتصال آماده نیست: {readiness.reasons.join(" | ")}</span>}
+            </div>
             <label className="block text-sm"><input type="checkbox" checked={allowUsage} onChange={e => setAllowUsage(e.target.checked)} /> تأیید می‌کنم که Gemini/STT/TTS و سهمیه دیتابیس ai_receptionist_test ممکن است مصرف شود؛ تماس واقعی برقرار نمی‌شود.</label>
           </div>
         )}
@@ -259,6 +315,7 @@ export default function TelephonyLabPage() {
           <button type="button" aria-label="پایان صحبت" disabled={state !== "recording"} onClick={stop} className="rounded-lg bg-rose-700 px-4 py-2 text-white disabled:opacity-50">پایان صحبت</button>
           <p role="status" className="self-center text-sm">وضعیت: {state === "idle" ? "آماده" : state === "recording" ? "در حال ضبط صدای تماس‌گیرنده" : state === "processing" ? "در حال پردازش" : "آزمایش کامل شد"}</p>
         </div>
+        <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm" aria-label="مرحله پردازش تماس">{stage}</p>
         {error && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
       </section>
       {metrics && (

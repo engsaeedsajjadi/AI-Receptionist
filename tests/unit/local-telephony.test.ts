@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assessLocalTelephonyInput, encodeLocalTelephonyOutput } from "@/lib/voice/local-telephony";
+import { assessLocalTelephonyInput, assessLocalAgentReadiness, encodeLocalTelephonyOutput } from "@/lib/voice/local-telephony";
 import { pcm16ToMulaw } from "@/lib/voice/audio";
 
 describe("local telephone lab: real codec, no PSTN", () => {
@@ -33,5 +33,30 @@ describe("local telephone lab: real codec, no PSTN", () => {
   it("rejects provider containers masquerading as raw PCM", () => {
     expect(() => encodeLocalTelephonyOutput(Buffer.from("ID3example"), "audio/mpeg")).toThrow(/raw 24 kHz PCM16/);
     expect(() => encodeLocalTelephonyOutput(Buffer.from("RIFF" + "000000WAVE"), "audio/l16")).toThrow(/raw 24 kHz PCM16/);
+  });
+});
+
+describe("local telephone lab AI provider preflight", () => {
+  it("blocks without configured speech and language providers", () => {
+    const result = assessLocalAgentReadiness({});
+    expect(result.ready).toBe(false);
+    expect(result.reasons).toHaveLength(3);
+  });
+  it("rejects incomplete Gemini configuration without exposing the API key", () => {
+    const result = assessLocalAgentReadiness({
+      LLM_PROVIDER: "compatible", STT_PROVIDER: "gemini", TTS_PROVIDER: "gemini",
+      COMPATIBLE_LLM_BASE_URL: "https://example.test",
+    });
+    expect(result.ready).toBe(false);
+    expect(result.reasons.some(reason => reason.includes("Gemini"))).toBe(true);
+  });
+  it("accepts valid-looking configuration without sending provider traffic", () => {
+    const result = assessLocalAgentReadiness({
+      LLM_PROVIDER: "compatible", STT_PROVIDER: "gemini", TTS_PROVIDER: "gemini",
+      COMPATIBLE_LLM_API_KEY: "test-secret-never-disclose",
+      COMPATIBLE_LLM_BASE_URL: "https://example.test",
+    });
+    expect(result.ready).toBe(true);
+    expect(JSON.stringify(result)).not.toContain("test-secret-never-disclose");
   });
 });
