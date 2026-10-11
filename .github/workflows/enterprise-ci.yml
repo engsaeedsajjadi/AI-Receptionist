@@ -6,13 +6,17 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  # gitleaks-action@v2 needs a token to scan pull-request commits (its breaking
+  # change of 2025-09) and publishes what it finds as a pull-request comment, so
+  # a failing scan is reviewable without downloading the job log.
+  pull-requests: write
 concurrency:
   group: enterprise-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   validation:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -37,22 +41,50 @@ jobs:
       REQUIRE_INTEGRATION_TESTS: '1'
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
+      # 1–2 · install + static gates
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
+      # 3 · secrets never land in git history
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'
+        continue-on-error: false
+      # 4–6 · migrations must apply twice on a fresh database and stay safe
+      - run: node scripts/ci/check-migration-safety.mjs
       - run: npm run db:migrate
       - run: npm run db:migrate
-      - run: npm run test:coverage -- --reporter=default --reporter=json --outputFile=test-results/vitest.json
+      # 7 · index audit: tenant-leading indexes + hot-path indexes must exist
+      - run: node scripts/ci/index-audit.mjs
+      # 7b · PII/secret log audit: no raw request bodies, credentials or unmasked PII
+      - run: node scripts/ci/pii-log-audit.mjs
+      # 8–10 · tests with coverage thresholds (80/80/80/80) + skip guard
+      # The github-actions reporter publishes each failing test as an annotation,
+      # so a red suite is diagnosable from the pull request (job logs and the
+      # uploaded artifact are not always reachable).
+      - run: npm run test:coverage -- --reporter=default --reporter=github-actions --reporter=json --outputFile=test-results/vitest.json
       - if: always()
         run: node scripts/ci/check-test-results.mjs test-results/vitest.json
+      # 10 · live suites must fail fast without credentials (never silently pass)
+      - name: Live suites refuse to run without configuration
+        run: |
+          for suite in llm embedding stt tts smtp oauth storage telephony; do
+            node scripts/ci/check-live-suite-fails.mjs "$suite"
+          done
+      # 11–12 · production build + dependency audit
       - if: always()
         run: npm run build
       - if: always()
         run: npm audit --omit=dev --audit-level=high
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -60,4 +92,168 @@ jobs:
           path: |
             test-results/
             coverage/
+          retention-days: 14
+
+  browser-journeys:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: validation
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: ai_test
+          POSTGRES_PASSWORD: test-only-ci
+          POSTGRES_DB: ai_receptionist_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U ai_test -d ai_receptionist_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      DATABASE_URL: postgresql://ai_test:test-only-ci@127.0.0.1:5432/ai_receptionist_test
+      TEST_DATABASE_URL: postgresql://ai_test:test-only-ci@127.0.0.1:5432/ai_receptionist_test
+      REDIS_URL: redis://127.0.0.1:6379
+      APP_URL: http://127.0.0.1:3100
+      E2E_PORT: '3100'
+      # Playwright deliberately opens many independent rotating-refresh sessions
+      # from the same loopback IP. The application honors this only outside
+      # production and only for localhost/127.0.0.1.
+      E2E_RATE_LIMIT_BYPASS: 'true'
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run db:migrate
+      # The browser suite boots `next dev` (E2E_MODE default); the production
+      # build is already validated in the `validation` job.
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:browser
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-evidence
+          path: |
+            test-results/
+            playwright-report/
+          retention-days: 14
+
+  container-and-restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: validation
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: ai_test
+          POSTGRES_PASSWORD: test-only-ci
+          POSTGRES_DB: ai_receptionist_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U ai_test -d ai_receptionist_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      DATABASE_URL: postgresql://ai_test:test-only-ci@127.0.0.1:5432/ai_receptionist_test
+      TEST_DATABASE_URL: postgresql://ai_test:test-only-ci@127.0.0.1:5432/ai_receptionist_test
+      REDIS_URL: redis://127.0.0.1:6379
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run db:migrate
+      # Backup → restore into an isolated database → validate → migrate → health
+      - run: bash scripts/ci/restore-drill.sh
+      - run: docker build -t ai-receptionist:ci .
+      # `test-results/` is where vitest writes its report; the browser job's
+      # artifact is the only other producer, so create it before the SBOM step
+      # writes its evidence file here.
+      - run: mkdir -p test-results
+      # Pinned release binary rather than the composite action: trivy-action
+      # resolves an internal action reference (aquasecurity/setup-trivy@v0.2.1)
+      # that no longer exists, which fails the job before any scan runs.
+      - name: Install Trivy
+        run: |
+          curl -sfL -o /tmp/trivy.tar.gz https://github.com/aquasecurity/trivy/releases/download/v0.75.0/trivy_0.75.0_Linux-64bit.tar.gz
+          tar -xzf /tmp/trivy.tar.gz -C /tmp trivy
+          sudo install -m 0755 /tmp/trivy /usr/local/bin/trivy
+          trivy --version
+      - name: Container image vulnerability scan (Trivy)
+        # Single scan, JSON report: the publish step below renders the findings as
+        # a markdown table (a full table over ~400 node packages would bury them).
+        run: trivy image --exit-code 1 --severity CRITICAL,HIGH --ignore-unfixed --format json --output /tmp/trivy.json ai-receptionist:ci
+      # A red scan must be reviewable without the job log: publish the table on the
+      # pull request that triggered the run (this step never changes the outcome).
+      - name: Publish Trivy findings on the pull request
+        if: failure() && github.event.pull_request.number
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            let report = { Results: [] };
+            try { report = JSON.parse(fs.readFileSync("/tmp/trivy.json", "utf8")); } catch {}
+            const rows = [];
+            for (const result of report.Results ?? []) {
+              for (const v of result.Vulnerabilities ?? []) {
+                rows.push(`| ${result.Target} | ${v.PkgName} | ${v.InstalledVersion} | ${v.Severity} | ${v.VulnerabilityID} | ${v.FixedVersion ?? "no fix"} |`);
+              }
+            }
+            const lines = [
+              "### Container image scan (Trivy) failed",
+              "",
+              "`trivy image --severity CRITICAL,HIGH --ignore-unfixed` — every finding below has a fixed version available:",
+              "",
+            ];
+            if (rows.length) {
+              lines.push("| Target | Package | Installed | Severity | ID | Fixed in |", "| --- | --- | --- | --- | --- | --- |", ...rows);
+            } else {
+              lines.push("No CRITICAL/HIGH vulnerabilities with a fix were parsed from the report.");
+            }
+            fs.writeFileSync("/tmp/trivy-comment.md", lines.join("\n"));
+          '
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/trivy-comment.md
+      - name: SBOM (CycloneDX)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ai-receptionist:ci
+          format: cyclonedx-json
+          # sbom-action writes the file but does not create the directory, and
+          # this job never runs vitest (so test-results/ does not exist yet).
+          output-file: test-results/sbom.cyclonedx.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deployment-evidence
+          path: |
+            test-results/
+            backups/
+          retention-days: 14
+
+
+  source-archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build source ZIP
+        run: git archive --format=zip --prefix=AI-Receptionist-arena-final/ -o AI-Receptionist-arena-final.zip HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: project-source-zip
+          path: AI-Receptionist-arena-final.zip
           retention-days: 14

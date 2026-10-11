@@ -10,6 +10,7 @@ import { getAuthContext } from "@/lib/auth";
 import { normalizePersianText } from "@/lib/normalization";
 import { hasPermission } from "@/lib/permissions";
 import { checkGlobalPublicRateLimit, withApiHandling } from "@/lib/server-core";
+import { assertVoiceAllowed } from "@/lib/voice/voice-safety";
 
 export async function GET(req: NextRequest) {
   return withApiHandling(async () => {
@@ -37,6 +38,9 @@ export async function POST(req: NextRequest) {
       voiceProvider: z.enum(["generic"]).optional(), voiceId: z.string().max(100).optional(),
       language: z.string().max(20).optional(), configuration: AgentConfigSchema.optional(),
     }));
+
+    // Voice ids are synthesis inputs: a non-publisher voice needs recorded consent.
+    await assertVoiceAllowed({ businessId: auth.businessId, voiceId: body.voiceId });
 
     const created = await db.transaction(async (tx) => {
       await inventoryQuota(tx, auth.businessId, "active_agents", 1);

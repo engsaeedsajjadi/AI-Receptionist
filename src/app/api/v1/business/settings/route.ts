@@ -1,4 +1,4 @@
-import { tenantFeaturesSchema } from "@/lib/tenant-config";
+import { tenantFeaturesPatchSchema } from "@/lib/tenant-config";
 import { eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { z } from "zod";
@@ -20,7 +20,9 @@ const transferSchema = z.object({
 const settingsSchema = z.object({
   settings: z
     .object({
-      features: tenantFeaturesSchema.optional(),
+      // The patch schema has no defaults: the full schema would fill absent
+      // flags with their defaults and silently re-enable them.
+      features: tenantFeaturesPatchSchema.optional(),
       recording_enabled: z.boolean().optional(),
       transcription_enabled: z.boolean().optional(),
       retention_days: z.number().int().min(1).max(3650).optional(),
@@ -61,7 +63,16 @@ export async function PUT(req: NextRequest) {
       .from(businesses)
       .where(eq(businesses.id, auth.businessId))
       .limit(1);
-    const merged = { ...((current?.settings as Record<string, unknown>) ?? {}), ...settings };
+    // Feature flags are merged flag-by-flag: a partial payload must never reset
+    // flags the caller did not touch (the schema defaults new flags to enabled).
+    const stored = ((current?.settings as Record<string, unknown>) ?? {}) as Record<string, unknown>;
+    if (settings.features && typeof settings.features === "object") {
+      settings.features = {
+        ...((stored.features as Record<string, unknown> | undefined) ?? {}),
+        ...(settings.features as Record<string, unknown>),
+      };
+    }
+    const merged = { ...stored, ...settings };
 
     const [updated] = await db
       .update(businesses)

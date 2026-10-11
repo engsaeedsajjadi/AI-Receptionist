@@ -1,4 +1,4 @@
-# AI-Receptionist — local development stack
+﻿# AI-Receptionist — local development stack
 services:
   postgres:
     image: pgvector/pgvector:0.8.0-pg16
@@ -8,7 +8,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: app_db
     ports:
-      - "5432:5432"
+      - "5435:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -22,7 +22,7 @@ services:
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     ports:
-      - "6379:6379"
+      - "6381:6379"
     volumes:
       - redisdata:/data
     healthcheck:

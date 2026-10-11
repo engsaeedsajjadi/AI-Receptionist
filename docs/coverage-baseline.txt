@@ -1,0 +1,75 @@
+Coverage baseline — measured on this branch (arena/01a10ae4-ai-receptionist)
+============================================================================
+
+Command
+-------
+  redis-cli flushall          # global rate-limit counters must not leak between files
+  npx vitest run --coverage   # vitest.config.ts thresholds: 80 for all four metrics
+
+Scope
+-----
+  include: src/lib/**/*.ts, src/app/api/**/*.ts
+  (product code only; no exclusions were added, no test was skipped to reach
+  these numbers — see scripts/ci/check-test-results.mjs, which fails on any skip)
+
+Latest measured result (final clean run on this branch head, 19 migrations)
+----------------------------------------------------------------
+  statements : 92.36%  (16255/17598)
+  lines      : 92.36%  (16255/17598)
+  functions  : 94.08%  (859/913)
+  branches   : 81.95%  (4714/5752)
+  test files : 97 passed / 0 failed
+  tests      : 808 passed / 0 failed / 0 skipped
+
+Threshold gate status: PASS for lines, functions, branches and statements (80 each).
+
+History on this branch
+----------------------
+  starting point          : statements/lines 69.76%, branches 72.37%, functions 81.48%
+  after provider adapters : statements/lines 86.73%, branches 73.26%, functions 91.26%
+  after route coverage    : statements/lines 88.85%, branches 74.89%, functions 92.46%
+  after ops/AI suites     : statements/lines 90.23%, branches 80.41%, functions 93.07%
+  after browser/live/WhatsApp suites: statements/lines 90.23%, branches 80.41% (4023/5003), functions 93.07%
+  after resilience suites               : statements/lines 90.32%, branches 80.69% (4114/5098), functions 93.14%
+  after injection/index-audit suites    : statements/lines 90.40%, branches 80.78% (4121/5101), functions 93.14%
+  after SCIM/OAuth/PII/white-label/voice-safety suites: statements/lines 91.97% (15447/16794), branches 81.12% (4332/5340), functions 94.02% (834/887); 86 files / 752 tests / 0 skipped
+  after cursor pagination + explainable scoring: statements/lines 92.03% (15833/17204), branches 81.30% (4533/5575), functions 93.90% (847/902); 91 files / 773 tests / 0 skipped
+  after inbound telephony hardening         : statements/lines 92.19% (15961/17313), branches 81.58% (4602/5641), functions 93.81% (849/905); 93 files / 786 tests / 0 skipped
+  after upload malware policy + monitoring  : statements/lines 92.30% (16048/17386), branches 81.88% (4665/5697), functions 94.03% (852/906); 95 files / 798 tests / 0 skipped
+  after RAG ACL fail-closed + grounding gate: statements/lines 92.23% (16112/17468), branches 81.97% (4674/5702), functions 94.04% (853/907); 96 files / 804 tests / 0 skipped
+  after typed intent on the live turn      : statements/lines 92.36% (16248/17591), branches 81.94% (4712/5750), functions 94.07% (857/911); 97 files / 807 tests / 0 skipped
+  after cursor-precision fix               : statements/lines 92.36% (16255/17598), branches 81.95% (4714/5752), functions 94.08% (859/913); 97 files / 808 tests / 0 skipped
+
+How the gap was closed
+----------------------
+  * integration route suites (appointments, properties, knowledge lifecycle,
+    calls, agents, users/business, platform control plane, metrics, OpenAPI,
+    voice and payment webhooks)
+  * provider factory suites (notification channels incl. failure paths, AI
+    providers refusing when unconfigured, reranker selection/fallback)
+  * production environment guards (every secret and provider combination)
+  * ops primitives (outbox backoff/lease, Redis fallback, storage keys and
+    signed URLs, RRF fusion, upload constraints, tenant state machine)
+  * call lifecycle (transition races, transfer success/failure, reaper,
+    idempotent completion, no fabricated summaries)
+  * scheduling edge cases (holidays, closed days, overlap, cross-tenant refs)
+  * media protocol and Twilio adapter edge cases (invalid frames, capacity,
+    idle timeout, DTMF handoff, provider error mapping)
+
+Remaining lowest-covered modules (branch %, measured on the run above)
+----------------------------------------------------------------------
+  src/app/api/v1/knowledge/upload/route.ts          62.50%   (5/8)    multipart field branches
+  src/app/api/v1/knowledge/[id]/route.ts            64.70%  (11/17)   document lifecycle branches
+  src/lib/services/knowledge.ts                     76.04%           retrieval/reindex failure branches
+  src/app/api/v1/crm/[entity]/route.ts              57.14%  (12/21)   generic CRM passthrough
+  src/lib/oidc.ts                                   57.14%   (8/14)   IdP error mapping (needs live IdP for the rest)
+
+  (this pass: monitoring.ts branches 47% → 87.5%, knowledge upload 38% → 62.5%,
+   inbound voice webhook 25% → 75.51%)
+
+Reproduce
+---------
+  bash scripts/ci/local-stack.sh          # Postgres 16 + pgvector + Redis
+  source /home/user/.cache/ci-env.sh
+  npm ci && npm run db:migrate && npm run db:migrate
+  npx vitest run --coverage

@@ -2,10 +2,11 @@
 
 import { useEffect, useState } from "react";
 import { useAuth } from "@/components/dashboard/auth";
+import { BrandingSettings } from "@/components/dashboard/branding-settings";
 import { LoadingState, PageHeader } from "@/components/dashboard/ui";
 
 type Settings = {
-  features?: { agent?: boolean; knowledge?: boolean; voice?: boolean; crm?: boolean; automation?: boolean };
+  features?: { agent?: boolean; knowledge?: boolean; voice?: boolean; crm?: boolean; automation?: boolean; whiteLabel?: boolean };
   recording_enabled?: boolean;
   transcription_enabled?: boolean;
   retention_days?: number;
@@ -48,7 +49,38 @@ export default function SettingsPage() {
   return (
     <div>
       <PageHeader title="تنظیمات" desc="مشخصات کسب‌وکار، ساعات کاری و انتقال تماس" />
-      <section className="mb-4 rounded-2xl border bg-white p-4"><h2 className="mb-3 font-semibold">قابلیت‌های فضای کاری</h2><div className="flex flex-wrap gap-4">{([['agent', 'منشی'], ['knowledge', 'دانش'], ['voice', 'صوت'], ['crm', 'ارتباط مشتری'], ['automation', 'اتوماسیون']] as const).map(([key, label]) => <label key={key}><input type="checkbox" checked={settings.features?.[key] !== false} onChange={(e) => { const features = { ...settings.features, [key]: e.target.checked }; setSettings({ ...settings, features }); void apiJson("/api/v1/business/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ settings: { features } }) }).then(() => setMessage("قابلیت‌ها ذخیره شدند.")).catch((error: Error) => setMessage(error.message)); }} /> {label}</label>)}</div></section>
+      <section className="mb-4 rounded-2xl border bg-white p-4">
+        <h2 className="mb-3 font-semibold">قابلیت‌های فضای کاری</h2>
+        <div className="flex flex-wrap gap-4">
+          {([
+            ['agent', 'منشی', true],
+            ['knowledge', 'دانش', true],
+            ['voice', 'صوت', true],
+            ['crm', 'ارتباط مشتری', true],
+            ['automation', 'اتوماسیون', true],
+            ['whiteLabel', 'برندسازی اختصاصی', false],
+          ] as const).map(([key, label, defaultOn]) => (
+            <label key={key}>
+              <input
+                type="checkbox"
+                checked={settings.features?.[key] ?? defaultOn}
+                onChange={(e) => {
+                  const features = { ...settings.features, [key]: e.target.checked };
+                  setSettings({ ...settings, features });
+                  void apiJson("/api/v1/business/settings", {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ settings: { features } }),
+                  })
+                    .then(() => setMessage("قابلیت‌ها ذخیره شدند."))
+                    .catch((error: Error) => setMessage(error.message));
+                }}
+              />{" "}
+              {label}
+            </label>
+          ))}
+        </div>
+      </section>
       <div className="grid gap-4 lg:grid-cols-2">
         <form
           className="space-y-3 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200"
@@ -111,6 +143,8 @@ export default function SettingsPage() {
           {message ? <p className="text-sm text-slate-600">{message}</p> : null}
           <button type="submit" disabled={busy} className="rounded-xl bg-slate-900 px-6 py-2 text-sm font-semibold text-white disabled:opacity-50">ذخیره تنظیمات</button>
         </form>
+
+        <BrandingSettings />
       </div>
     </div>
   );

@@ -23,7 +23,15 @@ describe("MFA", () => {
     expect(decryptMfa(encrypted, "one")).toBe(secret);
     expect(() => decryptMfa(encrypted, "two")).toThrow();
     const [iv, tag, data] = encrypted.split(".");
-    expect(() => decryptMfa(`${iv}.${tag}.${data.slice(0, 3)}x${data.slice(4)}`, "one")).toThrow();
+    // Tamper with a real byte of the ciphertext (a base64url character swap can
+    // be a no-op when it lands in padding bits, so decode → flip → re-encode).
+    const raw = Buffer.from(data, "base64url");
+    raw[0] = raw[0] ^ 0xff;
+    const tampered = raw.toString("base64url");
+    expect(tampered).not.toBe(data);
+    expect(() => decryptMfa(`${iv}.${tag}.${tampered}`, "one")).toThrow();
+    // A different IV/tag combination must also be rejected.
+    expect(() => decryptMfa(`AAAA.${tag}.${data}`, "one")).toThrow();
     expect(new Set(newRecoveryCodes()).size).toBe(10);
   });
 });

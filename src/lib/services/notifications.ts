@@ -378,7 +378,7 @@ export async function notifyCallbackRequested(input: {
 export interface DispatchAutomationInput {
   businessId: string;
   event: string;
-  channel: "email" | "sms" | "telegram";
+  channel: "email" | "sms" | "telegram" | "whatsapp";
   recipient: string;
   title?: string;
   message: string;

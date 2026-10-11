@@ -1,9 +1,10 @@
-import { and, asc, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
 import { auditLogs, businesses, refreshTokens, users } from "@/db/schema";
 import { AppError } from "@/lib/api";
 import { requestContext } from "@/lib/request-context";
+import { enqueueOutbox } from "@/lib/services/outbox";
 
 export const TenantStateSchema = z.object({
   id: z.string().uuid(), isActive: z.boolean(), reason: z.string().trim().min(10).max(1000),
@@ -42,9 +43,19 @@ export async function changePlatformTenantState(actorId: string, input: unknown)
     await tx.select({ id: users.id }).from(users).where(eq(users.businessId, change.id)).orderBy(asc(users.id)).for("update");
     // Recheck after waiting for target locks, including a concurrent administrator demotion.
     await requirePlatformAdmin(tx, actorId);
+    // The suspend switch must not bypass the offboarding state machine: a tenant
+    // that is pending deletion (or deleted) can only come back through
+    // `cancelTenantDeletion`, otherwise the grace window is meaningless.
+    if (tenant.status === "DELETED") throw new AppError(409, "CONFLICT", "Tenant is deleted and cannot be reactivated");
+    if (change.isActive && tenant.status === "PENDING_DELETION") {
+      throw new AppError(409, "CONFLICT", "Tenant is pending deletion; cancel the deletion instead of reactivating it");
+    }
     if (tenant.isActive === change.isActive) return { id: tenant.id, isActive: tenant.isActive, changed: false };
     const now = new Date();
-    await tx.update(businesses).set({ isActive: change.isActive, updatedAt: now }).where(eq(businesses.id, change.id));
+    // Keep `status` in step with the operational flag so no runtime gate sees a
+    // suspended tenant that still reports ACTIVE (or vice versa).
+    const nextStatus = change.isActive ? "ACTIVE" : "SUSPENDED";
+    await tx.update(businesses).set({ isActive: change.isActive, status: nextStatus, updatedAt: now }).where(eq(businesses.id, change.id));
     if (!change.isActive) {
       await tx.update(users).set({ credentialVersion: sql`${users.credentialVersion} + 1`, updatedAt: now }).where(eq(users.businessId, change.id));
       await tx.update(refreshTokens).set({ revokedAt: now, revokedReason: "tenant_suspended" })
@@ -53,7 +64,40 @@ export async function changePlatformTenantState(actorId: string, input: unknown)
     await tx.insert(auditLogs).values({ businessId: change.id, actorType: "platform_admin", actorId,
       action: change.isActive ? "tenant.reactivated" : "tenant.suspended", entityType: "business", entityId: change.id,
       requestId: requestContext.getStore()?.requestId,
-      metadata: { reason: change.reason, actorBusinessId: actor.businessId, previousState: tenant.isActive } });
+      metadata: { reason: change.reason, actorBusinessId: actor.businessId, previousState: tenant.isActive,
+        previousStatus: tenant.status, nextStatus } });
+    await enqueueOutbox(tx, {
+      businessId: change.id,
+      topic: change.isActive ? "tenant.reactivated" : "tenant.suspended",
+      idempotencyKey: `tenant.${change.isActive ? "reactivated" : "suspended"}:${change.id}:${now.getTime()}`,
+      payload: { businessId: change.id, id: change.id, reason: change.reason, actorId },
+    });
     return { id: change.id, isActive: change.isActive, changed: true };
   });
+}
+
+/**
+ * Tenant-admin authorization (used by tenant-scoped operator tooling such as
+ * the outbox viewer and data export). Platform administration is a strictly
+ * different privilege and is never granted here.
+ */
+export async function assertTenantAdmin(actorId: string, businessId: string) {
+  z.string().uuid().parse(actorId);
+  z.string().uuid().parse(businessId);
+  const [actor] = await db
+    .select({ id: users.id, businessId: users.businessId, role: users.role })
+    .from(users)
+    .innerJoin(businesses, eq(users.businessId, businesses.id))
+    .where(
+      and(
+        eq(users.id, actorId),
+        eq(users.businessId, businessId),
+        eq(users.isActive, true),
+        eq(businesses.isActive, true),
+        inArray(users.role, ["ADMIN", "TENANT_ADMIN"]),
+      ),
+    )
+    .limit(1);
+  if (!actor) throw new AppError(403, "FORBIDDEN", "Tenant administrator access is required");
+  return actor;
 }

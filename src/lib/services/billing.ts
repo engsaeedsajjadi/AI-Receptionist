@@ -6,6 +6,7 @@ import { AppError, mapUniqueViolation } from "@/lib/api";
 import { assertTenantScope, requestContext } from "@/lib/request-context";
 import { addCalendarMonth, billingCatalog, CurrencySchema, effectivePlan, PaidPlanSchema } from "@/lib/billing-catalog";
 import { requirePlatformAdmin } from "@/lib/services/platform";
+import { enqueueOutbox } from "@/lib/services/outbox";
 export const InvoiceRequestSchema = z.object({ plan: PaidPlanSchema, idempotencyKey: z.string().uuid() }).strict();
 export const PaymentSchema = z.object({ id: z.string().uuid(), businessId: z.string().uuid(),
   amountMinor: z.number().int().positive(), currency: CurrencySchema,
@@ -38,6 +39,13 @@ export async function requestInvoice(businessId: string, input: unknown) {
     const [invoice] = await tx.insert(billingInvoices).values({ businessId, ...plan,
       idempotencyKey: body.idempotencyKey, customerName: tenant.name, issuer: catalog.issuer,
       paymentInstructions: catalog.paymentInstructions }).returning();
+    await enqueueOutbox(tx, {
+      businessId,
+      topic: "invoice.created",
+      idempotencyKey: `invoice.created:${invoice.id}`,
+      payload: { businessId, id: invoice.id, invoiceId: invoice.id, plan: invoice.plan,
+        amountMinor: invoice.amountMinor, currency: invoice.currency, mode: "manual_invoice" },
+    });
     return invoice;
   });
 }
@@ -56,6 +64,13 @@ export async function setSubscriptionCancellation(businessId: string, cancelAtPe
       .where(eq(subscriptions.businessId, businessId)).returning();
     if (!subscription) throw new AppError(404, "NOT_FOUND", "No paid subscription exists");
     if (cancelAtPeriodEnd) await tx.update(billingInvoices).set({ status: "void" }).where(and(eq(billingInvoices.businessId, businessId), eq(billingInvoices.status, "open")));
+    await enqueueOutbox(tx, {
+      businessId,
+      topic: "subscription.changed",
+      idempotencyKey: `subscription.changed:cancel:${subscription.id}:${subscription.updatedAt.toISOString()}`,
+      payload: { businessId, id: subscription.id, plan: subscription.plan,
+        change: cancelAtPeriodEnd ? "cancel_at_period_end" : "resume", periodEnd: subscription.periodEnd?.toISOString() ?? null },
+    });
     return subscription;
   });
 }
@@ -84,6 +99,21 @@ export async function recordInvoicePayment(actorId: string, input: unknown) {
       await tx.insert(subscriptions).values({ businessId: body.businessId, plan: invoice.plan, periodStart, periodEnd })
         .onConflictDoUpdate({ target: subscriptions.businessId, set: { plan: invoice.plan, periodStart, periodEnd, cancelAtPeriodEnd: false, updatedAt: now } });
       const [paid] = await tx.update(billingInvoices).set({ status: "paid", paidAt: now, paymentReference: body.paymentReference }).where(eq(billingInvoices.id, invoice.id)).returning();
+      await enqueueOutbox(tx, {
+        businessId: body.businessId,
+        topic: "payment.received",
+        idempotencyKey: `payment.received:${invoice.id}`,
+        payload: { businessId: body.businessId, id: invoice.id, invoiceId: invoice.id, plan: invoice.plan,
+          amountMinor: invoice.amountMinor, currency: invoice.currency, paymentReference: body.paymentReference,
+          mode: "manual_invoice", actorId },
+      });
+      await enqueueOutbox(tx, {
+        businessId: body.businessId,
+        topic: "subscription.changed",
+        idempotencyKey: `subscription.changed:${invoice.id}`,
+        payload: { businessId: body.businessId, id: invoice.id, plan: invoice.plan, change: "renewed",
+          periodStart: periodStart.toISOString(), periodEnd: periodEnd.toISOString() },
+      });
       await tx.insert(auditLogs).values({ businessId: body.businessId, actorType: "platform_admin", actorId,
         action: "billing.payment_recorded", entityType: "invoice", entityId: invoice.id, requestId: requestContext.getStore()?.requestId,
         metadata: { amountMinor: invoice.amountMinor, currency: invoice.currency, paymentReference: body.paymentReference, periodEnd: periodEnd.toISOString() } });

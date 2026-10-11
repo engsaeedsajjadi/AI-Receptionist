@@ -2,20 +2,30 @@ import { assertTenantScope } from "@/lib/request-context";
 import { and, eq, gte, inArray, lt, ne } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
+import { enqueueOutbox } from "@/lib/services/outbox";
 import { appointments, businesses, customers, leads, users } from "@/db/schema";
 import { AppError } from "@/lib/errors";
 import { acquireLock } from "@/lib/redis";
 import { normalizePersianText } from "@/lib/normalization";
+import { parseWith } from "@/lib/api";
 
 // ---------------------------------------------------------------------------
 // Business schedule configuration (stored in businesses.settings.scheduling)
 // ---------------------------------------------------------------------------
 
-const DayScheduleSchema = z.object({
-  enabled: z.boolean().default(true),
-  start: z.string().regex(/^\d{2}:\d{2}$/).default("09:00"),
-  end: z.string().regex(/^\d{2}:\d{2}$/).default("18:00"),
-});
+const HM = /^([01]\d|2[0-3]):[0-5]\d$/;
+const DayScheduleSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    start: z.string().regex(HM, "start must be HH:MM (24h)").default("09:00"),
+    end: z.string().regex(HM, "end must be HH:MM (24h)").default("18:00"),
+  })
+  .refine((day) => !day.enabled || day.start < day.end, {
+    // A closed day may carry any values; an open day that ends before it starts
+    // would silently produce zero bookable slots, so it is rejected upfront.
+    message: "start must be before end on an enabled day",
+    path: ["end"],
+  });
 
 export const SchedulingConfigSchema = z.object({
   slotMinutes: z.number().int().min(10).max(240).default(30),
@@ -58,7 +68,7 @@ export async function getSchedulingConfig(businessId: string): Promise<{ config:
 
 export async function updateSchedulingConfig(businessId: string, raw: unknown): Promise<SchedulingConfig> {
   assertTenantScope(businessId);
-  const config = SchedulingConfigSchema.parse(raw);
+  const config = parseWith(SchedulingConfigSchema, raw);
   const [biz] = await db
     .select({ settings: businesses.settings })
     .from(businesses)
@@ -237,6 +247,7 @@ async function insertAppointmentTx(
   fields: SlotFields,
   start: Date,
   end: Date,
+  outbox?: { topic: "appointment.created" | "appointment.updated"; idempotencyKey: string; payload?: Record<string, unknown> },
 ) {
   const existing = await tx
     .select()
@@ -271,6 +282,24 @@ async function insertAppointmentTx(
       notes: fields.notes ? normalizePersianText(fields.notes) : null,
     })
     .returning();
+  // Transactional outbox: the event commits with the appointment or not at all.
+  await enqueueOutbox(tx, {
+    businessId,
+    topic: outbox?.topic ?? "appointment.created",
+    idempotencyKey: outbox?.idempotencyKey ?? `appointment.created:${created.id}`,
+    payload: {
+      businessId,
+      id: created.id,
+      appointmentId: created.id,
+      leadId: created.leadId,
+      customerId: created.customerId,
+      assignedUserId: created.assignedUserId,
+      scheduledAt: created.scheduledAt?.toISOString() ?? null,
+      durationMinutes: created.durationMinutes,
+      status: created.status,
+      ...(outbox?.payload ?? {}),
+    },
+  });
   return created;
 }
 
@@ -324,7 +353,7 @@ async function assertAppointmentRefsInBusiness(
 export async function createAppointment(businessId: string, raw: unknown, opts?: { requestId?: string }) {
   assertTenantScope(businessId);
   void opts;
-  const input = CreateAppointmentSchema.parse(raw);
+  const input = parseWith(CreateAppointmentSchema, raw);
   const start = new Date(input.scheduledAt);
   if (Number.isNaN(start.getTime())) throw new AppError(400, "VALIDATION_ERROR", "Invalid scheduledAt");
   if (start <= new Date()) throw new AppError(400, "VALIDATION_ERROR", "Appointment must be in the future");
@@ -412,6 +441,11 @@ export async function rescheduleAppointment(businessId: string, appointmentId: s
         },
         start,
         end,
+        {
+          topic: "appointment.updated",
+          idempotencyKey: `appointment.rescheduled:${appointmentId}:${start.toISOString()}`,
+          payload: { previousAppointmentId: appointmentId, change: "rescheduled" },
+        },
       );
     });
   } finally {
@@ -421,13 +455,22 @@ export async function rescheduleAppointment(businessId: string, appointmentId: s
 
 export async function cancelAppointment(businessId: string, appointmentId: string) {
   assertTenantScope(businessId);
-  const [updated] = await db
-    .update(appointments)
-    .set({ status: "CANCELLED", updatedAt: new Date() })
-    .where(and(eq(appointments.id, appointmentId), eq(appointments.businessId, businessId)))
-    .returning();
-  if (!updated) throw new AppError(404, "APPOINTMENT_NOT_FOUND", "Appointment not found");
-  return updated;
+  return db.transaction(async (tx) => {
+    const [updated] = await tx
+      .update(appointments)
+      .set({ status: "CANCELLED", updatedAt: new Date() })
+      .where(and(eq(appointments.id, appointmentId), eq(appointments.businessId, businessId)))
+      .returning();
+    if (!updated) throw new AppError(404, "APPOINTMENT_NOT_FOUND", "Appointment not found");
+    await enqueueOutbox(tx, {
+      businessId,
+      topic: "appointment.cancelled",
+      idempotencyKey: `appointment.cancelled:${updated.id}:${updated.updatedAt.toISOString()}`,
+      payload: { businessId, id: updated.id, appointmentId: updated.id, leadId: updated.leadId,
+        customerId: updated.customerId, scheduledAt: updated.scheduledAt?.toISOString() ?? null, status: updated.status },
+    });
+    return updated;
+  });
 }
 
 export async function getAppointment(businessId: string, appointmentId: string) {

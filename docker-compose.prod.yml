@@ -1,4 +1,4 @@
-# AI-Receptionist — production stack (app + postgres + redis + n8n + nginx)
+﻿# AI-Receptionist — production stack (app + postgres + redis + n8n + nginx)
 # Secrets MUST come from the environment (or Docker secrets), never from files in Git.
 # Required: DATABASE_URL or POSTGRES_PASSWORD, REDIS_URL, JWT_SECRET, JWT_REFRESH_SECRET,
 #           VOICE_WEBHOOK_SECRET, N8N_WEBHOOK_SECRET, N8N_BASIC_AUTH_PASSWORD, OPENAI_API_KEY (or compatible)
@@ -122,7 +122,7 @@ services:
   worker:
     build: .
     restart: always
-    command: ["node", "--import", "tsx", "scripts/worker.ts"]
+    command: ["node", "runtime/worker.js"]
     environment:
       <<: *app-environment
       RUN_MIGRATIONS: "false"
@@ -136,7 +136,7 @@ services:
       - backend
 
   n8n:
-    image: n8nio/n8n:1.x
+    image: n8nio/n8n:2.42.3
     restart: always
     environment:
       N8N_BASIC_AUTH_ACTIVE: "true"
@@ -161,7 +161,7 @@ services:
     # Gateways connect via VOICE_MEDIA_PUBLIC_URL (nginx /media → media:3001).
     build: .
     restart: always
-    command: ["npx", "tsx", "scripts/media-server.ts"]
+    command: ["node", "runtime/media-server.js"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -239,7 +239,7 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./nginx/certs:/etc/nginx/certs:ro
     networks:
       - frontend
