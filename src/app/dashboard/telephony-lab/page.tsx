@@ -272,8 +272,10 @@ export default function TelephonyLabPage() {
       <section className="rounded-xl border border-slate-200 bg-white p-5 space-y-4">
         <h2 className="font-semibold">تنظیمات تماس آزمایشی</h2>
         <p className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-950">
-          برای دریافت پاسخ از منشی باید حالت «مکالمه با Gemini» انتخاب شود. صدا فقط پس از زدن
-          «پایان صحبت» به منشی ارسال می‌شود. حالت «فقط کدک» صدای شما را به منشی نمی‌فرستد.
+          برای دریافت پاسخ از منشی، حالت «مکالمه با Gemini» را انتخاب کنید.
+          در روش دستی پس از زدن «پایان صحبت» ارسال انجام می‌شود؛ در «گفتگوی زنده»
+          پایان جمله به‌صورت خودکار تشخیص داده می‌شود.
+          حالت «فقط کدک» صدا را به منشی نمی‌فرستد.
         </p>
         <div className="flex flex-wrap gap-3">
           <button type="button" onClick={() => void detectMics()} className="rounded-lg border px-3 py-2 text-sm">شناسایی میکروفون‌ها</button>
@@ -323,7 +325,12 @@ export default function TelephonyLabPage() {
         <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm" aria-label="مرحله پردازش تماس">{stage}</p>
         {error && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
       </section>
-      {mode === "ai" && conversationMode === "live" && (
+      {mode === "ai" && conversationMode === "live" && (!allowUsage || !readiness?.ready) && (
+        <p role="status" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm">
+          برای فعال‌شدن گفتگوی زنده، اتصال منشی باید آماده باشد و تأیید مصرف API فعال شود.
+        </p>
+      )}
+      {mode === "ai" && conversationMode === "live" && allowUsage && Boolean(readiness?.ready) && (
         <TelephonyLiveConversation key={agentId + ":" + micId}
           agentId={agentId}
           microphoneId={micId}

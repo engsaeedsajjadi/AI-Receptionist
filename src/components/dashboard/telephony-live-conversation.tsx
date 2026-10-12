@@ -66,11 +66,12 @@ export function TelephonyLiveConversation({ agentId, microphoneId, ready, allowU
     lastTalking: number;
     recordingSince: number;
     turning: boolean;
+    turnSequence: number;
   }>({
     active: false, epoch: 0, recorder: null, stream: null, context: null,
     analyser: null, source: null, timer: null, controller: null, player: null,
     playbackUrl: null, phase: "idle", noise: 0.002, onsetFrames: 0,
-    startedTalking: 0, lastTalking: 0, recordingSince: 0, turning: false,
+    startedTalking: 0, lastTalking: 0, recordingSince: 0, turning: false, turnSequence: 0,
   });
 
   const setPhaseLive = (next: Phase, label: string) => {
@@ -186,7 +187,7 @@ export function TelephonyLiveConversation({ agentId, microphoneId, ready, allowU
         return;
       }
       setLines(history => [...history.slice(-9), {
-        id: epoch * 1000 + history.length,
+        id: ++r.turnSequence,
         transcript: result.transcript,
         reply: result.reply || "پاسخی تولید نشد.",
         latencyMs: result.latencyMs?.total ?? 0,
@@ -225,7 +226,21 @@ export function TelephonyLiveConversation({ agentId, microphoneId, ready, allowU
         setPhaseLive("listening", "در حال گوش دادن؛ جمله بعدی را بگویید.");
         beginSegment();
       };
-      await player.play();
+      try {
+        await player.play();
+      } catch {
+        // Autoplay policies vary; keep the conversation alive and show text.
+        if (!stillCurrent()) return;
+        releasePlayback();
+        setError("مرورگر پخش خودکار را مسدود کرد؛ متن پاسخ نمایش داده شد.");
+        setPhaseLive("listening", "در حال گوش دادن؛ می‌توانید جمله بعدی را بگویید.");
+        if (r.recorder?.state === "recording") {
+          r.recorder.onstop = null;
+          r.recorder.stop();
+          r.recorder = null;
+        }
+        beginSegment();
+      }
     } catch (err) {
       if (!stillCurrent()) return;
       setError(err instanceof Error ? err.message : "پردازش مکالمه ناموفق بود.");
