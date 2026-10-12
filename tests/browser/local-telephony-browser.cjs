@@ -99,6 +99,23 @@ async function main() {
         }
       }
       Object.defineProperty(window, "MediaRecorder", { configurable: true, value: FakeRecorder });
+      // Local hands-free VAD is driven by a deterministic microphone signal.
+      // Actual codec decode/encode and DOM interaction remain browser-native.
+      window.__liveSpeech = false;
+      const proto = window.AudioContext.prototype;
+      proto.createMediaStreamSource = function () {
+        return { connect() {}, disconnect() {} };
+      };
+      proto.createAnalyser = function () {
+        return {
+          fftSize: 2048,
+          connect() {}, disconnect() {},
+          getFloatTimeDomainData(samples) {
+            const speaking = window.__liveSpeech;
+            for (let i = 0; i < samples.length; i++) samples[i] = speaking ? (i % 2 ? 0.14 : -0.14) : 0;
+          },
+        };
+      };
     });
 
     await page.goto(base + "/dashboard/telephony-lab", { waitUntil: "domcontentloaded", timeout: 45000 });
@@ -122,10 +139,26 @@ async function main() {
     await page.getByText("Mock AI reply").waitFor({ timeout: 20000 });
     const calls = await page.evaluate(() => window.__micCalls);
     const micMatched = calls.some(c => c.audio?.deviceId?.exact === "real-mic");
-    const pass = codecPassed && apiCalls === 1 && micMatched && correctAudio;
+    const manualPass = codecPassed && apiCalls === 1 && micMatched && correctAudio;
     console.log("G711_FORM_UPLOAD=" + (correctAudio ? "PASS" : "FAIL"));
     console.log("EXACT_MIC_SELECTED=" + micMatched);
     console.log("AI_ROUTE_MOCKED=" + (apiCalls === 1 ? "PASS" : "FAIL"));
+    console.log("MANUAL_TELEPHONY_BROWSER_RESULT=" + (manualPass ? "PASS" : "FAIL"));
+    await page.getByLabel(/گفتگوی زنده بدون فشردن دکمه پایان صحبت/).check();
+    await page.getByRole("button", { name: "شروع گفتگوی زنده" }).click();
+    await page.getByText(/وضعیت: در حال گوش دادن/).waitFor({ timeout: 12000 });
+    await page.evaluate(() => { window.__liveSpeech = true; });
+    await page.waitForTimeout(850);
+    await page.evaluate(() => { window.__liveSpeech = false; });
+    const log = page.getByLabel("تاریخچه گفتگوی زنده");
+    await log.getByText(/Voice test input/).waitFor({ timeout: 20000 });
+    await log.getByText(/Mock AI reply/).waitFor({ timeout: 20000 });
+    const livePassed = apiCalls === 2;
+    console.log("AUTO_VAD_UTTERANCE=" + (livePassed ? "PASS" : "FAIL"));
+    console.log("NO_MANUAL_STOP_REQUIRED=PASS");
+    await page.getByRole("button", { name: "پایان گفتگوی زنده" }).click();
+    await page.getByText(/وضعیت: متوقف/).waitFor();
+    const pass = manualPass && livePassed;
     console.log("LOCAL_TELEPHONY_BROWSER_RESULT=" + (pass ? "PASS" : "FAIL"));
     console.log("REAL_TWILIO_CALLS=0");
     console.log("REAL_GEMINI_REQUESTS=0");
