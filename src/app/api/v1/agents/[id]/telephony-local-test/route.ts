@@ -8,6 +8,7 @@ import { getAuthContext } from "@/lib/auth";
 import { withApiHandling } from "@/lib/server-core";
 import { runVoiceTurn } from "@/lib/voice/turn";
 import { PiperTTSProvider, parsePiperVoice, parsePiperStyle } from "@/lib/providers/piper-tts";
+import { pcm16ToWav } from "@/lib/voice/audio";
 import { FasterWhisperSTTProvider } from "@/lib/providers/faster-whisper-stt";
 import { assessLocalTelephonyInput, assessLocalAgentReadiness, encodeLocalTelephonyOutput } from "@/lib/voice/local-telephony";
 
@@ -64,15 +65,19 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       const sample = await new PiperTTSProvider({
         voice: previewVoice, style: previewStyle,
       }).synthesize("سلام، وقت شما بخیر. خوشحال می‌شوم راهنمایی‌تان کنم.", { format: "pcm" });
-      const playback = encodeLocalTelephonyOutput(sample.audio, sample.mimeType);
+      // Browser speaker comparison must use native 24-kHz PCM quality, not
+      // the 8-kHz G.711 telephone codec that intentionally degrades bandwidth.
+      // Real lab turns retain their original telephony path unchanged.
+      const previewWav = pcm16ToWav(sample.audio, 24_000);
       return ok({
         mode: "piper-voice-preview",
         realPhoneCall: false,
         voice: previewVoice,
         style: previewStyle,
         ttsMs: Date.now() - started,
-        playbackWavBase64: playback.wav.toString("base64"),
-        playbackSeconds: playback.frames20ms * 0.02,
+        playbackWavBase64: previewWav.toString("base64"),
+        playbackSeconds: sample.audio.length / (2 * 24_000),
+        playbackSampleRate: 24_000,
       });
     }
     const file = form.get("audio");
