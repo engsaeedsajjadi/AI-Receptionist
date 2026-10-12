@@ -3,13 +3,15 @@
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/components/dashboard/auth";
 import { recordedToMulaw, fromBase64 } from "@/lib/voice/browser-telephony";
+import { VoiceLatencyBreakdown, type VoiceLatencyMs } from "@/components/dashboard/voice-latency-breakdown";
 
 type AiResult = {
   heard: boolean;
   transcript: string;
   reply: string;
+  spokenText?: string;
   playbackWavBase64: string | null;
-  latencyMs: { total: number };
+  latencyMs: VoiceLatencyMs;
   output: { frames20ms: number } | null;
 };
 
@@ -18,9 +20,13 @@ type Props = {
   microphoneId: string;
   ready: boolean;
   allowUsage: boolean;
+  briefReplies: boolean;
 };
 
-type ConversationLine = { id: number; transcript: string; reply: string; latencyMs: number };
+type ConversationLine = {
+  id: number; transcript: string; reply: string;
+  spokenText?: string; latencyMs: VoiceLatencyMs; playbackSeconds: number | null;
+};
 type Phase = "idle" | "listening" | "processing" | "speaking" | "error";
 
 // Keep impure clock access outside React's render scope.
@@ -38,7 +44,7 @@ const MAX_SEGMENT_MS = 16_000;
  * a time over the authenticated DEV-ONLY REST lab. This is NOT a Twilio
  * websocket, not an inbound PSTN call and not full-duplex media streaming.
  */
-export function TelephonyLiveConversation({ agentId, microphoneId, ready, allowUsage }: Props) {
+export function TelephonyLiveConversation({ agentId, microphoneId, ready, allowUsage, briefReplies }: Props) {
   const { api } = useAuth();
   const [phase, setPhase] = useState<Phase>("idle");
   const [detail, setDetail] = useState("شروع گفتگو را بزنید و با منشی صحبت کنید.");
@@ -172,6 +178,7 @@ export function TelephonyLiveConversation({ agentId, microphoneId, ready, allowU
       setPhaseLive("processing", "در حال تشخیص گفتار، پردازش توسط منشی و تولید پاسخ صوتی ...");
       const form = new FormData();
       form.append("audio", new Blob([encoded.bytes.buffer as ArrayBuffer], { type: "audio/basic" }), "live-utterance.ulaw");
+      form.set("responseStyle", briefReplies ? "brief" : "normal");
       const response = await api(`/api/v1/agents/${agentId}/telephony-local-test`, {
         method: "POST", body: form, signal: r.controller.signal,
       });
@@ -190,7 +197,9 @@ export function TelephonyLiveConversation({ agentId, microphoneId, ready, allowU
         id: ++r.turnSequence,
         transcript: result.transcript,
         reply: result.reply || "پاسخی تولید نشد.",
-        latencyMs: result.latencyMs?.total ?? 0,
+        spokenText: result.spokenText,
+        latencyMs: result.latencyMs ?? { total: 0 },
+        playbackSeconds: result.output ? result.output.frames20ms * 0.02 : null,
       }]);
       setTurnCount(count => count + 1);
       if (!result.playbackWavBase64) {
@@ -387,7 +396,7 @@ export function TelephonyLiveConversation({ agentId, microphoneId, ready, allowU
           <div key={line.id} className="rounded-lg border bg-white p-3 space-y-1">
             <p className="text-sm"><strong>شما:</strong> {line.transcript}</p>
             <p className="text-sm"><strong>منشی:</strong> {line.reply}</p>
-            <p className="text-xs text-slate-500">زمان پردازش: {line.latencyMs} میلی‌ثانیه</p>
+            <VoiceLatencyBreakdown latencyMs={line.latencyMs} spokenText={line.spokenText} playbackSeconds={line.playbackSeconds} />
           </div>
         ))}
       </div>

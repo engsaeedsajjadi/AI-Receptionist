@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@/components/dashboard/auth";
 import { TelephonyLiveConversation } from "@/components/dashboard/telephony-live-conversation";
+import { VoiceLatencyBreakdown } from "@/components/dashboard/voice-latency-breakdown";
 
 type Mic = { id: string; label: string };
 type Agent = { id: string; name: string; isActive: boolean };
@@ -16,10 +17,11 @@ type AiResult = {
   heard: boolean;
   transcript: string;
   reply: string;
+  spokenText?: string;
   input: { durationSeconds: number; rms: number; frames20ms: number };
   output: { mulawBytes: number; frames20ms: number } | null;
   playbackWavBase64: string | null;
-  latencyMs: { total: number; stt?: number; agent?: number; tts?: number };
+  latencyMs: { total: number; stt?: number; agent?: number; tts?: number; store?: number };
 };
 
 const TARGET_RATE = 8000;
@@ -110,6 +112,7 @@ export default function TelephonyLabPage() {
   const [mode, setMode] = useState<"codec" | "ai">("ai");
   const [allowUsage, setAllowUsage] = useState(false);
   const [conversationMode, setConversationMode] = useState<"manual" | "live">("manual");
+  const [briefReplies, setBriefReplies] = useState(true);
   const [readiness, setReadiness] = useState<AgentReadiness | null>(null);
   const [readinessError, setReadinessError] = useState("");
   const [stage, setStage] = useState("پس از انتخاب منشی، اتصال آزمایشی بررسی می‌شود.");
@@ -226,6 +229,7 @@ export default function TelephonyLabPage() {
             setStage("صدا آماده شد؛ در حال ارسال به منشی و انتظار برای STT، پاسخ و TTS ...");
             const form = new FormData();
             form.append("audio", new Blob([audio.bytes.buffer as ArrayBuffer], { type: "audio/basic" }), "telephone.ulaw");
+            form.set("responseStyle", briefReplies ? "brief" : "normal");
             const response = await api(`/api/v1/agents/${agentId}/telephony-local-test`, { method: "POST", body: form });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(payload?.error?.message || `Local telephone test failed (${response.status})`);
@@ -314,6 +318,7 @@ export default function TelephonyLabPage() {
               <label className="block text-sm"><input type="radio" name="conversationMode" checked={conversationMode === "manual"} disabled={state === "recording" || state === "processing"} onChange={() => setConversationMode("manual")} /> ضبط و ارسال دستی (پایان صحبت با دکمه)</label>
               <label className="block text-sm"><input type="radio" name="conversationMode" checked={conversationMode === "live"} disabled={state === "recording" || state === "processing"} onChange={() => setConversationMode("live")} /> گفتگوی زنده بدون فشردن دکمه پایان صحبت</label>
             </fieldset>
+            <label className="block text-sm"><input type="checkbox" checked={briefReplies} onChange={e => setBriefReplies(e.target.checked)} /> پاسخ صوتی کوتاه (یک یا دو جمله؛ بدون حذف اطلاعات ضروری)</label>
             <label className="block text-sm"><input type="checkbox" checked={allowUsage} onChange={e => setAllowUsage(e.target.checked)} /> تأیید می‌کنم که Gemini/STT/TTS و سهمیه دیتابیس ai_receptionist_test ممکن است مصرف شود؛ تماس واقعی برقرار نمی‌شود.</label>
           </div>
         )}
@@ -336,6 +341,7 @@ export default function TelephonyLabPage() {
           microphoneId={micId}
           ready={Boolean(readiness?.ready)}
           allowUsage={allowUsage}
+          briefReplies={briefReplies}
         />
       )}
       {metrics && (
@@ -351,7 +357,8 @@ export default function TelephonyLabPage() {
           <h2 className="font-semibold">مکالمه با منشی (پردازش واقعی AI، حمل تلفنی شبیه‌سازی‌شده)</h2>
           <p><strong>شنیده شد:</strong> {result.transcript || "گفتاری تشخیص داده نشد"}</p>
           <p><strong>پاسخ:</strong> {result.reply || "پاسخی تولید نشد"}</p>
-          <p className="text-sm">تأخیر: {result.latencyMs.total}ms | بسته‌های خروجی: {result.output?.frames20ms ?? 0} | بایت‌های G.711 خروجی: {result.output?.mulawBytes ?? 0}</p>
+          <VoiceLatencyBreakdown latencyMs={result.latencyMs} spokenText={result.spokenText} playbackSeconds={result.output ? result.output.frames20ms * 0.02 : null} />
+          <p className="text-sm">بسته‌های خروجی: {result.output?.frames20ms ?? 0} | بایت‌های G.711 خروجی: {result.output?.mulawBytes ?? 0}</p>
           {replyUrl && <><p className="text-sm">صدای پاسخ پس از تبدیل به کیفیت تلفن:</p><audio controls autoPlay src={replyUrl} /></>}
         </section>
       )}

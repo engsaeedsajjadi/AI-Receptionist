@@ -97,6 +97,8 @@ export type AgentTurnInput = {
   actor?: string;
   /** Provider override for tests/embeddings; defaults to the configured LLM. */
   llm?: LLMProvider;
+  /** Optional speech-first style; never caps tool calls, claims, or written records. */
+  briefVoiceReply?: boolean;
 };
 
 export type AgentTurnResult = {
@@ -224,6 +226,16 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
     businessInstructions: [agent.systemPrompt, config.systemInstructions].filter(Boolean).join("\n"),
     businessContext,
   });
+
+  // Opt-in for spoken interactions: the model should produce a short but
+  // truthful answer, without removing tenant instructions or skipping tools.
+  // Do not hard-truncate the final response: that could drop safety-critical
+  // confirmations, prices, or necessary qualifications.
+  if (input.briefVoiceReply) {
+    systemPrompt += config.language.startsWith("en")
+      ? "\nVOICE RESPONSE STYLE: Reply in one or two natural, concise spoken sentences when possible. Preserve required confirmations, limitations and safety information. Do not invent facts or skip tools."
+      : "\nسبک پاسخ صوتی: در صورت امکان با یک یا دو جملهٔ کوتاه و طبیعی پاسخ بده (ترجیحاً کمتر از ۱۵۰ نویسه). تأییدهای لازم، محدودیت‌ها، اطلاعات ضروری و دستورالعمل‌های کسب‌وکار را حذف نکن؛ اطلاعات نساز و ابزارهای لازم را کنار نگذار.";
+  }
 
   const intentHint = intentPromptHint(intent, config.language);
   if (intentHint) systemPrompt += "\n" + intentHint;

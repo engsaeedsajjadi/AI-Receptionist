@@ -62,6 +62,10 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     if (!readiness.ready) {
       throw new AppError(503, "PROVIDER_NOT_CONFIGURED", readiness.reasons.join(" | "));
     }
+    const responseStyle = form.get("responseStyle");
+    if (responseStyle !== null && responseStyle !== "brief" && responseStyle !== "normal") {
+      throw new AppError(400, "INVALID_PAYLOAD", "responseStyle must be brief or normal");
+    }
     const muLaw = Buffer.from(await file.arrayBuffer());
     const input = assessLocalTelephonyInput(muLaw);
 
@@ -76,6 +80,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       ttsFormat: "pcm",
       requestId,
       actor: auth.userId,
+      briefVoiceReply: responseStyle === "brief",
     });
 
     const playback = result.audio
@@ -88,6 +93,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       heard: result.heard,
       transcript: result.transcript,
       reply: result.reply,
+      spokenText: result.spokenText,
       input,
       output: playback ? { mulawBytes: playback.mulawBytes, frames20ms: playback.frames20ms } : null,
       playbackWavBase64: playback ? playback.wav.toString("base64") : null,
