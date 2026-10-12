@@ -8,7 +8,7 @@ import { getStorageProvider, tenantKey } from "@/lib/providers/storage";
 import type { LLMProvider } from "@/lib/providers/llm";
 import { redisDel, redisGet, redisSet } from "@/lib/redis";
 import { runAgentTurn } from "@/lib/services/agent";
-import { assertVoiceAllowed } from "@/lib/voice/voice-safety";
+import { resolveTurnTtsVoice } from "@/lib/voice/turn-voice";
 import { recordUsage } from "@/lib/services/usage";
 import { addSttSeconds } from "@/lib/services/voice-usage";
 import { toSpokenPersian } from "@/lib/voice/cleaner";
@@ -201,13 +201,15 @@ export async function runVoiceTurn(input: VoiceTurnInput): Promise<VoiceTurnResu
   // 3. Reply → speakable text → speech.
   const spokenText = toSpokenPersian(agentResult.reply) || agentResult.reply.trim().slice(0, 500);
   const t2 = Date.now();
-  // Honor the tenant-configured agent voice (guarded: a cloned voice id requires
-  // the platform opt-in plus recorded consent — see voice-safety.ts).
-  let voice = input.voice;
-  if (!voice && agentResult.voiceId) {
-    await assertVoiceAllowed({ businessId: input.businessId, voiceId: agentResult.voiceId });
-    voice = agentResult.voiceId;
-  }
+  // Piper selects its own allowlisted Persian voice during provider creation.
+  // Never pass the agent's unrelated cloud-voice ID through the consent guard
+  // when that ID will not be used for synthesis.
+  const voice = await resolveTurnTtsVoice({
+    businessId: input.businessId,
+    providerName: tts.name,
+    requestedVoice: input.voice,
+    agentVoiceId: agentResult.voiceId,
+  });
   const requestedTtsFormat = input.ttsFormat ?? (tts.name === "piper" ? "wav" : "mp3");
   const ttsResult = await meteredSpeech(input.businessId, tts, spokenText, {
     voice,
