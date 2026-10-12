@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@/components/dashboard/auth";
+import { TelephonyLiveConversation } from "@/components/dashboard/telephony-live-conversation";
 
 type Mic = { id: string; label: string };
 type Agent = { id: string; name: string; isActive: boolean };
@@ -108,6 +109,7 @@ export default function TelephonyLabPage() {
   const [micId, setMicId] = useState("");
   const [mode, setMode] = useState<"codec" | "ai">("ai");
   const [allowUsage, setAllowUsage] = useState(false);
+  const [conversationMode, setConversationMode] = useState<"manual" | "live">("manual");
   const [readiness, setReadiness] = useState<AgentReadiness | null>(null);
   const [readinessError, setReadinessError] = useState("");
   const [stage, setStage] = useState("پس از انتخاب منشی، اتصال آزمایشی بررسی می‌شود.");
@@ -307,17 +309,30 @@ export default function TelephonyLabPage() {
                 readiness.ready ? "اتصال منشی آماده است. پس از پایان صحبت، صدا برای AI ارسال می‌شود." :
                 <span className="text-red-700">اتصال آماده نیست: {readiness.reasons.join(" | ")}</span>}
             </div>
+            <fieldset className="space-y-2 rounded-lg border border-slate-200 p-3">
+              <legend className="text-sm font-semibold">روش گفتگو با منشی</legend>
+              <label className="block text-sm"><input type="radio" name="conversationMode" checked={conversationMode === "manual"} disabled={state === "recording" || state === "processing"} onChange={() => setConversationMode("manual")} /> ضبط و ارسال دستی (پایان صحبت با دکمه)</label>
+              <label className="block text-sm"><input type="radio" name="conversationMode" checked={conversationMode === "live"} disabled={state === "recording" || state === "processing"} onChange={() => setConversationMode("live")} /> گفتگوی زنده بدون فشردن دکمه پایان صحبت</label>
+            </fieldset>
             <label className="block text-sm"><input type="checkbox" checked={allowUsage} onChange={e => setAllowUsage(e.target.checked)} /> تأیید می‌کنم که Gemini/STT/TTS و سهمیه دیتابیس ai_receptionist_test ممکن است مصرف شود؛ تماس واقعی برقرار نمی‌شود.</label>
           </div>
         )}
-        <div className="flex flex-wrap gap-3">
+        {(mode === "codec" || conversationMode === "manual") && <div className="flex flex-wrap gap-3">
           <button type="button" aria-label="شروع تماس محلی" disabled={state === "recording" || state === "processing"} onClick={() => void start()} className="rounded-lg bg-emerald-700 px-4 py-2 font-medium text-white disabled:opacity-50">شروع تماس محلی</button>
           <button type="button" aria-label="پایان صحبت" disabled={state !== "recording"} onClick={stop} className="rounded-lg bg-rose-700 px-4 py-2 text-white disabled:opacity-50">پایان صحبت</button>
           <p role="status" className="self-center text-sm">وضعیت: {state === "idle" ? "آماده" : state === "recording" ? "در حال ضبط صدای تماس‌گیرنده" : state === "processing" ? "در حال پردازش" : "آزمایش کامل شد"}</p>
-        </div>
+        </div>}
         <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm" aria-label="مرحله پردازش تماس">{stage}</p>
         {error && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
       </section>
+      {mode === "ai" && conversationMode === "live" && (
+        <TelephonyLiveConversation key={agentId + ":" + micId}
+          agentId={agentId}
+          microphoneId={micId}
+          ready={Boolean(readiness?.ready)}
+          allowUsage={allowUsage}
+        />
+      )}
       {metrics && (
         <section className="rounded-xl border bg-white p-5 space-y-3">
           <h2 className="font-semibold">خروجی کانال تلفنی شبیه‌سازی‌شده</h2>
