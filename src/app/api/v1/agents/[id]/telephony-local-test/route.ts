@@ -55,6 +55,26 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     if (!agent) throw new AppError(404, "AGENT_NOT_FOUND", "Active agent not found for this tenant");
 
     const form = await req.formData();
+    // Voice-only preview: fixed text, offline Piper, no Gemini STT/LLM calls,
+    // no call creation and no arbitrary client text passed to a synthesizer.
+    if (form.get("voicePreview") === "piper") {
+      const previewVoice = parsePiperVoice(form.get("piperVoice") ?? "fa_IR-amir-medium");
+      const previewStyle = parsePiperStyle(form.get("piperStyle") ?? "natural");
+      const started = Date.now();
+      const sample = await new PiperTTSProvider({
+        voice: previewVoice, style: previewStyle,
+      }).synthesize("سلام، وقت شما بخیر. خوشحال می‌شوم راهنمایی‌تان کنم.", { format: "pcm" });
+      const playback = encodeLocalTelephonyOutput(sample.audio, sample.mimeType);
+      return ok({
+        mode: "piper-voice-preview",
+        realPhoneCall: false,
+        voice: previewVoice,
+        style: previewStyle,
+        ttsMs: Date.now() - started,
+        playbackWavBase64: playback.wav.toString("base64"),
+        playbackSeconds: playback.frames20ms * 0.02,
+      });
+    }
     const file = form.get("audio");
     if (!(file instanceof File) || file.type.split(";")[0] !== "audio/basic") {
       throw new AppError(415, "UNSUPPORTED_MEDIA_TYPE", "Provide 8 kHz mono G.711 mu-law audio/basic");

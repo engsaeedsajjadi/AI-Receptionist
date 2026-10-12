@@ -116,6 +116,9 @@ export default function TelephonyLabPage() {
   const [ttsEngine, setTtsEngine] = useState<"configured" | "piper">("configured");
   const [piperVoice, setPiperVoice] = useState("fa_IR-amir-medium");
   const [piperStyle, setPiperStyle] = useState<"natural" | "warm" | "calm">("natural");
+  const [voiceSample, setVoiceSample] = useState<string | null>(null);
+  const [sampleBusy, setSampleBusy] = useState(false);
+  const [sampleTtsMs, setSampleTtsMs] = useState<number | null>(null);
   const [sttEngine, setSttEngine] = useState<"configured" | "faster-whisper">("configured");
   const [readiness, setReadiness] = useState<AgentReadiness | null>(null);
   const [readinessError, setReadinessError] = useState("");
@@ -159,10 +162,41 @@ export default function TelephonyLabPage() {
     if (replyUrl) URL.revokeObjectURL(replyUrl);
   }, [replyUrl]);
   useEffect(() => () => {
+    if (voiceSample) URL.revokeObjectURL(voiceSample);
+  }, [voiceSample]);
+  useEffect(() => () => {
     if (timeout.current) clearTimeout(timeout.current);
     recorder.current?.state === "recording" && recorder.current.stop();
     stream.current?.getTracks().forEach(track => track.stop());
   }, []);
+
+  async function previewPiperVoice() {
+    if (sampleBusy || !agentId) return;
+    setSampleBusy(true);
+    setError("");
+    setVoiceSample(null);
+    setSampleTtsMs(null);
+    try {
+      const form = new FormData();
+      form.set("voicePreview", "piper");
+      form.set("piperVoice", piperVoice);
+      form.set("piperStyle", piperStyle);
+      const response = await api(`/api/v1/agents/${agentId}/telephony-local-test`, {
+        method: "POST", body: form,
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload?.error?.message ?? `HTTP ${response.status}`);
+      if (typeof payload.playbackWavBase64 !== "string") {
+        throw new Error("Piper فایل پیش‌نمایش صوتی برنگرداند.");
+      }
+      setVoiceSample(URL.createObjectURL(fromBase64(payload.playbackWavBase64)));
+      setSampleTtsMs(payload.ttsMs);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "پیش‌نمایش Piper ممکن نشد.");
+    } finally {
+      setSampleBusy(false);
+    }
+  }
 
   async function detectMics() {
     setMicError("");
@@ -352,6 +386,14 @@ export default function TelephonyLabPage() {
                   <option value="calm">آرام و شمرده (آزمایشی)</option>
                 </select>
               </label>
+              <button type="button" onClick={() => void previewPiperVoice()} disabled={sampleBusy || !agentId}
+                className="rounded-lg border border-teal-600 px-3 py-2 text-sm text-teal-800 disabled:opacity-50">
+                {sampleBusy ? "در حال تولید نمونه ..." : "شنیدن نمونه صدا بدون Gemini"}
+              </button>
+              {voiceSample && <div className="space-y-1">
+                <audio controls src={voiceSample} aria-label="پیش‌نمایش صوت Piper"/>
+                <p className="text-xs text-slate-600">زمان تولید نمونه: {typeof sampleTtsMs === "number" ? (sampleTtsMs / 1000).toFixed(2) : "-"} ثانیه</p>
+              </div>}
               <p className="text-xs text-amber-700">برای هر گوینده، دو فایل ONNX و JSON آن را در پوشه Piper دانلود کنید؛ Piper در نبود صدا ممکن است به گوینده پیش‌فرض برگردد. تغییر لحن جایگزین کیفیت ذاتی مدل نیست.</p>
             </div>}
             <label className="block text-sm">موتور تشخیص گفتار (STT)

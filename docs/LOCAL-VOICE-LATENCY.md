@@ -64,3 +64,4 @@ back to Gemini on STT failure. CPU speed and Persian accuracy, especially for
 against the configured Gemini STT; measure STT milliseconds and transcription
 accuracy. Try `--model base` only after the tiny speed/accuracy benchmark.
 Leave `STT_PROVIDER` unchanged for production.
+\n\nUse **شنیدن نمونه صدا بدون Gemini** to A/B voice/style choices using a fixed Persian phrase. This local-only preview creates no call and invokes no cloud STT/LLM; it returns one bounded Piper waveform with local synthesis timing. A real customer utterance is still required to benchmark the full pipeline.\n
