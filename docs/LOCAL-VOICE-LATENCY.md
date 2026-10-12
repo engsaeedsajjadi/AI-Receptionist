@@ -39,3 +39,28 @@ Environment alternative: set `TTS_PROVIDER=piper` for a deployment where that Pi
 
 Record per-turn total, STT, Agent, TTS, reply text/voice duration, and whether barge-in/playback worked. Run at least 3 equivalent short Persian utterances for each TTS engine. Baseline and Piper results are not interchangeable unless STT, LLM, prompts and hardware load are held constant.
 \n\n## Voice accent/tonality A/B test\n\nPiper is not a Gemini voice clone. Persian publisher voices available from the catalog include `fa_IR-ganji-medium`, `fa_IR-ganji_adabi-medium`, `fa_IR-gyro-medium`, `fa_IR-reza_ibrahim-medium` as alternatives to Amir. Download one or more voices into the **same working directory as the Piper HTTP server**, keeping each model's `.onnx` + `.onnx.json` together:\n\n```powershell\ncd "$env:USERPROFILE\\piper-fa-lab"\n.\\.venv\\Scripts\\python.exe -m piper.download_voices fa_IR-ganji-medium fa_IR-ganji_adabi-medium fa_IR-gyro-medium fa_IR-reza_ibrahim-medium\n```\n\nRestart the Piper server from this directory; in the telephone lab select **گوینده فارسی** and try **طبیعی / گرم و روان / آرام و شمرده**. Model availability can be checked at `http://127.0.0.1:5000/voices`. Piper may silently revert to default when requested voice files are absent, so compare the waveform/voice by listening instead of assuming that voice selection succeeded. Prosody controls affect duration/variability, not intrinsic trained pronunciation. Confirm each voice card's license before commercial use.\n
+## CPU Faster-Whisper Persian STT (experimental, developer-only)
+
+The default selection remains **Gemini STT**. For an optional A/B test with
+Piper, run an additional CPU-only server on port 5001:
+
+```powershell
+cd "D:\\Downloads\\AI-Receptionist-arena-final\\AI-Receptionist-github-sync"
+py -3.12 -m venv .venv-whisper
+.\\.venv-whisper\\Scripts\\python.exe -m pip --isolated install --index-url https://pypi.org/simple flask faster-whisper
+.\\.venv-whisper\\Scripts\\python.exe scripts/local-stt/server.py --model tiny --port 5001 --threads 4
+```
+
+This separate process downloads its model on the first run. Confirm
+`http://127.0.0.1:5001/health` responds with `"ok":true`. In
+`/dashboard/telephony-lab` choose **Faster-Whisper روی CPU** under STT.
+Keep Piper TTS and the Gemini LLM as before.
+
+The experimental Python server binds only to loopback, accepts bounded mono
+PCM16 8/16 kHz WAV, and computes local inference without cloud STT charges.
+The Next.js adapter permits only localhost URLs and never automatically falls
+back to Gemini on STT failure. CPU speed and Persian accuracy, especially for
+`tiny`, are **not guaranteed**. Compare at least three identical spoken prompts
+against the configured Gemini STT; measure STT milliseconds and transcription
+accuracy. Try `--model base` only after the tiny speed/accuracy benchmark.
+Leave `STT_PROVIDER` unchanged for production.

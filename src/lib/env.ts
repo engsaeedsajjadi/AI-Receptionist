@@ -88,6 +88,9 @@ const envSchema = z.object({
   STT_PROVIDER: speechProviderEnum.default("dev"),
   STT_MODEL: z.string().default("whisper-1"),
   STT_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
+  /** Loopback-only development lab STT sidecar. Does not replace Gemini globally. */
+  LOCAL_WHISPER_STT_URL: z.string().default("http://127.0.0.1:5001"),
+  LOCAL_WHISPER_STT_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120000).default(15000),
 
   TTS_PROVIDER: ttsProviderEnum.default("dev"),
   TTS_MODEL: z.string().default("tts-1"),
