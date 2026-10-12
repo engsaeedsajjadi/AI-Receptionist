@@ -65,3 +65,26 @@ against the configured Gemini STT; measure STT milliseconds and transcription
 accuracy. Try `--model base` only after the tiny speed/accuracy benchmark.
 Leave `STT_PROVIDER` unchanged for production.
 \n\nUse **شنیدن نمونه صدا بدون Gemini** to A/B voice/style choices using a fixed Persian phrase. This local-only preview creates no call and invokes no cloud STT/LLM; it returns one bounded Piper waveform with local synthesis timing. A real customer utterance is still required to benchmark the full pipeline.\n
+
+### Windows PyAV 19 compatibility (October 2026)
+
+Some combinations of older faster-whisper and PyAV 19 fail on `decode_audio` with
+`TypeError: open() got an unexpected keyword argument 'metadata_errors'`
+(see https://github.com/SYSTRAN/faster-whisper/issues/1589).
+The local-STT **telephony-only** sidecar now uses `pcm_audio.py` to parse
+strict, bounded mono 8/16-kHz PCM16 WAV and resample via NumPy directly to
+Whisper's 16-kHz float32 waveform. It passes the array to
+`WhisperModel.transcribe`, bypassing the incompatible PyAV decoding path.
+It never accepts arbitrary media file formats. No global library downgrade
+or `--force-reinstall` is necessary for the local STT lab.
+
+After pulling this fix, stop the Python Flask server with Ctrl+C and restart
+`scripts/local-stt/server.py`. Next.js, Piper and databases require no changes.
+
+Test the decoder without loading the model or sending audio to Gemini:
+
+```powershell
+.\.venv-whisper\Scripts\python.exe scripts/local-stt/test_pcm_audio.py
+```
+
+The tests cover 8/16-kHz resampling, WAV truncation, invalid input and stereo rejection.

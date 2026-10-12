@@ -9,14 +9,12 @@ The first boot downloads the public Whisper model. This is an experimental
 benchmark sidecar, NOT an authenticated production speech API.
 """
 import argparse
-import io
 import threading
 import time
-import wave
 
 from flask import Flask, jsonify, request
 from faster_whisper import WhisperModel
-from faster_whisper.audio import decode_audio
+from pcm_audio import decode_telephony_wav
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 800_000
@@ -39,18 +37,14 @@ def transcribe():
     if len(raw) < 44 or len(raw) > 800_000:
         return jsonify({"error": "Invalid WAV size"}), 400
     try:
-        with wave.open(io.BytesIO(raw), "rb") as wav:
-            if (wav.getnchannels() != 1 or wav.getsampwidth() != 2
-                    or wav.getframerate() not in (8000, 16000)
-                    or wav.getcomptype() != "NONE"):
-                return jsonify({"error": "Expected mono 8/16-kHz PCM16"}), 400
-            duration = wav.getnframes() / wav.getframerate()
-            if not 0.7 <= duration <= 20.0:
-                return jsonify({"error": "Audio must be 0.7..20 s"}), 400
+        # Input is already a bounded WAV from our G.711 telephone gateway.
+        # Direct NumPy PCM decoding avoids PyAV 19's removed metadata_errors
+        # argument used by older faster-whisper versions.
+        samples, duration = decode_telephony_wav(raw)
+    except ValueError:
+        return jsonify({"error": "Expected 0.7..20 seconds of mono 8/16-kHz PCM16 WAV"}), 400
 
-        # PyAV decoder resamples real 8-kHz G.711-normalized WAV to 16 kHz,
-        # the Whisper model's expected input sample rate.
-        samples = decode_audio(io.BytesIO(raw), sampling_rate=16000)
+    try:
         start = time.perf_counter()
         with inference_lock:
             segments, _ = model.transcribe(
