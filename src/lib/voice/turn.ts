@@ -208,9 +208,10 @@ export async function runVoiceTurn(input: VoiceTurnInput): Promise<VoiceTurnResu
     await assertVoiceAllowed({ businessId: input.businessId, voiceId: agentResult.voiceId });
     voice = agentResult.voiceId;
   }
+  const requestedTtsFormat = input.ttsFormat ?? (tts.name === "piper" ? "wav" : "mp3");
   const ttsResult = await meteredSpeech(input.businessId, tts, spokenText, {
     voice,
-    format: input.ttsFormat ?? "mp3",
+    format: requestedTtsFormat,
     requestId: input.requestId,
     businessId: input.businessId,
     callId: input.callId,

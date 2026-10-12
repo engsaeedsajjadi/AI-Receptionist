@@ -113,6 +113,7 @@ export default function TelephonyLabPage() {
   const [allowUsage, setAllowUsage] = useState(false);
   const [conversationMode, setConversationMode] = useState<"manual" | "live">("manual");
   const [briefReplies, setBriefReplies] = useState(true);
+  const [ttsEngine, setTtsEngine] = useState<"configured" | "piper">("configured");
   const [readiness, setReadiness] = useState<AgentReadiness | null>(null);
   const [readinessError, setReadinessError] = useState("");
   const [stage, setStage] = useState("پس از انتخاب منشی، اتصال آزمایشی بررسی می‌شود.");
@@ -230,6 +231,7 @@ export default function TelephonyLabPage() {
             const form = new FormData();
             form.append("audio", new Blob([audio.bytes.buffer as ArrayBuffer], { type: "audio/basic" }), "telephone.ulaw");
             form.set("responseStyle", briefReplies ? "brief" : "normal");
+            form.set("ttsEngine", ttsEngine);
             const response = await api(`/api/v1/agents/${agentId}/telephony-local-test`, { method: "POST", body: form });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(payload?.error?.message || `Local telephone test failed (${response.status})`);
@@ -318,6 +320,14 @@ export default function TelephonyLabPage() {
               <label className="block text-sm"><input type="radio" name="conversationMode" checked={conversationMode === "manual"} disabled={state === "recording" || state === "processing"} onChange={() => setConversationMode("manual")} /> ضبط و ارسال دستی (پایان صحبت با دکمه)</label>
               <label className="block text-sm"><input type="radio" name="conversationMode" checked={conversationMode === "live"} disabled={state === "recording" || state === "processing"} onChange={() => setConversationMode("live")} /> گفتگوی زنده بدون فشردن دکمه پایان صحبت</label>
             </fieldset>
+            <label className="block text-sm">موتور تولید صدای پاسخ
+              <select aria-label="موتور تولید صدای پاسخ" className="mr-2 rounded-lg border p-2"
+                value={ttsEngine} onChange={e => setTtsEngine(e.target.value as "configured" | "piper")}>
+                <option value="configured">موتور تنظیم‌شده فعلی (Gemini)</option>
+                <option value="piper">Piper محلی فارسی (آزمایشی، بدون هزینه API صوت)</option>
+              </select>
+            </label>
+            {ttsEngine === "piper" && <p className="text-xs text-amber-700">ابتدا Piper HTTP را روی localhost اجرا کنید. در این حالت مدل پاسخ و STT ممکن است همچنان Gemini باشند.</p>}
             <label className="block text-sm"><input type="checkbox" checked={briefReplies} onChange={e => setBriefReplies(e.target.checked)} /> پاسخ صوتی کوتاه (یک یا دو جمله؛ بدون حذف اطلاعات ضروری)</label>
             <label className="block text-sm"><input type="checkbox" checked={allowUsage} onChange={e => setAllowUsage(e.target.checked)} /> تأیید می‌کنم که Gemini/STT/TTS و سهمیه دیتابیس ai_receptionist_test ممکن است مصرف شود؛ تماس واقعی برقرار نمی‌شود.</label>
           </div>
@@ -342,6 +352,7 @@ export default function TelephonyLabPage() {
           ready={Boolean(readiness?.ready)}
           allowUsage={allowUsage}
           briefReplies={briefReplies}
+          ttsEngine={ttsEngine}
         />
       )}
       {metrics && (

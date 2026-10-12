@@ -1,5 +1,6 @@
 import { AppError } from "@/lib/errors";
 import { frameRms, mulawFrames, mulawToPcm16, pcm16ToWav, pcmToTelephonyMulaw } from "@/lib/voice/audio";
+import { validatePiperEndpoint } from "@/lib/providers/piper-tts";
 
 export const TELEPHONY_RATE = 8_000;
 export const MAX_TELEPHONY_SECONDS = 20;
@@ -51,6 +52,10 @@ export function assessLocalAgentReadiness(env: LocalProviderEnvironment) {
   if (llm === "dev") reasons.push("LLM_PROVIDER در محیط توسعه پیکربندی نشده است.");
   if (stt === "dev") reasons.push("STT_PROVIDER در محیط توسعه پیکربندی نشده است.");
   if (tts === "dev") reasons.push("TTS_PROVIDER در محیط توسعه پیکربندی نشده است.");
+  if (tts === "piper") {
+    try { validatePiperEndpoint(env.PIPER_TTS_URL ?? "http://127.0.0.1:5000"); }
+    catch { reasons.push("نشانی Piper باید HTTP روی localhost باشد."); }
+  }
   if (llm === "compatible" && (!env.COMPATIBLE_LLM_API_KEY || !env.COMPATIBLE_LLM_BASE_URL)) {
     reasons.push("اتصال LLM سازگار، کلید یا نشانی پایه ندارد.");
   }

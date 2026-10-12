@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { GoogleGenAI } from "@google/genai";
+import { PiperTTSProvider } from "@/lib/providers/piper-tts";
 import { AppError } from "@/lib/errors";
 import { getEnv } from "@/lib/env";
 import { logError, logInfo, logWarn } from "@/lib/logger";
@@ -402,6 +403,9 @@ export function getTTSProvider(): TTSProvider {
 
     case "gemini":
       return new GeminiTTSProvider();
+
+    case "piper":
+      return new PiperTTSProvider();
 
     case "dev":
       return new DevTTSProvider();

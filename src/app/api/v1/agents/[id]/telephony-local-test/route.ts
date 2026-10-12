@@ -7,6 +7,7 @@ import { ok } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
 import { withApiHandling } from "@/lib/server-core";
 import { runVoiceTurn } from "@/lib/voice/turn";
+import { PiperTTSProvider } from "@/lib/providers/piper-tts";
 import { assessLocalTelephonyInput, assessLocalAgentReadiness, encodeLocalTelephonyOutput } from "@/lib/voice/local-telephony";
 
 /**
@@ -62,6 +63,10 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     if (!readiness.ready) {
       throw new AppError(503, "PROVIDER_NOT_CONFIGURED", readiness.reasons.join(" | "));
     }
+    const ttsEngine = form.get("ttsEngine");
+    if (ttsEngine !== null && ttsEngine !== "configured" && ttsEngine !== "piper") {
+      throw new AppError(400, "INVALID_PAYLOAD", "ttsEngine must be configured or piper");
+    }
     const responseStyle = form.get("responseStyle");
     if (responseStyle !== null && responseStyle !== "brief" && responseStyle !== "normal") {
       throw new AppError(400, "INVALID_PAYLOAD", "responseStyle must be brief or normal");
@@ -81,6 +86,9 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       requestId,
       actor: auth.userId,
       briefVoiceReply: responseStyle === "brief",
+      // Explicit, authenticated and isolated local lab opt-in only.
+      // No global provider switching and no Gemini credential exposure.
+      tts: ttsEngine === "piper" ? new PiperTTSProvider() : undefined,
     });
 
     const playback = result.audio
