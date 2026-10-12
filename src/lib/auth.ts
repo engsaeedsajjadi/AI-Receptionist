@@ -1,13 +1,17 @@
-import { compare, hash } from "bcryptjs";
-import { decodeJwt, jwtVerify, SignJWT } from "jose";
-import { and, eq, isNull, lt } from "drizzle-orm";
+import { requireTenantFeature, type TenantFeatures } from "@/lib/tenant-config";
+import { bindTenantContext } from "@/lib/request-context";
+import { createHash, timingSafeEqual } from "node:crypto";
+import { z } from "zod";
+import { compare } from "bcryptjs";
+import { jwtVerify, SignJWT } from "jose";
+import { and, eq, isNull, lt, sql } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { db } from "@/db";
-import { refreshTokens, users } from "@/db/schema";
+import { businesses, refreshTokens, users } from "@/db/schema";
 import { env } from "@/lib/env";
 import { AppError } from "@/lib/errors";
 import { logWarn } from "@/lib/logger";
-import type { UserRole } from "@/lib/permissions";
+import { USER_ROLES, hasPermission, permissionForRequest, type UserRole } from "@/lib/permissions";
 
 type AuthJwt = {
   sub: string;
@@ -15,6 +19,7 @@ type AuthJwt = {
   role: UserRole;
   type: "access" | "refresh";
   jti: string;
+  sid?: string;
 };
 
 const MAX_FAILED_LOGINS = 10;
@@ -91,13 +96,7 @@ function refreshSecret(): Uint8Array {
 // Passwords
 // ---------------------------------------------------------------------------
 
-export async function hashPassword(password: string) {
-  return hash(password, 12);
-}
-
-export async function verifyPassword(password: string, passwordHash: string) {
-  return compare(password, passwordHash);
-}
+export { hashPassword, verifyPassword } from "@/lib/passwords";
 
 /**
  * Password policy: 8–128 chars, must include at least one letter and one
@@ -117,7 +116,7 @@ export function validatePasswordPolicy(password: string): void {
 // ---------------------------------------------------------------------------
 
 async function signToken(payload: AuthJwt, expiresIn: string, secret: Uint8Array) {
-  return new SignJWT({ businessId: payload.businessId, role: payload.role, type: payload.type })
+  return new SignJWT({ businessId: payload.businessId, role: payload.role, type: payload.type, sid: payload.sid })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(payload.sub)
     .setJti(payload.jti)
@@ -126,40 +125,75 @@ async function signToken(payload: AuthJwt, expiresIn: string, secret: Uint8Array
     .sign(secret);
 }
 
-export async function issueAuthTokens(input: { userId: string; businessId: string; role: UserRole }) {
-  const accessJti = crypto.randomUUID();
-  const refreshJti = crypto.randomUUID();
+type AuthTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type TokenInput = { userId: string; businessId: string; role: UserRole; credentialVersion?: number; userAgent?: string; rotatedFromId?: string };
 
+export function tokenDigest(token: string): string {
+  return `sha256:${createHash("sha256").update(token).digest("hex")}`;
+}
+
+async function tokenMatches(token: string, stored: string): Promise<boolean> {
+  if (!stored.startsWith("sha256:")) return compare(token, stored); // Legacy migration after JWT verification.
+  const actual = Buffer.from(tokenDigest(token));
+  const expected = Buffer.from(stored);
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+async function insertTokens(tx: AuthTx, input: TokenInput) {
+  const refreshJti = crypto.randomUUID();
   const accessToken = await signToken(
-    { sub: input.userId, businessId: input.businessId, role: input.role, type: "access", jti: accessJti },
-    `${env.jwtAccessExpireMinutes}m`,
-    accessSecret(),
+    { sub: input.userId, businessId: input.businessId, role: input.role, type: "access", jti: crypto.randomUUID(), sid: refreshJti },
+    `${env.jwtAccessExpireMinutes}m`, accessSecret(),
   );
   const refreshToken = await signToken(
     { sub: input.userId, businessId: input.businessId, role: input.role, type: "refresh", jti: refreshJti },
-    `${env.jwtRefreshExpireDays}d`,
-    refreshSecret(),
+    `${env.jwtRefreshExpireDays}d`, refreshSecret(),
   );
-
-  await db.insert(refreshTokens).values({
-    userId: input.userId,
-    businessId: input.businessId,
-    jti: refreshJti,
-    tokenHash: await hash(refreshToken, 10),
-    expiresAt: new Date(Date.now() + env.jwtRefreshExpireDays * 24 * 60 * 60 * 1000),
+  await tx.insert(refreshTokens).values({
+    userId: input.userId, businessId: input.businessId, jti: refreshJti,
+    tokenHash: tokenDigest(refreshToken), userAgent: input.userAgent?.slice(0, 512),
+    rotatedFromId: input.rotatedFromId,
+    expiresAt: new Date(Date.now() + env.jwtRefreshExpireDays * 86400000),
   });
-
   return { accessToken, refreshToken };
 }
 
+async function lockedUser(tx: AuthTx, userId: string, businessId?: string) {
+  const [user] = await tx.select().from(users).where(and(eq(users.id, userId),
+    businessId ? eq(users.businessId, businessId) : undefined)).for("update").limit(1);
+  if (!user || !user.isActive) throw new AppError(401, "UNAUTHORIZED", "User not found or inactive");
+  const [business] = await tx.select({ id: businesses.id }).from(businesses)
+    .where(and(eq(businesses.id, user.businessId), eq(businesses.isActive, true))).limit(1);
+  if (!business) throw new AppError(403, "FORBIDDEN", "Business is inactive");
+  return user;
+}
+
+export async function issueAuthTokens(input: TokenInput) {
+  return db.transaction(async (tx) => {
+    const user = await lockedUser(tx, input.userId, input.businessId);
+    if (input.credentialVersion !== undefined && user.credentialVersion !== input.credentialVersion)
+      throw new AppError(401, "UNAUTHORIZED", "Credentials changed; please sign in again");
+    return insertTokens(tx, { ...input, role: user.role as UserRole });
+  });
+}
+
+const tokenSchema = z.object({
+  sub: z.string().uuid(), businessId: z.string().uuid(), role: z.enum(USER_ROLES),
+  type: z.enum(["access", "refresh"]), jti: z.string().uuid(), sid: z.string().uuid().optional(),
+});
+
 export async function verifyAccessToken(token: string): Promise<AuthJwt> {
-  const { payload } = await jwtVerify(token, accessSecret());
-  return payload as unknown as AuthJwt;
+  const { payload } = await jwtVerify(token, accessSecret(), { algorithms: ["HS256"] });
+  const parsed = tokenSchema.parse(payload);
+  if (parsed.type !== "access") throw new AppError(401, "UNAUTHORIZED", "Invalid token type");
+  return parsed;
 }
 
 export async function verifyRefreshToken(token: string): Promise<AuthJwt> {
-  const { payload } = await jwtVerify(token, refreshSecret());
-  return payload as unknown as AuthJwt;
+  const { payload } = await jwtVerify(token, refreshSecret(), { algorithms: ["HS256"] });
+  const parsed = tokenSchema.parse(payload);
+  if (parsed.type !== "refresh") throw new AppError(401, "UNAUTHORIZED", "Invalid token type");
+  return parsed;
 }
 
 /** Backwards-compatible alias (access tokens). */
@@ -193,6 +227,26 @@ export async function getAuthContext(req: NextRequest) {
     throw new AppError(401, "UNAUTHORIZED", "User not found or inactive");
   }
 
+  const [business] = await db.select({ id: businesses.id }).from(businesses)
+    .where(and(eq(businesses.id, user.businessId), eq(businesses.isActive, true))).limit(1);
+  if (!business) throw new AppError(403, "FORBIDDEN", "Business is inactive");
+  const requestedTenant = req.headers.get("x-tenant-id");
+  if (requestedTenant && requestedTenant !== user.businessId)
+    throw new AppError(403, "FORBIDDEN", "Tenant context mismatch");
+  if (!payload.sid) throw new AppError(401, "TOKEN_REVOKED", "Please sign in again");
+  const [session] = await db.select().from(refreshTokens).where(and(
+    eq(refreshTokens.jti, payload.sid), eq(refreshTokens.userId, user.id),
+    eq(refreshTokens.businessId, user.businessId), isNull(refreshTokens.revokedAt),
+  )).limit(1);
+  if (!session || session.expiresAt <= new Date()) throw new AppError(401, "TOKEN_REVOKED", "Session revoked");
+
+  const required = permissionForRequest(req.nextUrl.pathname, req.method);
+  if (required && !hasPermission(user.role as UserRole, required))
+    throw new AppError(403, "FORBIDDEN", "Insufficient permissions");
+  bindTenantContext(user.businessId, user.id);
+  const section = req.nextUrl.pathname.split("/")[3];
+  const featureMap: Record<string, keyof TenantFeatures> = { agents: "agent", agent: "agent", knowledge: "knowledge", customers: "crm", leads: "crm", appointments: "crm", properties: "crm", automation: "automation" };
+  if (featureMap[section]) await requireTenantFeature(user.businessId, featureMap[section]);
   return {
     userId: user.id,
     businessId: user.businessId,
@@ -230,18 +284,15 @@ export async function assertNotLockedOut(user: { failedLoginCount: number; locke
 }
 
 export async function recordFailedLogin(userId: string, currentCount: number): Promise<void> {
-  const next = currentCount + 1;
-  await db
-    .update(users)
-    .set({
-      failedLoginCount: next,
-      lockedUntil: next >= MAX_FAILED_LOGINS ? new Date(Date.now() + LOCKOUT_MINUTES * 60_000) : undefined,
-      updatedAt: new Date(),
-    })
-    .where(eq(users.id, userId));
-  if (next >= MAX_FAILED_LOGINS) {
+  void currentCount; // Do not trust a count observed before a concurrent request.
+  const [updated] = await db.update(users).set({
+    failedLoginCount: sql`${users.failedLoginCount} + 1`,
+    lockedUntil: sql`CASE WHEN ${users.failedLoginCount} + 1 >= ${MAX_FAILED_LOGINS}
+      THEN now() + (${LOCKOUT_MINUTES} * interval '1 minute') ELSE ${users.lockedUntil} END`,
+    updatedAt: new Date(),
+  }).where(eq(users.id, userId)).returning({ failedLoginCount: users.failedLoginCount });
+  if (updated && updated.failedLoginCount >= MAX_FAILED_LOGINS)
     logWarn("Account locked after failed logins", { userId, operation: "auth.lockout" });
-  }
 }
 
 export async function recordSuccessfulLogin(userId: string): Promise<void> {
@@ -255,158 +306,67 @@ export async function recordSuccessfulLogin(userId: string): Promise<void> {
 // Refresh rotation with reuse detection
 // ---------------------------------------------------------------------------
 
-async function revokeAllUserTokens(userId: string, reason: string): Promise<void> {
-  await db
-    .update(refreshTokens)
-    .set({ revokedAt: new Date(), revokedReason: reason })
-    .where(and(eq(refreshTokens.userId, userId), isNull(refreshTokens.revokedAt)));
-}
-
-async function findTokenByJti(jti: string) {
-  const [row] = await db.select().from(refreshTokens).where(eq(refreshTokens.jti, jti)).limit(1);
-  return row ?? null;
-}
-
-async function legacyMatchToken(userId: string, businessId: string, refreshToken: string) {
-  // Back-compat for tokens issued before jti column existed.
-  const candidates = await db
-    .select()
-    .from(refreshTokens)
-    .where(
-      and(
-        eq(refreshTokens.userId, userId),
-        eq(refreshTokens.businessId, businessId),
-        isNull(refreshTokens.revokedAt),
-      ),
-    );
-  for (const t of candidates) {
-    if (t.jti) continue;
-    if (await compare(refreshToken, t.tokenHash)) return t;
-  }
-  return null;
+async function revokeUserTokens(tx: AuthTx, userId: string, reason: string) {
+  return tx.update(refreshTokens).set({ revokedAt: new Date(), revokedReason: reason })
+    .where(and(eq(refreshTokens.userId, userId), isNull(refreshTokens.revokedAt)))
+    .returning({ id: refreshTokens.id });
 }
 
 export async function rotateRefreshToken(refreshToken: string) {
   let payload: AuthJwt;
-  try {
-    payload = await verifyRefreshToken(refreshToken);
-  } catch {
-    throw new AppError(401, "UNAUTHORIZED", "Invalid refresh token");
-  }
-
-  if (payload.type !== "refresh") {
-    throw new AppError(401, "UNAUTHORIZED", "Invalid token type");
-  }
-
-  const stored = payload.jti ? await findTokenByJti(payload.jti) : null;
-
-  if (stored) {
+  try { payload = await verifyRefreshToken(refreshToken); }
+  catch { throw new AppError(401, "UNAUTHORIZED", "Invalid refresh token"); }
+  // User lock serializes rotation, login and logout-all. Reuse revocation must
+  // COMMIT before throwing, otherwise the transaction would undo it.
+  const outcome = await db.transaction(async (tx) => {
+    const user = await lockedUser(tx, payload.sub, payload.businessId);
+    const [stored] = await tx.select().from(refreshTokens).where(and(
+      eq(refreshTokens.jti, payload.jti), eq(refreshTokens.userId, user.id),
+      eq(refreshTokens.businessId, user.businessId),
+    )).limit(1);
+    if (!stored || !(await tokenMatches(refreshToken, stored.tokenHash)))
+      throw new AppError(401, "TOKEN_REVOKED", "Refresh token revoked");
     if (stored.revokedAt) {
-      // Reuse of a rotated/revoked token → possible theft: revoke the family.
-      await revokeAllUserTokens(payload.sub, "reuse_detected");
-      logWarn("Refresh token reuse detected; revoked all sessions", {
-        userId: payload.sub,
-        businessId: payload.businessId,
-        operation: "auth.refresh_reuse",
-      });
-      throw new AppError(401, "TOKEN_REUSE_DETECTED", "Refresh token reuse detected");
+      await revokeUserTokens(tx, user.id, "reuse_detected");
+      return { reuse: true as const };
     }
-    if (stored.expiresAt <= new Date()) {
-      throw new AppError(401, "UNAUTHORIZED", "Refresh token expired");
-    }
-    if (!(await compare(refreshToken, stored.tokenHash))) {
-      throw new AppError(401, "UNAUTHORIZED", "Invalid refresh token");
-    }
-
-    const [user] = await db.select().from(users).where(eq(users.id, payload.sub)).limit(1);
-    if (!user || !user.isActive) {
-      throw new AppError(401, "UNAUTHORIZED", "User not found or inactive");
-    }
-
-    const tokens = await issueAuthTokens({ userId: user.id, businessId: user.businessId, role: user.role as UserRole });
-
-    // Mark rotation AFTER issuing the replacement so a crash doesn't strand the user.
-    await db
-      .update(refreshTokens)
-      .set({ revokedAt: new Date(), revokedReason: "rotated" })
+    if (stored.expiresAt <= new Date()) throw new AppError(401, "UNAUTHORIZED", "Refresh token expired");
+    await tx.update(refreshTokens).set({ revokedAt: new Date(), revokedReason: "rotated" })
       .where(eq(refreshTokens.id, stored.id));
-
-    // Opportunistic cleanup of long-expired tokens (best effort).
-    void pruneExpiredRefreshTokens().catch(() => undefined);
-
-    return tokens;
+    const tokens = await insertTokens(tx, { userId: user.id, businessId: user.businessId,
+      role: user.role as UserRole, userAgent: stored.userAgent ?? undefined, rotatedFromId: stored.id });
+    return { reuse: false as const, tokens };
+  });
+  if (outcome.reuse) {
+    logWarn("Refresh reuse revoked all sessions", { businessId: payload.businessId, userId: payload.sub });
+    throw new AppError(401, "TOKEN_REUSE_DETECTED", "Refresh token reuse detected");
   }
-
-  // Legacy fallback (pre-jti tokens).
-  const legacy = await legacyMatchToken(payload.sub, payload.businessId, refreshToken);
-  if (!legacy) {
-    throw new AppError(401, "TOKEN_REVOKED", "Refresh token revoked");
-  }
-  const [user] = await db.select().from(users).where(eq(users.id, payload.sub)).limit(1);
-  if (!user || !user.isActive) throw new AppError(401, "UNAUTHORIZED", "User not found or inactive");
-  const tokens = await issueAuthTokens({ userId: user.id, businessId: user.businessId, role: user.role as UserRole });
-  await db
-    .update(refreshTokens)
-    .set({ revokedAt: new Date(), revokedReason: "rotated" })
-    .where(eq(refreshTokens.id, legacy.id));
-  return tokens;
+  return outcome.tokens;
 }
 
 export async function revokeRefreshToken(refreshToken: string): Promise<boolean> {
-  let decoded: { sub?: string; jti?: string } | null = null;
-  try {
-    decoded = decodeJwt(refreshToken) as { sub?: string; jti?: string };
-  } catch {
-    return false;
-  }
-  if (decoded?.jti) {
-    const stored = await findTokenByJti(decoded.jti);
-    if (stored && !stored.revokedAt) {
-      if (await compare(refreshToken, stored.tokenHash)) {
-        await db
-          .update(refreshTokens)
-          .set({ revokedAt: new Date(), revokedReason: "logout" })
-          .where(eq(refreshTokens.id, stored.id));
-        return true;
-      }
-    }
-    return false;
-  }
-  // Fallback: match within the decoded user's tokens only (never full-table scan).
-  if (decoded?.sub) {
-    const candidates = await db
-      .select()
-      .from(refreshTokens)
-      .where(and(eq(refreshTokens.userId, decoded.sub), isNull(refreshTokens.revokedAt)));
-    for (const t of candidates) {
-      if (await compare(refreshToken, t.tokenHash)) {
-        await db
-          .update(refreshTokens)
-          .set({ revokedAt: new Date(), revokedReason: "logout" })
-          .where(eq(refreshTokens.id, t.id));
-        return true;
-      }
-    }
-  }
-  return false;
+  let payload: AuthJwt;
+  try { payload = await verifyRefreshToken(refreshToken); } catch { return false; }
+  return db.transaction(async (tx) => {
+    await tx.select({ id: users.id }).from(users).where(eq(users.id, payload.sub)).for("update");
+    const [stored] = await tx.select().from(refreshTokens).where(and(
+      eq(refreshTokens.jti, payload.jti), eq(refreshTokens.userId, payload.sub),
+      eq(refreshTokens.businessId, payload.businessId), isNull(refreshTokens.revokedAt),
+    )).limit(1);
+    if (!stored || !(await tokenMatches(refreshToken, stored.tokenHash))) return false;
+    await tx.update(refreshTokens).set({ revokedAt: new Date(), revokedReason: "logout" }).where(eq(refreshTokens.id, stored.id));
+    return true;
+  });
 }
 
-/** Logout from all sessions (revokes every active refresh token for the user). */
 export async function revokeAllSessions(userId: string): Promise<number> {
-  const rows = await db
-    .update(refreshTokens)
-    .set({ revokedAt: new Date(), revokedReason: "logout_all" })
-    .where(and(eq(refreshTokens.userId, userId), isNull(refreshTokens.revokedAt)))
-    .returning({ id: refreshTokens.id });
-  return rows.length;
+  return db.transaction(async (tx) => {
+    await tx.select({ id: users.id }).from(users).where(eq(users.id, userId)).for("update");
+    return (await revokeUserTokens(tx, userId, "logout_all")).length;
+  });
 }
 
-/** Delete tokens expired more than 7 days ago. Safe for cron. */
 export async function pruneExpiredRefreshTokens(): Promise<number> {
-  const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-  const rows = await db
-    .delete(refreshTokens)
-    .where(lt(refreshTokens.expiresAt, cutoff))
-    .returning({ id: refreshTokens.id });
-  return rows.length;
+  const cutoff = new Date(Date.now() - 7 * 86400000);
+  return (await db.delete(refreshTokens).where(lt(refreshTokens.expiresAt, cutoff)).returning({ id: refreshTokens.id })).length;
 }

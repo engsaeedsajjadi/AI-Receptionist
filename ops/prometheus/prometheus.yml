@@ -1,0 +1,9 @@
+global:
+  scrape_interval: 15s
+scrape_configs:
+  - job_name: receptionist
+    metrics_path: /api/metrics
+    authorization:
+      credentials_file: /run/secrets/metrics_token
+    static_configs:
+      - targets: ['app:3000']

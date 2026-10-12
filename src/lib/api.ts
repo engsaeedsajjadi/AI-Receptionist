@@ -8,11 +8,25 @@ export { AppError as ApiError };
 export { AppError } from "@/lib/errors";
 
 export async function parseJson<T>(req: NextRequest): Promise<T> {
+  const reader = req.body?.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
   try {
-    return (await req.json()) as T;
-  } catch {
+    if (reader) for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > 2 * 1024 * 1024) {
+        void reader.cancel().catch(() => undefined);
+        throw new AppError(413, "PAYLOAD_TOO_LARGE", "JSON payload exceeds 2 MiB");
+      }
+      chunks.push(value);
+    }
+    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as T;
+  } catch (error) {
+    if (error instanceof AppError) throw error;
     throw new AppError(400, "INVALID_JSON", "Invalid JSON payload");
-  }
+  } finally { reader?.releaseLock(); }
 }
 
 /**

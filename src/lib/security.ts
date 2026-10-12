@@ -59,6 +59,8 @@ export async function verifyWebhookRequest(
   req: NextRequest,
   opts: {
     secret: string;
+    previousSecrets?: string[];
+    requireSignedTimestamp?: boolean;
     scope: string;
     requireTimestamp?: boolean;
     /** Skip JSON parsing (e.g. multipart audio uploads); payload is {} and the route parses rawBody itself. */
@@ -70,8 +72,25 @@ export async function verifyWebhookRequest(
   // Clone before reading so routes can still consume the body (formData()).
   // Read BYTES (not text): binary multipart audio must be HMAC-verified and
   // measured exactly — UTF-8 decoding would corrupt non-text bytes.
-  const rawBytes = Buffer.from(await req.clone().arrayBuffer());
   const maxBytes = opts.maxBytes ?? MAX_WEBHOOK_BODY_BYTES;
+  const reader = req.clone().body?.getReader();
+  const buffers: Buffer[] = [];
+  let total = 0;
+  if (reader) {
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > maxBytes) {
+          void reader.cancel().catch(() => undefined);
+          throw new AppError(413, "PAYLOAD_TOO_LARGE", "Webhook payload too large");
+        }
+        buffers.push(Buffer.from(value));
+      }
+    } finally { reader.releaseLock(); }
+  }
+  const rawBytes = Buffer.concat(buffers);
   if (rawBytes.length > maxBytes) {
     throw new AppError(413, "PAYLOAD_TOO_LARGE", "Webhook payload too large");
   }
@@ -88,7 +107,7 @@ export async function verifyWebhookRequest(
   let signature = signatureHeader;
   let signedPayload: string | Buffer = rawBytes;
   let timestampSeconds: number | null = null;
-  const composite = signatureHeader.match(/t=(\d+)\s*,\s*v1=([a-fA-F0-9]+)/);
+  const composite = signatureHeader.match(/^t=(\d+)\s*,\s*v1=([a-fA-F0-9]{64})$/);
   if (composite) {
     timestampSeconds = Number(composite[1]);
     signature = composite[2];
@@ -99,7 +118,11 @@ export async function verifyWebhookRequest(
   // Strip optional "sha256=" prefix (GitHub-style).
   signature = signature.replace(/^sha256=/, "").trim();
 
-  if (!verifyHmacHex(opts.secret, signedPayload, signature)) {
+  const requireSigned = opts.requireSignedTimestamp ?? process.env.NODE_ENV === "production";
+  if (requireSigned && !composite)
+    throw new AppError(401, "STALE_TIMESTAMP", "Signed timestamp required: t=<seconds>,v1=<signature>");
+  const keys = [opts.secret, ...(opts.previousSecrets ?? [])].filter(Boolean);
+  if (!keys.some((key) => verifyHmacHex(key, signedPayload, signature))) {
     throw new AppError(401, "INVALID_SIGNATURE", "Invalid webhook signature");
   }
 

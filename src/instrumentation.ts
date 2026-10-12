@@ -7,6 +7,8 @@ export async function register() {
     const { getEnv } = await import("@/lib/env");
     // Fail fast on invalid production configuration.
     getEnv();
+    const { startTelemetry } = await import("@/lib/telemetry");
+    startTelemetry();
     const { initMonitoring } = await import("@/lib/monitoring");
     await initMonitoring();
   }

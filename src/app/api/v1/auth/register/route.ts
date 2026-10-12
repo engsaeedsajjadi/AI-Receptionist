@@ -1,3 +1,4 @@
+import { inventoryQuota } from "@/lib/services/quotas";
 import { eq } from "drizzle-orm";
 import { NextRequest } from "next/server";
 import { z } from "zod";
@@ -56,6 +57,8 @@ export async function POST(req: NextRequest) {
           })
           .returning();
 
+        await inventoryQuota(tx, biz.id, "tenant_users", 1);
+        await inventoryQuota(tx, biz.id, "active_agents", 1);
         const [user] = await tx
           .insert(users)
           .values({

@@ -1,11 +1,14 @@
+import { meteredCompletion } from "@/lib/services/metered-ai";
+import { assertTenantScope } from "@/lib/request-context";
 import { and, eq, inArray, lt, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { businesses, callMessages, calls } from "@/db/schema";
+import { automationJobs, businesses, callMessages, calls } from "@/db/schema";
 import { AppError } from "@/lib/errors";
 import { logInfo, logWarn } from "@/lib/logger";
 import { normalizePhone } from "@/lib/normalization";
 import { getVoiceProvider } from "@/lib/providers/voice";
-import { emitAutomationEvent } from "@/lib/services/n8n";
+import { enqueueAutomationEvent as emitAutomationEvent, prepareAutomationEvent } from "@/lib/services/jobs";
+import { enqueueOutbox } from "@/lib/services/outbox";
 import { notifyCallbackRequested, notifyHumanHandoff } from "@/lib/services/notifications";
 
 export type CallStatus = typeof calls.$inferSelect.status;
@@ -25,6 +28,7 @@ const TRANSITIONS: Record<CallStatus, CallStatus[]> = {
 };
 
 export async function getCall(businessId: string, callId: string) {
+  assertTenantScope(businessId);
   const [row] = await db
     .select()
     .from(calls)
@@ -81,7 +85,7 @@ export async function appendCallMessage(
   await getCall(businessId, callId);
   const [row] = await db
     .insert(callMessages)
-    .values({ callId, role: message.role, content: message.content.slice(0, 20000), metadata: message.metadata ?? {} })
+    .values({ businessId, callId, role: message.role, content: message.content.slice(0, 20000), metadata: message.metadata ?? {} })
     .returning();
   return row;
 }
@@ -97,6 +101,7 @@ export type TransferConfig = {
 };
 
 export async function getTransferConfig(businessId: string): Promise<TransferConfig> {
+  assertTenantScope(businessId);
   const [biz] = await db
     .select({ settings: businesses.settings, phone: businesses.phone })
     .from(businesses)
@@ -223,6 +228,14 @@ export async function requestTransfer(
       },
       { idempotencyKey: `human-handoff:${callId}:transferred` },
     );
+    await db.transaction(async (tx) => {
+      await enqueueOutbox(tx, {
+        businessId,
+        topic: "call.handoff_requested",
+        idempotencyKey: `call.handoff_requested:${callId}:transferred`,
+        payload: { businessId, id: callId, callId, destination, status: "transferred", phone: call.phoneNumber },
+      });
+    });
     logInfo("Call transferred to human", {
       requestId: opts?.requestId,
       businessId,
@@ -232,6 +245,7 @@ export async function requestTransfer(
     });
     return { status: "TRANSFERRED", destination, message: "در حال انتقال تماس به همکار ما. لطفاً منتظر بمانید." };
   } catch (err) {
+    const error = err instanceof Error ? err.message.slice(0, 300) : "transfer_failed";
     await db
       .update(calls)
       .set({ status: "TRANSFER_FAILED" })
@@ -258,6 +272,7 @@ export async function requestTransfer(
     // Failed-transfer key carries the attempt instant: retries of a failed
     // transfer are distinct logical events (each attempt notifies once),
     // while retries of THIS emit share the computed key.
+    const failedAt = Date.now();
     await emitAutomationEvent(
       "human-handoff",
       {
@@ -267,8 +282,17 @@ export async function requestTransfer(
         destination,
         status: "failed",
       },
-      { idempotencyKey: `human-handoff:${callId}:failed:${Date.now()}` },
+      { idempotencyKey: `human-handoff:${callId}:failed:${failedAt}` },
     );
+    await db.transaction(async (tx) => {
+      await enqueueOutbox(tx, {
+        businessId,
+        topic: "call.handoff_requested",
+        idempotencyKey: `call.handoff_requested:${callId}:failed:${failedAt}`,
+        payload: { businessId, id: callId, callId, destination, status: "failed", reason: error,
+          phone: call.phoneNumber },
+      });
+    });
     logWarn("Call transfer failed; callback registered", {
       requestId: opts?.requestId,
       businessId,
@@ -353,23 +377,43 @@ export async function reapStuckTransfers(
 export async function completeCall(
   businessId: string,
   callId: string,
-  opts?: { summary?: string; requestId?: string },
+  opts?: {
+  summary?: string;
+  requestId?: string;
+  status?: "COMPLETED" | "MISSED" | "FAILED" | "TRANSFERRED";
+},
 ) {
   const call = await getCall(businessId, callId);
   const summary = opts?.summary?.trim() || call.summary || null;
 
-  const [updated] = await db
-    .update(calls)
-    .set({
-      status: call.status === "TRANSFERRED" ? "TRANSFERRED" : "COMPLETED",
-      endedAt: new Date(),
-      summary,
-      durationSeconds:
-        call.durationSeconds ??
-        (call.startedAt ? Math.max(0, Math.round((Date.now() - call.startedAt.getTime()) / 1000)) : null),
-    })
-    .where(eq(calls.id, callId))
-    .returning();
+  if (call.endedAt) return call;
+  const endedAt = new Date();
+  const durationSeconds = call.durationSeconds ?? (call.startedAt ? Math.max(0, Math.round((endedAt.getTime() - call.startedAt.getTime()) / 1000)) : null);
+  const event = await prepareAutomationEvent("call-completed", {
+    id: callId, businessId, callId, phone: call.phoneNumber, durationSeconds, summary,
+  }, { idempotencyKey: `call-completed:${callId}` });
+  const updated = await db.transaction(async (tx) => {
+    const [row] = await tx.update(calls).set({
+      status: call.status === "TRANSFERRED" ? "TRANSFERRED" : (opts?.status ?? "COMPLETED"), endedAt, summary, durationSeconds,
+    }).where(and(eq(calls.id, callId), eq(calls.businessId, businessId), sql`${calls.endedAt} IS NULL`)).returning();
+    if (!row) return null;
+    if (event) await tx.insert(automationJobs).values(event)
+      .onConflictDoNothing({ target: [automationJobs.businessId, automationJobs.idempotencyKey] });
+    // Transactional outbox: external consumers (tenant webhooks, integrations)
+    // see the completion event only if the completion itself committed.
+    await enqueueOutbox(tx, {
+      businessId,
+      topic: "call.completed",
+      idempotencyKey: `call.completed:${callId}`,
+      payload: {
+        businessId, id: callId, callId, phone: call.phoneNumber, status: row.status,
+        durationSeconds: row.durationSeconds, summary, externalCallId: call.externalCallId,
+        transcriptAvailable: Boolean(row.transcript),
+      },
+    });
+    return row;
+  });
+  if (!updated) return getCall(businessId, callId);
 
   const { notifyCallCompleted } = await import("@/lib/services/notifications");
   await notifyCallCompleted({
@@ -379,18 +423,6 @@ export async function completeCall(
     durationSeconds: updated.durationSeconds,
     requestId: opts?.requestId,
   });
-  await emitAutomationEvent(
-    "call-completed",
-    {
-      id: callId,
-      businessId,
-      callId,
-      phone: call.phoneNumber,
-      durationSeconds: updated.durationSeconds,
-      summary,
-    },
-    { idempotencyKey: `call-completed:${callId}` },
-  );
   return updated;
 }
 
@@ -408,7 +440,7 @@ export async function generateCallSummary(
   if (transcript.length < 20) return null;
   try {
     const { getLLMProvider } = await import("@/lib/providers/llm");
-    const result = await getLLMProvider().complete(
+    const result = await meteredCompletion(businessId, getLLMProvider(),
       [
         {
           role: "system",
@@ -421,7 +453,7 @@ export async function generateCallSummary(
     );
     const summary = result.content?.trim() || null;
     if (summary) {
-      await db.update(calls).set({ summary }).where(eq(calls.id, callId));
+      await db.update(calls).set({ summary }).where(and(eq(calls.id, callId), eq(calls.businessId, businessId)));
       const { recordLlmUsage } = await import("@/lib/services/usage");
       await recordLlmUsage({
         businessId,

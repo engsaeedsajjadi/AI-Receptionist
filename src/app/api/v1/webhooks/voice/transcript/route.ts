@@ -28,6 +28,7 @@ export async function POST(req: NextRequest) {
     await enforceRateLimit(req, "publicWebhook");
     const { payload, idempotencyKey } = await verifyWebhookRequest(req, {
       secret: env.webhookSecret,
+      previousSecrets: env.previousWebhookSecrets,
       scope: "voice:transcript",
     });
     const body = parseWith(payloadSchema, payload);
@@ -78,7 +79,7 @@ export async function POST(req: NextRequest) {
       } else if (body.event_id) {
         const [row] = await tx
           .insert(callMessages)
-          .values({ callId: call.id, role: body.role, content, eventId: body.event_id, seq: body.seq ?? null, metadata })
+          .values({ businessId: body.business_id, callId: call.id, role: body.role, content, eventId: body.event_id, seq: body.seq ?? null, metadata })
           .onConflictDoNothing({ target: [callMessages.callId, callMessages.eventId] })
           .returning({ id: callMessages.id });
         if (!row) {
@@ -96,7 +97,7 @@ export async function POST(req: NextRequest) {
         // Legacy path (no provider event id): header-key dedup only.
         const [row] = await tx
           .insert(callMessages)
-          .values({ callId: call.id, role: body.role, content, metadata })
+          .values({ businessId: body.business_id, callId: call.id, role: body.role, content, metadata })
           .returning({ id: callMessages.id });
         messageId = row.id;
       }

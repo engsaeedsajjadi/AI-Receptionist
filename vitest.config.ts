@@ -8,6 +8,7 @@ export default defineConfig({
     },
   },
   test: {
+    coverage: { provider: "v8", include: ["src/lib/**/*.ts", "src/app/api/**/*.ts"], reporter: ["text", "json-summary", "html"], thresholds: { lines: 80, functions: 80, branches: 80, statements: 80 } },
     environment: "node",
     globals: false,
     include: ["tests/**/*.test.ts"],

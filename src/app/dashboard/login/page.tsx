@@ -8,6 +8,7 @@ export default function LoginPage() {
   const { user, loading, login } = useAuth();
   const router = useRouter();
   const [email, setEmail] = useState("");
+  const [code, setCode] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -29,7 +30,7 @@ export default function LoginPage() {
             e.preventDefault();
             setBusy(true);
             setError(null);
-            login(email.trim(), password)
+            login(email.trim(), password, code || undefined)
               .then(() => router.replace("/dashboard"))
               .catch((err: Error) => setError(err.message))
               .finally(() => setBusy(false));
@@ -57,6 +58,8 @@ export default function LoginPage() {
               className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-slate-400"
             />
           </label>
+          <label className="block text-sm">کد احراز هویت یا بازیابی (اگر فعال است)<input value={code} onChange={(e) => setCode(e.target.value)} autoComplete="one-time-code" dir="ltr" className="mt-1 w-full rounded-lg border px-3 py-2" /></label>
+          <a className="block text-sm underline" href="/account/recovery">بازیابی گذرواژه</a>
           {error ? <p className="rounded-lg bg-red-50 p-2 text-sm text-red-700">{error}</p> : null}
           <button
             type="submit"
@@ -66,6 +69,7 @@ export default function LoginPage() {
             {busy ? "در حال ورود…" : "ورود"}
           </button>
         </form>
+        <div className="mt-4 flex gap-3"><form method="get" action="/api/v1/auth/oauth/google"><button type="submit" className="rounded border p-2">ورود با Google</button></form><form method="get" action="/api/v1/auth/oauth/microsoft"><button type="submit" className="rounded border p-2">ورود با Microsoft</button></form></div>
       </div>
     </main>
   );

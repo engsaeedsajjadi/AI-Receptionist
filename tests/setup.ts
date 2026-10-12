@@ -14,4 +14,17 @@ process.env.APP_URL ??= "http://localhost:3000";
 beforeAll(async () => {
   const { resetEnvCache } = await import("@/lib/env");
   resetEnvCache();
+  // Redis-backed rate-limit counters are process-global: without this reset a
+  // long full-suite run can exhaust the fixed window for the shared "unknown"
+  // client IP and turn unrelated suites into 429s. Each test file starts with a
+  // clean limiter budget (production behaviour is untouched).
+  try {
+    const { getRedis } = await import("@/lib/redis");
+    const redis = getRedis();
+    if (!redis) return;
+    const keys = await redis.keys("rl:*");
+    if (keys.length > 0) await redis.del(keys);
+  } catch {
+    // No Redis in this environment (unit suites): the limiter is a no-op there.
+  }
 });

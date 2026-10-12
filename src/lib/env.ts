@@ -1,4 +1,4 @@
-import { z } from "zod";
+﻿import { z } from "zod";
 
 const nodeEnv = process.env.NODE_ENV ?? "development";
 export const isProduction = nodeEnv === "production";
@@ -6,9 +6,10 @@ export const isTest = nodeEnv === "test";
 export const isDev = !isProduction && !isTest;
 
 const providerEnum = z.enum(["openai", "compatible", "dev"]);
+const speechProviderEnum = z.enum(["openai", "compatible", "gemini", "dev"]);
+const ttsProviderEnum = z.enum(["openai", "compatible", "gemini", "piper", "dev"]);
 const storageEnum = z.enum(["local", "s3"]);
-const voiceEnum = z.enum(["generic", "dev"]);
-
+const voiceEnum = z.enum(["generic", "twilio", "disabled", "dev"]);
 /**
  * Schema-based environment validation.
  * Production fails fast when critical configuration is missing.
@@ -31,6 +32,13 @@ const envSchema = z.object({
     .default("false")
     .transform((v) => v === "true"),
 
+  IDENTITY_ENCRYPTION_KEY: z.string().regex(/^(?:[a-fA-F0-9]{64})?$/).default(""),
+  GOOGLE_CLIENT_ID: z.string().default(""),
+  GOOGLE_CLIENT_SECRET: z.string().default(""),
+  MICROSOFT_CLIENT_ID: z.string().default(""),
+  MICROSOFT_CLIENT_SECRET: z.string().default(""),
+  MICROSOFT_TENANT_ID: z.string().default(""),
+  VOICE_WEBHOOK_PREVIOUS_SECRET: z.string().default(""),
   VOICE_WEBHOOK_SECRET: z.string().default(""),
   N8N_WEBHOOK_SECRET: z.string().default(""),
 
@@ -50,6 +58,9 @@ const envSchema = z.object({
   EMBEDDING_DIMENSIONS: z.coerce.number().int().positive().default(1536),
 
   VOICE_PROVIDER: voiceEnum.default("dev"),
+  TWILIO_ACCOUNT_SID: z.string().default(""),
+  TWILIO_AUTH_TOKEN: z.string().default(""),
+  TWILIO_PHONE_NUMBER: z.string().default(""),
   VOICE_API_BASE_URL: z.string().default(""),
   VOICE_API_KEY: z.string().default(""),
   VOICE_DEFAULT_LANGUAGE: z.string().default("fa-IR"),
@@ -74,14 +85,28 @@ const envSchema = z.object({
   VOICE_VAD_MIN_SPEECH_MS: z.coerce.number().int().positive().default(180),
   VOICE_VAD_MAX_UTTERANCE_MS: z.coerce.number().int().positive().default(12_000),
 
-  STT_PROVIDER: providerEnum.default("dev"),
+  STT_PROVIDER: speechProviderEnum.default("dev"),
   STT_MODEL: z.string().default("whisper-1"),
   STT_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
+  /** Loopback-only development lab STT sidecar. Does not replace Gemini globally. */
+  LOCAL_WHISPER_STT_URL: z.string().default("http://127.0.0.1:5001"),
+  LOCAL_WHISPER_STT_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120000).default(15000),
 
-  TTS_PROVIDER: providerEnum.default("dev"),
+  TTS_PROVIDER: ttsProviderEnum.default("dev"),
   TTS_MODEL: z.string().default("tts-1"),
   TTS_VOICE: z.string().default("alloy"),
+  /** Voice ids that may be used without a cloning-consent record (comma separated). */
+  TTS_ALLOWED_VOICE_IDS: z.string().default(""),
+  /** Platform gate for cloned voices: even with consent, cloning stays off unless this is true. */
+  VOICE_CLONING_ENABLED: z
+    .string()
+    .default("false")
+    .transform((v) => v === "true"),
   TTS_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
+  /** Optional local Piper HTTP server, never an external host. */
+  PIPER_TTS_URL: z.string().default("http://127.0.0.1:5000"),
+  PIPER_TTS_VOICE: z.string().default("fa_IR-amir-medium"),
+  PIPER_TTS_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120000).default(20_000),
 
   STORAGE_PROVIDER: storageEnum.default("local"),
   LOCAL_STORAGE_DIR: z.string().default("./storage"),
@@ -102,7 +127,7 @@ const envSchema = z.object({
     .default("false")
     .transform((v) => v === "true"),
 
-  NOTIFICATION_DEFAULT_CHANNEL: z.enum(["email", "internal"]).default("internal"),
+  NOTIFICATION_DEFAULT_CHANNEL: z.enum(["email", "internal", "sms", "telegram", "whatsapp"]).default("internal"),
   SMTP_HOST: z.string().default(""),
   SMTP_PORT: z.coerce.number().int().positive().default(587),
   SMTP_SECURE: z
@@ -113,6 +138,18 @@ const envSchema = z.object({
   SMTP_PASS: z.string().default(""),
   SMTP_FROM: z.string().default("no-reply@example.com"),
 
+  /**
+   * WhatsApp (Meta Cloud API). Sending requires an access token and a phone
+   * number id; a business-initiated message outside the 24h customer service
+   * window also requires an approved template (WHATSAPP_TEMPLATE_NAME).
+   */
+  WHATSAPP_ACCESS_TOKEN: z.string().default(""),
+  WHATSAPP_PHONE_NUMBER_ID: z.string().default(""),
+  WHATSAPP_TEMPLATE_NAME: z.string().default(""),
+  WHATSAPP_TEMPLATE_LANGUAGE: z.string().default("fa"),
+  WHATSAPP_API_VERSION: z.string().default("v21.0"),
+  WHATSAPP_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
+
   N8N_ENABLED: z
     .string()
     .default("false")
@@ -121,6 +158,24 @@ const envSchema = z.object({
   N8N_API_KEY: z.string().default(""),
   N8N_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
   N8N_MAX_RETRIES: z.coerce.number().int().min(0).max(10).default(2),
+
+  /**
+   * Optional retrieval reranker. `none` keeps the fused (RRF) ordering; the
+   * provider is only constructed when explicitly configured, and a failing
+   * reranker always falls back to the RRF ordering.
+   */
+  RERANK_PROVIDER: z.enum(["none", "lexical", "http"]).default("none"),
+  RERANK_BASE_URL: z.string().default(""),
+  RERANK_API_KEY: z.string().default(""),
+  RERANK_MODEL: z.string().default("rerank-1"),
+  RERANK_TIMEOUT_MS: z.coerce.number().int().positive().default(8_000),
+
+  PAYMENT_PROVIDER: z.enum(["disabled", "stripe", "compatible", "test"]).default("disabled"),
+  PAYMENT_API_BASE_URL: z.string().default(""),
+  PAYMENT_API_KEY: z.string().default(""),
+  PAYMENT_WEBHOOK_SECRET: z.string().default(""),
+  PAYMENT_TIMEOUT_MS: z.coerce.number().int().positive().default(15_000),
+  PAYMENT_MODE: z.enum(["test", "live"]).default("test"),
 
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
   SENTRY_DSN: z.string().default(""),
@@ -149,6 +204,8 @@ function loadEnv(): AppEnv {
       fail("JWT_REFRESH_SECRET must be at least 32 characters in production");
     if (!e.VOICE_WEBHOOK_SECRET) fail("VOICE_WEBHOOK_SECRET is required in production");
     if (!e.N8N_WEBHOOK_SECRET) fail("N8N_WEBHOOK_SECRET is required in production");
+    if (e.NOTIFICATION_DEFAULT_CHANNEL === "whatsapp" && (!e.WHATSAPP_ACCESS_TOKEN || !e.WHATSAPP_PHONE_NUMBER_ID))
+      fail("WHATSAPP_ACCESS_TOKEN and WHATSAPP_PHONE_NUMBER_ID are required when the default notification channel is whatsapp");
     if (e.N8N_ENABLED && !e.N8N_API_KEY)
       fail("N8N_API_KEY is required in production when N8N_ENABLED=true (automation dispatch auth)");
     if (["openai"].includes(e.LLM_PROVIDER) && !e.OPENAI_API_KEY)
@@ -166,12 +223,27 @@ function loadEnv(): AppEnv {
       fail("VOICE_MEDIA_PUBLIC_URL is required when generic voice auto-answer is enabled");
     if (e.VOICE_PROVIDER === "generic" && e.VOICE_AUTO_ANSWER && !e.VOICE_MEDIA_TOKEN)
       fail("VOICE_MEDIA_TOKEN is required when generic voice auto-answer is enabled");
+    if (e.VOICE_PROVIDER === "twilio" && (!e.TWILIO_ACCOUNT_SID || !e.TWILIO_AUTH_TOKEN))
+      fail("TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN are required when VOICE_PROVIDER=twilio");
+    if (e.VOICE_PROVIDER === "twilio" && e.VOICE_AUTO_ANSWER && !e.VOICE_MEDIA_PUBLIC_URL)
+      fail("VOICE_MEDIA_PUBLIC_URL is required when twilio voice auto-answer is enabled");
+    if (e.VOICE_PROVIDER === "twilio" && e.VOICE_AUTO_ANSWER && !e.VOICE_MEDIA_TOKEN)
+      fail("VOICE_MEDIA_TOKEN is required when twilio voice auto-answer is enabled");
     if (e.STT_PROVIDER === "openai" && !e.OPENAI_API_KEY)
       fail("OPENAI_API_KEY is required when STT_PROVIDER=openai");
     if (e.TTS_PROVIDER === "openai" && !e.OPENAI_API_KEY)
       fail("OPENAI_API_KEY is required when TTS_PROVIDER=openai");
     if (e.EMBEDDING_PROVIDER === "openai" && !e.OPENAI_API_KEY)
       fail("OPENAI_API_KEY is required when EMBEDDING_PROVIDER=openai");
+    if (e.PAYMENT_PROVIDER !== "disabled" && e.PAYMENT_PROVIDER !== "test" && (!e.PAYMENT_API_BASE_URL || !e.PAYMENT_API_KEY))
+      fail("PAYMENT_API_BASE_URL and PAYMENT_API_KEY are required when a payment provider is enabled");
+    if (e.RERANK_PROVIDER === "http" && !e.RERANK_BASE_URL)
+      fail("RERANK_BASE_URL is required when RERANK_PROVIDER=http");
+    if (e.PAYMENT_PROVIDER === "test") fail("PAYMENT_PROVIDER=test is not allowed in production");
+    if (e.PAYMENT_PROVIDER !== "disabled" && !e.PAYMENT_WEBHOOK_SECRET)
+      fail("PAYMENT_WEBHOOK_SECRET is required when automatic payment collection is enabled (webhook verification)");
+    if (e.PAYMENT_PROVIDER !== "disabled" && e.PAYMENT_MODE === "test")
+      fail("PAYMENT_MODE=test is not allowed in production when collection is enabled");
     if (e.STORAGE_PROVIDER === "s3" && (!e.S3_ENDPOINT || !e.S3_ACCESS_KEY_ID || !e.S3_SECRET_ACCESS_KEY))
       fail("S3_ENDPOINT, S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY are required when STORAGE_PROVIDER=s3");
   }
@@ -211,6 +283,9 @@ export const env = {
   },
   get webhookSecret() {
     return getEnv().VOICE_WEBHOOK_SECRET || "dev-webhook-secret";
+  },
+  get previousWebhookSecrets() {
+    return [getEnv().VOICE_WEBHOOK_PREVIOUS_SECRET].filter(Boolean);
   },
   get n8nWebhookSecret() {
     return getEnv().N8N_WEBHOOK_SECRET || "dev-webhook-secret";

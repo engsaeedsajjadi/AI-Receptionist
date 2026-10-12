@@ -1,9 +1,12 @@
+import { assertTenantScope } from "@/lib/request-context";
+import { scoreLead } from "@/lib/scoring";
 import { and, desc, eq, notInArray } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
 import { leads } from "@/db/schema";
 import { AppError } from "@/lib/errors";
 import { advisoryXactLock } from "@/lib/tx";
+import { enqueueOutbox } from "@/lib/services/outbox";
 import { findOrCreateCustomer } from "@/lib/services/customers";
 import {
   normalizePersianText,
@@ -95,6 +98,7 @@ const CLOSED_STATUSES = ["WON", "LOST"] as const;
 export type LeadOutcome = "created" | "updated_open" | "reopened" | "existing_customer_new_lead";
 
 export async function findOpenLead(businessId: string, customerId: string) {
+  assertTenantScope(businessId);
   const [row] = await db
     .select()
     .from(leads)
@@ -124,6 +128,7 @@ export async function createOrUpdateLead(input: {
   source?: string;
   callId?: string;
 }): Promise<{ lead: typeof leads.$inferSelect; outcome: LeadOutcome }> {
+  assertTenantScope(input.businessId);
   return db.transaction(async (tx) => {
     // Serialize concurrent upserts for the same customer: without this, two
     // simultaneous calls both see "no open lead" and insert duplicates.
@@ -136,24 +141,49 @@ export async function createOrUpdateLead(input: {
       .limit(1);
 
     const e = input.extraction;
-    const patch = {
-      type: e.intent,
-      budgetMin: e.budgetMin ?? undefined,
-      budgetMax: e.budgetMax ?? undefined,
-      location: e.location ?? undefined,
-      minArea: e.minArea ?? undefined,
-      maxArea: e.maxArea ?? undefined,
-      bedrooms: e.bedrooms ?? undefined,
-      timeframe: e.timeframe ?? undefined,
-      requestedVisit: e.requestedVisit || undefined,
-      summary: e.summary ?? undefined,
-      updatedAt: new Date(),
-    } as const;
+    // Explainable scoring: recompute from the merged signals and persist the
+    // rationale next to the score, so a later reader can see exactly why.
+    const reasons = (latest: typeof leads.$inferSelect | undefined) => {
+      const merged = {
+        type: e.intent ?? latest?.type ?? null,
+        budgetMin: e.budgetMin ?? latest?.budgetMin ?? null,
+        budgetMax: e.budgetMax ?? latest?.budgetMax ?? null,
+        location: e.location ?? latest?.location ?? null,
+        minArea: e.minArea ?? latest?.minArea ?? null,
+        maxArea: e.maxArea ?? latest?.maxArea ?? null,
+        bedrooms: e.bedrooms ?? latest?.bedrooms ?? null,
+        timeframe: e.timeframe ?? latest?.timeframe ?? null,
+        requestedVisit: e.requestedVisit || latest?.requestedVisit || false,
+        source: input.source ?? latest?.source ?? "call",
+        summary: e.summary ?? latest?.summary ?? null,
+        status: latest?.status ?? "NEW",
+      };
+      return scoreLead(merged);
+    };
+
+    const patch = (latest: typeof leads.$inferSelect | undefined) => {
+      const scored = reasons(latest);
+      return {
+        type: e.intent,
+        budgetMin: e.budgetMin ?? undefined,
+        budgetMax: e.budgetMax ?? undefined,
+        location: e.location ?? undefined,
+        minArea: e.minArea ?? undefined,
+        maxArea: e.maxArea ?? undefined,
+        bedrooms: e.bedrooms ?? undefined,
+        timeframe: e.timeframe ?? undefined,
+        requestedVisit: e.requestedVisit || undefined,
+        summary: e.summary ?? undefined,
+        score: scored.score,
+        scoreRationale: scored as unknown as Record<string, unknown>,
+        updatedAt: new Date(),
+      } as const;
+    };
 
     if (latest && (OPEN_STATUSES as readonly string[]).includes(latest.status)) {
       const [updated] = await tx
         .update(leads)
-        .set({ ...patch, updatedAt: new Date() })
+        .set({ ...patch(latest), updatedAt: new Date() })
         .where(eq(leads.id, latest.id))
         .returning();
       return { lead: updated, outcome: "updated_open" };
@@ -162,9 +192,16 @@ export async function createOrUpdateLead(input: {
     if (latest && latest.status === "LOST") {
       const [reopened] = await tx
         .update(leads)
-        .set({ ...patch, status: "NEW", source: input.source ?? latest.source, updatedAt: new Date() })
+        .set({ ...patch(latest), status: "NEW", source: input.source ?? latest.source, updatedAt: new Date() })
         .where(eq(leads.id, latest.id))
         .returning();
+      await enqueueOutbox(tx, {
+        businessId: input.businessId,
+        topic: "lead.created",
+        idempotencyKey: `lead.created:${reopened.id}:${reopened.updatedAt.toISOString()}`,
+        payload: { businessId: input.businessId, id: reopened.id, leadId: reopened.id, customerId: reopened.customerId,
+          status: reopened.status, source: reopened.source, outcome: "reopened", callId: input.callId ?? null },
+      });
       return { lead: reopened, outcome: "reopened" };
     }
 
@@ -185,8 +222,19 @@ export async function createOrUpdateLead(input: {
         timeframe: e.timeframe,
         requestedVisit: e.requestedVisit,
         summary: e.summary,
+        // A brand-new lead has no history: score exactly what was collected.
+        score: reasons(undefined).score,
+        scoreRationale: reasons(undefined) as unknown as Record<string, unknown>,
       })
       .returning();
+    await enqueueOutbox(tx, {
+      businessId: input.businessId,
+      topic: "lead.created",
+      idempotencyKey: `lead.created:${created.id}`,
+      payload: { businessId: input.businessId, id: created.id, leadId: created.id, customerId: created.customerId,
+        status: created.status, source: created.source, type: created.type, outcome: latest ? "existing_customer_new_lead" : "created",
+        callId: input.callId ?? null },
+    });
     return { lead: created, outcome: latest ? "existing_customer_new_lead" : "created" };
   });
 }
@@ -202,6 +250,7 @@ export async function intakeLeadFromCall(input: {
   callId?: string;
   source?: string;
 }) {
+  assertTenantScope(input.businessId);
   const phone = input.extraction.phone ?? normalizePhone(input.callerPhone);
   if (!phone) throw new AppError(400, "VALIDATION_ERROR", "A valid caller phone number is required");
 
@@ -221,6 +270,7 @@ export async function intakeLeadFromCall(input: {
 }
 
 export async function getLead(businessId: string, leadId: string) {
+  assertTenantScope(businessId);
   const [row] = await db
     .select()
     .from(leads)

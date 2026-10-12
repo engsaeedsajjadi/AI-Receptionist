@@ -200,6 +200,68 @@ describe.skipIf(!hasTestDatabase())("voice turn pipeline (real database, fake pr
     expect(types).toEqual(["llm_input_tokens", "llm_output_tokens", "stt_minutes", "tts_characters"]);
   });
 
+  itDb("archives speech using the actual TTS MIME type", async () => {
+    const cases = [
+      { mimeType: "audio/wav", extension: "wav" },
+      { mimeType: "audio/l16;rate=24000", extension: "pcm" },
+    ];
+
+    for (const testCase of cases) {
+      const { business, agent, call } = await setup("Voice MIME");
+
+      const audio = testCase.extension === "wav"
+        ? Buffer.from("RIFF0000WAVE", "ascii")
+        : Buffer.alloc(480, 0);
+
+      const baseTts = new FakeTTS();
+
+      const tts: TTSProvider = {
+        name: "fake",
+        async synthesize(text: string) {
+          return {
+            ...(await baseTts.synthesize(text)),
+            audio,
+            mimeType: testCase.mimeType,
+          };
+        },
+      };
+
+      const eventId = `mime-${testCase.extension}-${Date.now()}`;
+
+      const result = await runVoiceTurn({
+        businessId: business.id,
+        agentId: agent.id,
+        callId: call.id,
+        transcript: "سلام",
+        eventId,
+        requestId: `req-${eventId}`,
+        actor: "test",
+        tts,
+        llm: new FakeLLM([{ content: "پاسخ آزمایشی" }]),
+      });
+
+      expect(result.audioStored).toBe(true);
+      expect(result.audioMimeType).toBe(testCase.mimeType);
+      expect(result.audioUrl).not.toBeNull();
+
+      const url = new URL(result.audioUrl!);
+      expect(url.pathname.endsWith(`.${testCase.extension}`)).toBe(true);
+
+      const storedPath = path.resolve(
+        "storage",
+        "business",
+        business.id,
+        "calls",
+        call.id,
+        "replies",
+        `${eventId}.${testCase.extension}`,
+      );
+
+      const stored = await fs.readFile(storedPath);
+      expect(stored.equals(audio)).toBe(true);
+    }
+  });
+
   itDb("transcript input skips STT but still runs agent + TTS", async () => {
     const { business, agent, call } = await setup("Voice Biz T");
     const stt = new FakeSTT("نباید صدا شود");

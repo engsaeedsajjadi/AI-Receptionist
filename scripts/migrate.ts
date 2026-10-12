@@ -15,7 +15,8 @@ async function main() {
   if (!databaseUrl) throw new Error("DATABASE_URL is required");
 
   const pool = new Pool({ connectionString: databaseUrl });
-  const db = drizzle(pool);
+  const connection = await pool.connect();
+  const db = drizzle(connection);
   try {
     // Serialize concurrent boots (multi-replica deploys): only one migrator
     // runs DDL at a time; the lock releases automatically on disconnect.
@@ -36,9 +37,34 @@ async function main() {
     await db.execute(
       sql`CREATE INDEX IF NOT EXISTS properties_location_trgm_idx ON properties USING gin (location gin_trgm_ops)`,
     );
+    // Cursor-pagination indexes. The keyset window orders and compares on
+    // `date_trunc('milliseconds', created_at AT TIME ZONE 'UTC')` (cursors carry
+    // milliseconds, Postgres stores microseconds), so the plain
+    // `(business_id, created_at)` index cannot serve the ordering. These
+    // expression indexes make the page boundaries index-backed: EXPLAIN shows an
+    // Index Scan with the keyset condition as the index condition and no sort.
+    console.log("[migrate] creating cursor-pagination indexes ...");
+    const cursorTables = [
+      "appointments",
+      "calls",
+      "customers",
+      "knowledge_documents",
+      "leads",
+      "notifications",
+      "properties",
+      "usage_records",
+      "users",
+    ];
+    for (const table of cursorTables) {
+      await db.execute(sql.raw(
+        `CREATE INDEX IF NOT EXISTS ${table}_business_cursor_idx ON ${table} ` +
+        `(business_id, (date_trunc('milliseconds', created_at AT TIME ZONE 'UTC')) DESC, id DESC)`,
+      ));
+    }
     console.log("[migrate] done");
   } finally {
-    await pool.end();
+    try { await connection.query("SELECT pg_advisory_unlock(918273645)"); }
+    finally { connection.release(); await pool.end(); }
   }
 }
 

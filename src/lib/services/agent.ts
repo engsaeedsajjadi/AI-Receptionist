@@ -1,10 +1,20 @@
+import { meteredCompletion } from "@/lib/services/metered-ai";
+import { loadAgentMemory, summarizeConversation } from "@/lib/services/memory";
+import { hybridSearch } from "@/lib/services/knowledge";
+import { markEvidenceUsed, searchKnowledgeGoverned } from "@/lib/services/knowledge-governance";
+import { runtimePrincipal } from "@/lib/rag/access";
+import { verifyClaims } from "@/lib/services/answer-quality";
+import { SIDE_EFFECT_INTENTS, resolveIntent, type ResolvedIntent } from "@/lib/services/conversation-intelligence";
+import { requireTenantFeature } from "@/lib/tenant-config";
+import { assertTenantScope } from "@/lib/request-context";
 import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "@/db";
 import { agents, businesses, callMessages, calls } from "@/db/schema";
+import { collectRagEvidence, evidencePrompt, evidenceFallback, isKnowledgeDenial } from "@/lib/rag-evidence";
 import { AppError } from "@/lib/errors";
 import { TOOL_FAILURE_MESSAGE_FA, UNKNOWN_INFO_MESSAGE_FA, buildSystemPrompt } from "@/lib/guardrails";
-import { logWarn } from "@/lib/logger";
+import { logInfo, logWarn } from "@/lib/logger";
 import { getLLMProvider, type ChatMessage, type LLMProvider } from "@/lib/providers/llm";
 import { normalizePersianText } from "@/lib/normalization";
 import { recordLlmUsage } from "@/lib/services/usage";
@@ -19,6 +29,10 @@ export const AgentConfigSchema = z.object({
   transferNumber: z.string().max(30).optional(),
   fallbackBehavior: z.string().max(1000).optional(),
   systemInstructions: z.string().max(5000).optional(),
+  memoryEnabled: z.boolean().default(false),
+  retrievalMode: z.enum(["tools", "automatic"]).default("tools"),
+  model: z.string().min(1).max(150).nullable().optional(),
+  allowedTools: z.array(z.string().min(1).max(100)).max(50).nullable().optional(),
   temperature: z.number().min(0).max(2).default(0.2),
   maxToolIterations: z.number().int().min(1).max(10).default(5),
 });
@@ -32,7 +46,7 @@ async function loadAgent(businessId: string, agentId?: string) {
     const [row] = await db
       .select()
       .from(agents)
-      .where(and(eq(agents.id, agentId), eq(agents.businessId, businessId)))
+      .where(and(eq(agents.id, agentId), eq(agents.businessId, businessId), eq(agents.isActive, true)))
       .limit(1);
     if (!row) throw new AppError(404, "AGENT_NOT_FOUND", "Agent not found");
     return row;
@@ -55,16 +69,16 @@ function parseAgentConfig(agent: typeof agents.$inferSelect): AgentConfig {
     ...raw,
   });
   if (!parsed.success) {
-    return AgentConfigSchema.parse({ agentName: agent.name });
+    throw new AppError(400, "VALIDATION_ERROR", "Agent configuration is invalid; correct it before running the agent");
   }
   return parsed.data;
 }
 
-async function loadCallHistory(callId: string): Promise<ChatMessage[]> {
+async function loadCallHistory(businessId: string, callId: string): Promise<ChatMessage[]> {
   const rows = await db
     .select()
     .from(callMessages)
-    .where(eq(callMessages.callId, callId))
+    .where(and(eq(callMessages.callId, callId), eq(callMessages.businessId, businessId)))
     .orderBy(desc(callMessages.timestamp))
     .limit(MAX_HISTORY_MESSAGES);
   return rows.reverse().map((r) => ({
@@ -83,14 +97,71 @@ export type AgentTurnInput = {
   actor?: string;
   /** Provider override for tests/embeddings; defaults to the configured LLM. */
   llm?: LLMProvider;
+  /** Optional speech-first style; never caps tool calls, claims, or written records. */
+  briefVoiceReply?: boolean;
 };
 
 export type AgentTurnResult = {
   reply: string;
   toolCalls: Array<{ tool: string; status: string }>;
   agentId: string;
+  /** Tenant-configured voice for this agent (synthesis override; see voice-safety). */
+  voiceId: string;
   usage: { inputTokens: number; outputTokens: number };
+  /**
+   * Grounding verdict for the delivered reply (null when no evidence was
+   * retrieved). `supportRatio` is the share of the answer's claims supported by
+   * the retrieved evidence; a reply that fails the gate is replaced with the
+   * extractive fallback before it reaches the caller.
+   */
+  verification: { verdict: string; supportRatio: number | null; claims: number } | null;
+  /** Governed-retrieval outcome: degraded means embeddings were unavailable. */
+  retrieval: { id: string | null; degraded: boolean; documents: number } | null;
+  /** Typed intent decision for this turn (deterministic boundary, never model output). */
+  intent: ResolvedIntent;
 };
+
+/**
+ * Slot values are caller-provided personal data (phone, name): only the slot
+ * *keys* are persisted with the intent, never their values.
+ */
+function intentMetadata(intent: ResolvedIntent): Record<string, unknown> {
+  return {
+    intent: intent.intent,
+    confidence: intent.confidence,
+    actionable: intent.actionable,
+    needsClarification: intent.needsClarification,
+    reason: intent.reason,
+    slotKeys: Object.keys(intent.slots).filter((key) => intent.slots[key as keyof ResolvedIntent["slots"]] !== undefined),
+  };
+}
+
+/**
+ * Steering hint derived from the typed boundary. Side-effecting intents that are
+ * not actionable (a one-word "cancel" with no context, a complaint that may be
+ * about something else) must be confirmed before anything is booked, transferred
+ * or cancelled. The hint guides the model; the intent decision itself never comes
+ * from the model.
+ */
+export function intentPromptHint(intent: ResolvedIntent, language: string): string | null {
+  // A side-effecting intent we cannot act on (low confidence, or explicitly
+  // flagged) must be confirmed with the caller first. UNKNOWN is handled by the
+  // existing "ask a short clarifying question" guardrail, not by this hint.
+  if (intent.intent === "UNKNOWN" || intent.actionable) return null;
+  if (!intent.needsClarification && !SIDE_EFFECT_INTENTS.includes(intent.intent)) return null;
+  return language.startsWith("en")
+    ? `Detected caller intent: ${intent.intent} (confidence ${intent.confidence}). Before performing any booking, transfer or cancellation, confirm the request with the caller in one short question.`
+    : `قصد تشخیص‌داده‌شده‌ی تماس‌گیرنده: ${intent.intent} (اطمینان ${intent.confidence}). پیش از هر رزرو، انتقال تماس یا لغو، درخواست را با یک پرسش کوتاه از تماس‌گیرنده تأیید کن.`;
+}
+
+/**
+ * Minimum share of an answer's claims that must be supported by retrieved
+ * evidence. Deliberately below the library default (0.7): Persian paraphrases
+ * drop content words, so a legitimate answer shares fewer tokens than an English
+ * one. Lowering it further would let fabrications through; raising it needs eval
+ * data from real calls.
+ */
+const ANSWER_MIN_SUPPORT_RATIO = 0.6;
 
 /**
  * The real AI runtime: guardrailed system prompt + RAG/property context +
@@ -100,6 +171,9 @@ export type AgentTurnResult = {
  * audited tool registry with tenant context.
  */
 export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
+  assertTenantScope(input.businessId);
+  const agentStartedAt = Date.now();
+  await requireTenantFeature(input.businessId, "agent");
   // Normalize Persian input BEFORE any downstream processing (tool parsing,
   // history persistence, LLM): ي/ي, ک/ك, digits, tashkeel, spacing.
   const userMessage = normalizePersianText(input.userMessage).trim().slice(0, 4000);
@@ -123,7 +197,13 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
   if (!business) throw new AppError(404, "BUSINESS_NOT_FOUND", "Business not found");
   const config = parseAgentConfig(agent);
 
-  const history: ChatMessage[] = input.callId ? await loadCallHistory(input.callId) : [];
+  // Typed intent boundary: the model never decides what the caller asked for.
+  // Resolution is deterministic (keyword + slot extraction + confidence policy),
+  // so the same utterance always produces the same decision, and an unclear
+  // side-effecting request is confirmed before it becomes a side effect.
+  const intent = resolveIntent({ utterance: userMessage });
+
+  const history: ChatMessage[] = input.callId ? await loadCallHistory(input.businessId, input.callId) : [];
   history.push({ role: "user", content: userMessage });
 
   // Preload lightweight business context for the prompt (no secrets).
@@ -138,7 +218,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
     .join("\n");
   void settings;
 
-  const systemPrompt = buildSystemPrompt({
+  let systemPrompt = buildSystemPrompt({
     language: config.language,
     businessName: business.name,
     agentName: config.agentName ?? agent.name,
@@ -148,9 +228,58 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
     businessContext,
   });
 
+  // Opt-in for spoken interactions: the model should produce a short but
+  // truthful answer, without removing tenant instructions or skipping tools.
+  // Do not hard-truncate the final response: that could drop safety-critical
+  // confirmations, prices, or necessary qualifications.
+  if (input.briefVoiceReply) {
+    systemPrompt += config.language.startsWith("en")
+      ? "\nVOICE RESPONSE STYLE: Reply in one or two natural, concise spoken sentences when possible. Preserve required confirmations, limitations and safety information. Do not invent facts or skip tools."
+      : "\nسبک پاسخ صوتی: در صورت امکان با یک یا دو جملهٔ کوتاه و طبیعی پاسخ بده (ترجیحاً کمتر از ۱۵۰ نویسه). تأییدهای لازم، محدودیت‌ها، اطلاعات ضروری و دستورالعمل‌های کسب‌وکار را حذف نکن؛ اطلاعات نساز و ابزارهای لازم را کنار نگذار.";
+  }
+
+  const intentHint = intentPromptHint(intent, config.language);
+  if (intentHint) systemPrompt += "\n" + intentHint;
+  if (config.memoryEnabled && input.callId) systemPrompt += "\n" + await loadAgentMemory(input.businessId, input.callId);
   const llm = input.llm ?? getLLMProvider();
-  const tools = getToolDefinitions();
-  const messages: ChatMessage[] = [{ role: "system", content: systemPrompt }, ...history.slice(-MAX_HISTORY_MESSAGES)];
+  const tools = getToolDefinitions().filter((tool) => !config.allowedTools || config.allowedTools.includes(tool.name));
+  const allowedTools = new Set(tools.map((tool) => tool.name));
+  const evidence = new Map<string, { document: string; content: string }>();
+  /** Chunk id → document id, so evidence actually used can be recorded. */
+  const evidenceDocuments = new Map<string, string>();
+  let retrieval: AgentTurnResult["retrieval"] = null;
+  if (config.retrievalMode === "automatic" && allowedTools.has("search_knowledge")) {
+    // Governed retrieval: the ACL is evaluated in SQL for this runtime principal
+    // (ROLE/PRIVATE documents stay invisible to a caller-facing AI), the tenant
+    // knowledge feature is honoured, reranking applies when configured, and the
+    // retrieval is recorded for analytics. A retrieval failure degrades to "no
+    // evidence" instead of failing the call.
+    const retrievalStartedAt = Date.now();
+    const found = await searchKnowledgeGoverned({
+      businessId: input.businessId,
+      query: userMessage,
+      principal: runtimePrincipal({ agentId: agent.id }),
+      topK: 5,
+      requestId: input.requestId,
+      agentId: agent.id,
+      callId: input.callId ?? null,
+    });
+    logInfo("Agent retrieval latency", {
+      requestId: input.requestId,
+      businessId: input.businessId,
+      callId: input.callId,
+      operation: "agent.retrieval",
+      durationMs: Date.now() - retrievalStartedAt,
+      status: found.degraded ? "degraded" : "ok",
+      documents: found.documentIds.length,
+    });
+    retrieval = { id: found.retrievalId, degraded: found.degraded, documents: found.documentIds.length };
+    for (const chunk of found.chunks) {
+      evidence.set(chunk.id, { document: chunk.documentTitle, content: chunk.content.slice(0, 1500) });
+      evidenceDocuments.set(chunk.id, chunk.documentId);
+    }
+  }
+  const messages: ChatMessage[] = [{ role: "system", content: systemPrompt + (evidence.size ? "\n" + evidencePrompt([...evidence.values()]) : "") }, ...history.slice(-MAX_HISTORY_MESSAGES)];
 
   let inputTokens = 0;
   let outputTokens = 0;
@@ -159,7 +288,9 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
   let idempotencySeq = 0;
 
   for (let iteration = 0; iteration < config.maxToolIterations; iteration++) {
-    const result = await llm.complete(messages, {
+    const llmStageStartedAt = Date.now();
+    const result = await meteredCompletion(input.businessId, llm, messages, {
+      model: config.model ?? undefined,
       tools,
       toolChoice: "auto",
       temperature: config.temperature,
@@ -178,6 +309,17 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
       metadata: { callId: input.callId, agentId: agent.id },
     });
 
+    logInfo("Agent LLM iteration latency", {
+      requestId: input.requestId,
+      businessId: input.businessId,
+      callId: input.callId,
+      operation: "agent.llm.iteration",
+      durationMs: Date.now() - llmStageStartedAt,
+      status: "ok",
+      iteration: iteration + 1,
+      toolCalls: result.toolCalls.length,
+    });
+
     if (result.toolCalls.length === 0) {
       reply = result.content?.trim() || null;
       break;
@@ -186,17 +328,31 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
     messages.push({
       role: "assistant",
       content: result.content ?? "",
-      toolCalls: result.toolCalls.map((t) => ({ id: t.id, name: t.name, arguments: JSON.stringify(t.arguments) })),
+      toolCalls: result.toolCalls.map((t) => ({ id: t.id, name: t.name, arguments: JSON.stringify(t.arguments), thoughtSignature: t.thoughtSignature })),
     });
 
     for (const tc of result.toolCalls) {
-      const toolResult = await executeToolCall({
+      const toolStartedAt = Date.now();
+      const toolResult = allowedTools.has(tc.name) ? await executeToolCall({
         businessId: input.businessId,
         callId: input.callId,
+        agentId: agent.id,
         tool: tc.name,
         args: tc.arguments,
         requestId: input.requestId,
         actor: input.actor ?? "agent-runtime",
+      }) : { status: "FAILED" as const, error: "Tool is not allowed for this agent" };
+      if (tc.name === "search_knowledge" && toolResult.status === "SUCCESS") {
+        for (const item of collectRagEvidence(toolResult.data)) evidence.set(`${item.document}:${item.content}`, item);
+      }
+      logInfo("Agent tool latency", {
+        requestId: input.requestId,
+        businessId: input.businessId,
+        callId: input.callId,
+        operation: "agent.tool",
+        durationMs: Date.now() - toolStartedAt,
+        status: toolResult.status,
+        tool: tc.name,
       });
       executed.push({ tool: tc.name, status: toolResult.status });
       messages.push({
@@ -208,6 +364,62 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
         }).slice(0, 8000),
       });
     }
+    // Rebuild from original system instructions, never accumulate arbitrary
+    // tool text as instructions. Evidence is bounded, quoted, and read-only.
+    if (evidence.size) messages[0] = { role: "system", content: systemPrompt + "\n" + evidencePrompt([...evidence.values()]) };
+  }
+
+  if (evidence.size && (!reply || isKnowledgeDenial(reply))) {
+    reply = evidenceFallback([...evidence.values()], config.language);
+  }
+
+  // Grounding gate. The prompt asks the model to stay inside the evidence, but
+  // asking is not enforcing: every claim in the reply is checked against the
+  // retrieved excerpts, and an answer that is not supported by them is replaced
+  // by the extractive excerpts (or the honest unknown message) before the caller
+  // hears it. Evidence ids are bounded for the report; tool-derived evidence is
+  // included under a stable synthetic id.
+  let verification: AgentTurnResult["verification"] = null;
+  const usedDocumentIds = new Set<string>();
+  if (reply && evidence.size > 0) {
+    const items = [...evidence.entries()].slice(0, 20).map(([id, item]) => ({
+      id: id.length <= 200 ? id : `excerpt:${item.document}`.slice(0, 200),
+      content: item.content,
+    }));
+    const report = verifyClaims({ answer: reply, evidence: items, minSupportRatio: ANSWER_MIN_SUPPORT_RATIO });
+    verification = { verdict: report.verdict, supportRatio: report.supportRatio, claims: report.claims.length };
+    if (report.deliverable) {
+      for (const claim of report.claims) {
+        for (const id of claim.evidenceIds) {
+          const documentId = evidenceDocuments.get(id);
+          if (documentId) usedDocumentIds.add(documentId);
+        }
+      }
+    } else {
+      logWarn("Answer was not grounded in the retrieved evidence", {
+        requestId: input.requestId,
+        businessId: input.businessId,
+        callId: input.callId,
+        operation: "agent.grounding",
+        status: report.verdict,
+        supportRatio: report.supportRatio,
+      });
+      reply = evidence.size ? evidenceFallback([...evidence.values()], config.language) : UNKNOWN_INFO_MESSAGE_FA;
+    }
+  }
+
+  // Close the analytics loop: which retrieved documents actually made it into
+  // the answer read to the caller.
+  if (retrieval?.id && usedDocumentIds.size > 0) {
+    await markEvidenceUsed(input.businessId, retrieval.id, [...usedDocumentIds]).catch((error: unknown) => {
+      logWarn("Retrieval evidence usage could not be recorded", {
+        requestId: input.requestId,
+        businessId: input.businessId,
+        operation: "knowledge.analytics",
+        status: "error",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   }
 
   if (!reply) {
@@ -230,13 +442,44 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
       .limit(1);
     if (call) {
       await db.insert(callMessages).values([
-        { callId: input.callId, role: "CUSTOMER", content: userMessage },
-        { callId: input.callId, role: "AGENT", content: reply },
+        { businessId: input.businessId, callId: input.callId, role: "CUSTOMER", content: userMessage },
+        {
+          businessId: input.businessId,
+          callId: input.callId,
+          role: "AGENT",
+          content: reply,
+          // Intent analytics live on the agent turn; slot values (phone, name)
+          // are deliberately not persisted here.
+          metadata: { intent: intentMetadata(intent), verification },
+        },
       ]);
     }
   }
 
-  return { reply, toolCalls: executed, agentId: agent.id, usage: { inputTokens, outputTokens } };
+  if (config.memoryEnabled && input.callId) {
+    try { await summarizeConversation({ businessId: input.businessId, callId: input.callId, requestId: input.requestId, llm, model: config.model ?? undefined }); }
+    catch (error) { logWarn("Conversation summary unavailable", { businessId: input.businessId, callId: input.callId, error: error instanceof Error ? error.message : String(error) }); }
+  }
+  logInfo("Agent total latency", {
+    requestId: input.requestId,
+    businessId: input.businessId,
+    callId: input.callId,
+    operation: "agent.total",
+    durationMs: Date.now() - agentStartedAt,
+    status: "ok",
+    toolCalls: executed.length,
+  });
+  logInfo("Caller intent resolved", {
+    requestId: input.requestId,
+    businessId: input.businessId,
+    callId: input.callId,
+    operation: "intent.resolve",
+    status: intent.needsClarification ? "needs_clarification" : "accepted",
+    intent: intent.intent,
+    confidence: intent.confidence,
+  });
+
+  return { reply, toolCalls: executed, agentId: agent.id, voiceId: agent.voiceId, usage: { inputTokens, outputTokens }, verification, retrieval, intent };
 }
 
 /** Safe fallback reply when the LLM call itself fails. */

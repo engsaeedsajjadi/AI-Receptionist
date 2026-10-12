@@ -106,6 +106,7 @@ export async function POST(req: NextRequest) {
 
     const { payload, idempotencyKey } = await verifyWebhookRequest(req, {
       secret: env.webhookSecret,
+      previousSecrets: env.previousWebhookSecrets,
       scope: "voice:audio",
       parseJson: !isMultipart,
       maxBytes: isMultipart ? MAX_AUDIO_BYTES + 1024 * 1024 : undefined,
