@@ -3,13 +3,19 @@ import { pcm16ToWav } from "@/lib/voice/audio";
 import { normalizePiperWav, validatePiperEndpoint, PiperTTSProvider } from "@/lib/providers/piper-tts";
 
 // Isolate local-Piper tests from DATABASE_URL and all production secrets.
-vi.mock("@/lib/env", () => ({
-  getEnv: () => ({
-    PIPER_TTS_URL: "http://127.0.0.1:5000",
-    PIPER_TTS_VOICE: "fa_IR-amir-medium",
-    PIPER_TTS_TIMEOUT_MS: 20_000,
-  }),
-}));
+vi.mock("@/lib/env", async (importOriginal) => {
+  // Vitest setup imports resetEnvCache from this module; preserve all exports.
+  const actual = await importOriginal<typeof import("@/lib/env")>();
+  return {
+    ...actual,
+    getEnv: () => ({
+      ...actual.getEnv(),
+      PIPER_TTS_URL: "http://127.0.0.1:5000",
+      PIPER_TTS_VOICE: "fa_IR-amir-medium",
+      PIPER_TTS_TIMEOUT_MS: 20_000,
+    }),
+  };
+});
 
 describe("local Piper TTS sandbox", () => {
   afterEach(() => vi.unstubAllGlobals());
