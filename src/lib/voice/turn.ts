@@ -41,6 +41,8 @@ export type VoiceTurnInput = {
   ttsFormat?: "mp3" | "wav" | "opus" | "pcm";
   requestId: string;
   actor?: string;
+  /** Keep the spoken reply concise without changing agent tools or quotas. */
+  briefVoiceReply?: boolean;
   /** Provider overrides for tests. */
   stt?: STTProvider;
   tts?: TTSProvider;
@@ -192,6 +194,7 @@ export async function runVoiceTurn(input: VoiceTurnInput): Promise<VoiceTurnResu
     requestId: input.requestId,
     actor: input.actor ?? "voice-turn",
     llm: input.llm,
+    briefVoiceReply: input.briefVoiceReply,
   });
   latency.agent = Date.now() - t1;
 
@@ -205,9 +208,10 @@ export async function runVoiceTurn(input: VoiceTurnInput): Promise<VoiceTurnResu
     await assertVoiceAllowed({ businessId: input.businessId, voiceId: agentResult.voiceId });
     voice = agentResult.voiceId;
   }
+  const requestedTtsFormat = input.ttsFormat ?? (tts.name === "piper" ? "wav" : "mp3");
   const ttsResult = await meteredSpeech(input.businessId, tts, spokenText, {
     voice,
-    format: input.ttsFormat ?? "mp3",
+    format: requestedTtsFormat,
     requestId: input.requestId,
     businessId: input.businessId,
     callId: input.callId,

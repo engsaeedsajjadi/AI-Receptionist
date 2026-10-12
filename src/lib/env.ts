@@ -8,6 +8,7 @@ export const isDev = !isProduction && !isTest;
 
 const providerEnum = z.enum(["openai", "compatible", "dev"]);
 const speechProviderEnum = z.enum(["openai", "compatible", "gemini", "dev"]);
+const ttsProviderEnum = z.enum(["openai", "compatible", "gemini", "piper", "dev"]);
 const storageEnum = z.enum(["local", "s3"]);
 const voiceEnum = z.enum(["generic", "twilio", "disabled", "dev"]);
 /**
@@ -88,8 +89,11 @@ const envSchema = z.object({
   STT_PROVIDER: speechProviderEnum.default("dev"),
   STT_MODEL: z.string().default("whisper-1"),
   STT_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
+  /** Loopback-only development lab STT sidecar. Does not replace Gemini globally. */
+  LOCAL_WHISPER_STT_URL: z.string().default("http://127.0.0.1:5001"),
+  LOCAL_WHISPER_STT_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120000).default(15000),
 
-  TTS_PROVIDER: speechProviderEnum.default("dev"),
+  TTS_PROVIDER: ttsProviderEnum.default("dev"),
   TTS_MODEL: z.string().default("tts-1"),
   TTS_VOICE: z.string().default("alloy"),
   /** Voice ids that may be used without a cloning-consent record (comma separated). */
@@ -100,6 +104,10 @@ const envSchema = z.object({
     .default("false")
     .transform((v) => v === "true"),
   TTS_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
+  /** Optional local Piper HTTP server, never an external host. */
+  PIPER_TTS_URL: z.string().default("http://127.0.0.1:5000"),
+  PIPER_TTS_VOICE: z.string().default("fa_IR-amir-medium"),
+  PIPER_TTS_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120000).default(20_000),
 
   STORAGE_PROVIDER: storageEnum.default("local"),
   LOCAL_STORAGE_DIR: z.string().default("./storage"),
