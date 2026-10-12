@@ -25,6 +25,8 @@ py -3.12 -m venv .venv-piper
 .\.venv-piper\Scripts\python.exe -m piper.http_server -m fa_IR-amir-medium --host 127.0.0.1 --port 5000
 ```
 
+**Piper 1.8 HTTP header note:** The official Flask server can send genuine RIFF/WAV bytes with `Content-Type: text/html; charset=utf-8`. The app deliberately authenticates the WAV by inspecting and strictly validating its binary RIFF/WAVE, PCM16 mono payload, rather than relying on the MIME header. If a user sees `Piper returned a non-WAV response`, sync the adapter fix from the GitHub branch and restart Next.js.
+
 The last command is long-running and must remain open while testing. Test `http://127.0.0.1:5000/info` in a browser; for an API probe, POST JSON `{"text":"سلام، وقت بخیر."}` to `http://127.0.0.1:5000/synthesize` and expect WAV data.
 
 Back in the **dev-only** telephone lab, choose **Piper محلی** under the TTS engine dropdown. The server only connects to localhost, follows no HTTP redirects, accepts only bounded, mono PCM16 WAV, converts Piper 22.05-kHz audio to 24-kHz PCM and reuses the existing G.711 telephony encoding. By default `PIPER_TTS_URL=http://127.0.0.1:5000` and `PIPER_TTS_VOICE=fa_IR-amir-medium`; no new .env variable is required for defaults. Do not copy Gemini API keys into Piper.

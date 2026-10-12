@@ -1,6 +1,15 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { pcm16ToWav } from "@/lib/voice/audio";
-import { normalizePiperWav, validatePiperEndpoint } from "@/lib/providers/piper-tts";
+import { normalizePiperWav, validatePiperEndpoint, PiperTTSProvider } from "@/lib/providers/piper-tts";
+
+// Isolate local-Piper tests from DATABASE_URL and all production secrets.
+vi.mock("@/lib/env", () => ({
+  getEnv: () => ({
+    PIPER_TTS_URL: "http://127.0.0.1:5000",
+    PIPER_TTS_VOICE: "fa_IR-amir-medium",
+    PIPER_TTS_TIMEOUT_MS: 20_000,
+  }),
+}));
 
 describe("local Piper TTS sandbox", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -21,6 +30,32 @@ describe("local Piper TTS sandbox", () => {
     const normalized = normalizePiperWav(pcm16ToWav(pcm, 22050));
     expect(normalized.byteLength).toBe(48000);
     expect(normalized.readInt16LE(32)).not.toBe(0);
+  });
+
+  it("accepts the official Flask text/html MIME when the body is valid WAV", async () => {
+    const wav = pcm16ToWav(Buffer.alloc(22050 * 2, 5), 22050);
+    const fetchSpy = vi.fn().mockResolvedValue(new Response(new Uint8Array(wav), {
+      status: 200,
+      headers: { "content-type": "text/html; charset=utf-8" },
+    }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const provider = new PiperTTSProvider();
+    const result = await provider.synthesize("سلام، وقت بخیر.", { format: "pcm" });
+    expect(result.mimeType).toBe("audio/l16");
+    expect(result.audio.byteLength).toBe(48000);
+    expect(result.provider).toBe("piper");
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(fetchSpy.mock.calls[0][0]).toBe("http://127.0.0.1:5000/synthesize");
+    expect(fetchSpy.mock.calls[0][1].redirect).toBe("error");
+  });
+
+  it("rejects actual HTML errors despite the Flask 200 status", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("<html>Error</html>", {
+      status: 200,
+      headers: { "content-type": "text/html; charset=utf-8" },
+    })));
+    await expect(new PiperTTSProvider().synthesize("سلام", { format: "pcm" }))
+      .rejects.toThrow(/invalid or oversized WAV/);
   });
 
   it("rejects fake header, WAV truncation, and stereo WAV", () => {

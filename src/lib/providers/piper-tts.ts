@@ -104,10 +104,12 @@ export class PiperTTSProvider implements TTSProvider {
     if (!response.ok) {
       throw new AppError(502, "TTS_ERROR", `Piper TTS HTTP ${response.status}; check that the requested voice is installed`);
     }
-    const contentType = response.headers.get("content-type") ?? "";
-    if (contentType && !contentType.includes("audio/wav") && !contentType.includes("audio/x-wav")) {
-      throw new AppError(502, "TTS_ERROR", "Piper returned a non-WAV response");
-    }
+    // Official Piper 1.8.x returns raw WAV bytes directly from its Flask
+    // route. Flask can label that response "text/html; charset=utf-8" even
+    // though its actual bytes are a perfectly valid RIFF/WAVE file.
+    // Never use Content-Type alone to accept or reject audio. The bounded,
+    // strict RIFF + PCM16 mono parser below validates the *actual bytes*,
+    // so error HTML/JSON and malformed audio are still rejected.
     const contentLength = Number(response.headers.get("content-length") ?? "0");
     if (contentLength > MAX_WAV_BYTES) throw new AppError(502, "TTS_ERROR", "Piper WAV exceeds 4 MB");
     const wav = Buffer.from(await response.arrayBuffer());
