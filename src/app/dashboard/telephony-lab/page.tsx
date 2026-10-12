@@ -137,14 +137,8 @@ export default function TelephonyLabPage() {
   }, [apiJson, loading]);
 
   useEffect(() => {
-    if (loading || mode !== "ai" || !agentId) {
-      setReadiness(null);
-      setReadinessError("");
-      return;
-    }
+    if (loading || mode !== "ai" || !agentId) return;
     let current = true;
-    setReadiness(null);
-    setReadinessError("");
     apiJson<AgentReadiness>(`/api/v1/agents/${agentId}/telephony-local-test`)
       .then(data => { if (current) setReadiness(data); })
       .catch(err => { if (current) setReadinessError(err instanceof Error ? err.message : "ارتباط با منشی آزمایشی برقرار نیست."); });
@@ -298,7 +292,11 @@ export default function TelephonyLabPage() {
           <div className="space-y-2 border-r-2 border-amber-500 pr-3">
             {!agents.length && <p role="alert" className="text-sm text-red-700">در این دیتابیس منشی فعال یافت نشد. از صفحه «منشی هوشمند» یک منشی فعال بسازید.</p>}
             <label className="block text-sm">انتخاب منشی
-              <select aria-label="انتخاب منشی آزمایشی" className="mr-2 rounded-lg border p-2" value={agentId} onChange={e => setAgentId(e.target.value)}>
+              <select aria-label="انتخاب منشی آزمایشی" className="mr-2 rounded-lg border p-2" value={agentId} onChange={e => {
+                setAgentId(e.target.value);
+                setReadiness(null);
+                setReadinessError("");
+              }}>
                 {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
               </select>
             </label>

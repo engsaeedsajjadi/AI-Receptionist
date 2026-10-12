@@ -23,6 +23,9 @@ type Props = {
 type ConversationLine = { id: number; transcript: string; reply: string; latencyMs: number };
 type Phase = "idle" | "listening" | "processing" | "speaking" | "error";
 
+// Keep impure clock access outside React's render scope.
+function clockMs(): number { return Date.now(); }
+
 const VAD_INTERVAL_MS = 50;
 const VAD_START_FRAMES = 3;
 const VAD_SILENCE_MS = 850;
@@ -142,7 +145,7 @@ export function TelephonyLiveConversation({ agentId, microphoneId, ready, allowU
     if (!r.active || !r.stream || r.recorder?.state === "recording") return;
     const recorder = new MediaRecorder(r.stream);
     const chunks: Blob[] = [];
-    r.recordingSince = Date.now();
+    r.recordingSince = clockMs();
     r.recorder = recorder;
     recorder.ondataavailable = event => { if (event.data.size > 0) chunks.push(event.data); };
     recorder.onstop = () => {
@@ -263,7 +266,7 @@ export function TelephonyLiveConversation({ agentId, microphoneId, ready, allowU
 
     const threshold = Math.max(0.016, r.noise * 3);
     const speech = rms > threshold;
-    const now = Date.now();
+    const now = clockMs();
     if (!speech && r.startedTalking === 0) {
       r.noise = 0.94 * r.noise + 0.06 * rms;
     }
@@ -329,7 +332,7 @@ export function TelephonyLiveConversation({ agentId, microphoneId, ready, allowU
       r.noise = 0.002;
       r.startedTalking = 0;
       r.onsetFrames = 0;
-      r.lastTalking = Date.now();
+      r.lastTalking = clockMs();
       setPhaseLive("listening", "در حال گوش دادن؛ صحبت کنید. پایان جمله به‌صورت خودکار تشخیص داده می‌شود.");
       beginSegment();
       r.timer = setInterval(monitor, VAD_INTERVAL_MS);
