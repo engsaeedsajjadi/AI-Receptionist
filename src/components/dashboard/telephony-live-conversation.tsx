@@ -22,6 +22,9 @@ type Props = {
   allowUsage: boolean;
   briefReplies: boolean;
   ttsEngine: "configured" | "piper";
+  piperVoice: string;
+  piperStyle: "natural" | "warm" | "calm";
+  sttEngine: "configured" | "faster-whisper";
 };
 
 type ConversationLine = {
@@ -45,7 +48,7 @@ const MAX_SEGMENT_MS = 16_000;
  * a time over the authenticated DEV-ONLY REST lab. This is NOT a Twilio
  * websocket, not an inbound PSTN call and not full-duplex media streaming.
  */
-export function TelephonyLiveConversation({ agentId, microphoneId, ready, allowUsage, briefReplies, ttsEngine }: Props) {
+export function TelephonyLiveConversation({ agentId, microphoneId, ready, allowUsage, briefReplies, ttsEngine, piperVoice, piperStyle, sttEngine }: Props) {
   const { api } = useAuth();
   const [phase, setPhase] = useState<Phase>("idle");
   const [detail, setDetail] = useState("شروع گفتگو را بزنید و با منشی صحبت کنید.");
@@ -181,6 +184,9 @@ export function TelephonyLiveConversation({ agentId, microphoneId, ready, allowU
       form.append("audio", new Blob([encoded.bytes.buffer as ArrayBuffer], { type: "audio/basic" }), "live-utterance.ulaw");
       form.set("responseStyle", briefReplies ? "brief" : "normal");
       form.set("ttsEngine", ttsEngine);
+      form.set("piperVoice", piperVoice);
+      form.set("piperStyle", piperStyle);
+      form.set("sttEngine", sttEngine);
       const response = await api(`/api/v1/agents/${agentId}/telephony-local-test`, {
         method: "POST", body: form, signal: r.controller.signal,
       });

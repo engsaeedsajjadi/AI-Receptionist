@@ -114,6 +114,9 @@ export default function TelephonyLabPage() {
   const [conversationMode, setConversationMode] = useState<"manual" | "live">("manual");
   const [briefReplies, setBriefReplies] = useState(true);
   const [ttsEngine, setTtsEngine] = useState<"configured" | "piper">("configured");
+  const [piperVoice, setPiperVoice] = useState("fa_IR-amir-medium");
+  const [piperStyle, setPiperStyle] = useState<"natural" | "warm" | "calm">("natural");
+  const [sttEngine, setSttEngine] = useState<"configured" | "faster-whisper">("configured");
   const [readiness, setReadiness] = useState<AgentReadiness | null>(null);
   const [readinessError, setReadinessError] = useState("");
   const [stage, setStage] = useState("پس از انتخاب منشی، اتصال آزمایشی بررسی می‌شود.");
@@ -232,6 +235,9 @@ export default function TelephonyLabPage() {
             form.append("audio", new Blob([audio.bytes.buffer as ArrayBuffer], { type: "audio/basic" }), "telephone.ulaw");
             form.set("responseStyle", briefReplies ? "brief" : "normal");
             form.set("ttsEngine", ttsEngine);
+            form.set("piperVoice", piperVoice);
+            form.set("piperStyle", piperStyle);
+            form.set("sttEngine", sttEngine);
             const response = await api(`/api/v1/agents/${agentId}/telephony-local-test`, { method: "POST", body: form });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(payload?.error?.message || `Local telephone test failed (${response.status})`);
@@ -327,7 +333,35 @@ export default function TelephonyLabPage() {
                 <option value="piper">Piper محلی فارسی (آزمایشی، بدون هزینه API صوت)</option>
               </select>
             </label>
-            {ttsEngine === "piper" && <p className="text-xs text-amber-700">ابتدا Piper HTTP را روی localhost اجرا کنید. در این حالت مدل پاسخ و STT ممکن است همچنان Gemini باشند.</p>}
+            {ttsEngine === "piper" && <div className="space-y-2 rounded-lg bg-slate-50 p-3">
+              <label className="block text-sm">گوینده فارسی
+                <select aria-label="گوینده فارسی Piper" className="mr-2 rounded-lg border p-2"
+                  value={piperVoice} onChange={e => setPiperVoice(e.target.value)}>
+                  <option value="fa_IR-amir-medium">Amir — صدای فعلی</option>
+                  <option value="fa_IR-ganji-medium">Ganji</option>
+                  <option value="fa_IR-ganji_adabi-medium">Ganji Adabi</option>
+                  <option value="fa_IR-gyro-medium">Gyro</option>
+                  <option value="fa_IR-reza_ibrahim-medium">Reza Ibrahim</option>
+                </select>
+              </label>
+              <label className="block text-sm">لحن و آهنگ گفتار
+                <select aria-label="لحن صدای Piper" className="mr-2 rounded-lg border p-2"
+                  value={piperStyle} onChange={e => setPiperStyle(e.target.value as "natural" | "warm" | "calm")}>
+                  <option value="natural">طبیعی (پیش‌فرض)</option>
+                  <option value="warm">گرم و روان (آزمایشی)</option>
+                  <option value="calm">آرام و شمرده (آزمایشی)</option>
+                </select>
+              </label>
+              <p className="text-xs text-amber-700">برای هر گوینده، دو فایل ONNX و JSON آن را در پوشه Piper دانلود کنید؛ Piper در نبود صدا ممکن است به گوینده پیش‌فرض برگردد. تغییر لحن جایگزین کیفیت ذاتی مدل نیست.</p>
+            </div>}
+            <label className="block text-sm">موتور تشخیص گفتار (STT)
+              <select aria-label="موتور تشخیص گفتار" className="mr-2 rounded-lg border p-2"
+                value={sttEngine} onChange={e => setSttEngine(e.target.value as "configured" | "faster-whisper")}>
+                <option value="configured">Gemini فعلی</option>
+                <option value="faster-whisper">Faster-Whisper روی CPU (آزمایشی)</option>
+              </select>
+            </label>
+            {sttEngine === "faster-whisper" && <p className="text-xs text-amber-700">سرور STT محلی باید روی پورت 5001 روشن باشد؛ ابتدا سرعت و دقت مدل tiny را بسنجید. اشتباه در تشخیص گفتار ممکن است پاسخ منشی را تغییر دهد.</p>}
             <label className="block text-sm"><input type="checkbox" checked={briefReplies} onChange={e => setBriefReplies(e.target.checked)} /> پاسخ صوتی کوتاه (یک یا دو جمله؛ بدون حذف اطلاعات ضروری)</label>
             <label className="block text-sm"><input type="checkbox" checked={allowUsage} onChange={e => setAllowUsage(e.target.checked)} /> تأیید می‌کنم که Gemini/STT/TTS و سهمیه دیتابیس ai_receptionist_test ممکن است مصرف شود؛ تماس واقعی برقرار نمی‌شود.</label>
           </div>
@@ -353,6 +387,9 @@ export default function TelephonyLabPage() {
           allowUsage={allowUsage}
           briefReplies={briefReplies}
           ttsEngine={ttsEngine}
+          piperVoice={piperVoice}
+          piperStyle={piperStyle}
+          sttEngine={sttEngine}
         />
       )}
       {metrics && (

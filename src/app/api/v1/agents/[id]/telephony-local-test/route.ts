@@ -7,7 +7,8 @@ import { ok } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
 import { withApiHandling } from "@/lib/server-core";
 import { runVoiceTurn } from "@/lib/voice/turn";
-import { PiperTTSProvider } from "@/lib/providers/piper-tts";
+import { PiperTTSProvider, parsePiperVoice, parsePiperStyle } from "@/lib/providers/piper-tts";
+import { FasterWhisperSTTProvider } from "@/lib/providers/faster-whisper-stt";
 import { assessLocalTelephonyInput, assessLocalAgentReadiness, encodeLocalTelephonyOutput } from "@/lib/voice/local-telephony";
 
 /**
@@ -67,6 +68,18 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     if (ttsEngine !== null && ttsEngine !== "configured" && ttsEngine !== "piper") {
       throw new AppError(400, "INVALID_PAYLOAD", "ttsEngine must be configured or piper");
     }
+    const sttEngine = form.get("sttEngine");
+    if (sttEngine !== null && sttEngine !== "configured" && sttEngine !== "faster-whisper") {
+      throw new AppError(400, "INVALID_PAYLOAD", "sttEngine must be configured or faster-whisper");
+    }
+    // Voice presets are restricted to known publisher models; never trust an arbitrary
+    // path or a caller-provided voice ID. A server may load these voices on demand.
+    const piperVoice = ttsEngine === "piper"
+      ? parsePiperVoice(form.get("piperVoice") ?? "fa_IR-amir-medium")
+      : null;
+    const piperStyle = ttsEngine === "piper"
+      ? parsePiperStyle(form.get("piperStyle") ?? "natural")
+      : null;
     const responseStyle = form.get("responseStyle");
     if (responseStyle !== null && responseStyle !== "brief" && responseStyle !== "normal") {
       throw new AppError(400, "INVALID_PAYLOAD", "responseStyle must be brief or normal");
@@ -88,7 +101,10 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       briefVoiceReply: responseStyle === "brief",
       // Explicit, authenticated and isolated local lab opt-in only.
       // No global provider switching and no Gemini credential exposure.
-      tts: ttsEngine === "piper" ? new PiperTTSProvider() : undefined,
+      tts: ttsEngine === "piper"
+        ? new PiperTTSProvider({ voice: piperVoice!, style: piperStyle! })
+        : undefined,
+      stt: sttEngine === "faster-whisper" ? new FasterWhisperSTTProvider() : undefined,
     });
 
     const playback = result.audio

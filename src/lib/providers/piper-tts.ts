@@ -6,6 +6,41 @@ import type { TTSProvider, SynthesizeOptions, SpeechResult } from "@/lib/provide
 const MAX_WAV_BYTES = 4 * 1024 * 1024;
 const TARGET_SAMPLE_RATE = 24_000;
 
+export const PIPER_PERSIAN_VOICES = [
+  "fa_IR-amir-medium",
+  "fa_IR-ganji-medium",
+  "fa_IR-ganji_adabi-medium",
+  "fa_IR-gyro-medium",
+  "fa_IR-reza_ibrahim-medium",
+] as const;
+export type PiperPersianVoice = typeof PIPER_PERSIAN_VOICES[number];
+
+export const PIPER_SPEECH_STYLES = ["natural", "warm", "calm"] as const;
+export type PiperSpeechStyle = typeof PIPER_SPEECH_STYLES[number];
+
+const SYNTHESIS_STYLES: Record<PiperSpeechStyle, {
+  length_scale: number; noise_scale: number; noise_w_scale: number;
+}> = {
+  natural: { length_scale: 1.0, noise_scale: 0.667, noise_w_scale: 0.8 },
+  warm: { length_scale: 0.98, noise_scale: 0.70, noise_w_scale: 0.85 },
+  calm: { length_scale: 1.07, noise_scale: 0.57, noise_w_scale: 0.72 },
+};
+
+export function parsePiperVoice(value: FormDataEntryValue | null): PiperPersianVoice {
+  if (typeof value !== "string" || !PIPER_PERSIAN_VOICES.includes(value as PiperPersianVoice)) {
+    throw new AppError(400, "INVALID_PAYLOAD", "Unknown or disallowed Piper Persian voice");
+  }
+  return value as PiperPersianVoice;
+}
+
+export function parsePiperStyle(value: FormDataEntryValue | null): PiperSpeechStyle {
+  if (typeof value !== "string" || !PIPER_SPEECH_STYLES.includes(value as PiperSpeechStyle)) {
+    throw new AppError(400, "INVALID_PAYLOAD", "Unknown Piper speech style");
+  }
+  return value as PiperSpeechStyle;
+}
+
+
 /** Reject outbound SSRF: the local TTS adapter can contact only the loopback Piper server. */
 export function validatePiperEndpoint(value: string): URL {
   let url: URL;
@@ -68,12 +103,14 @@ export class PiperTTSProvider implements TTSProvider {
   private readonly endpoint: string;
   private readonly voice: string;
   private readonly timeoutMs: number;
+  private readonly style: PiperSpeechStyle;
 
-  constructor(overrides: { baseURL?: string; voice?: string; timeoutMs?: number } = {}) {
+  constructor(overrides: { baseURL?: string; voice?: string; style?: PiperSpeechStyle; timeoutMs?: number } = {}) {
     const env = getEnv();
     const url = validatePiperEndpoint(overrides.baseURL ?? env.PIPER_TTS_URL);
     this.endpoint = new URL("/synthesize", url).toString();
-    this.voice = overrides.voice ?? env.PIPER_TTS_VOICE;
+    this.voice = parsePiperVoice(overrides.voice ?? env.PIPER_TTS_VOICE);
+    this.style = overrides.style ?? "natural";
     this.timeoutMs = overrides.timeoutMs ?? env.PIPER_TTS_TIMEOUT_MS;
   }
 
@@ -91,7 +128,7 @@ export class PiperTTSProvider implements TTSProvider {
       response = await fetch(this.endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Accept": "audio/wav" },
-        body: JSON.stringify({ text: input, voice: this.voice }),
+        body: JSON.stringify({ text: input, voice: this.voice, ...SYNTHESIS_STYLES[this.style] }),
         redirect: "error",
         signal: AbortSignal.timeout(options.timeoutMs ?? this.timeoutMs),
       });

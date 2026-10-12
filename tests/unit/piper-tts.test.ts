@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { pcm16ToWav } from "@/lib/voice/audio";
-import { normalizePiperWav, validatePiperEndpoint, PiperTTSProvider } from "@/lib/providers/piper-tts";
+import { normalizePiperWav, validatePiperEndpoint, PiperTTSProvider, parsePiperVoice, parsePiperStyle } from "@/lib/providers/piper-tts";
 
 // Isolate local-Piper tests from DATABASE_URL and all production secrets.
 vi.mock("@/lib/env", async (importOriginal) => {
@@ -28,6 +28,25 @@ describe("local Piper TTS sandbox", () => {
     }
     expect(validatePiperEndpoint("http://127.0.0.1:5000").hostname).toBe("127.0.0.1");
     expect(validatePiperEndpoint("http://localhost:5000").hostname).toBe("localhost");
+  });
+
+  it("accepts approved Persian voices/styles only", () => {
+    expect(parsePiperVoice("fa_IR-ganji_adabi-medium")).toBe("fa_IR-ganji_adabi-medium");
+    expect(parsePiperStyle("warm")).toBe("warm");
+    expect(() => parsePiperVoice("../../../evil")).toThrow();
+    expect(() => parsePiperVoice("unknown voice")).toThrow();
+    expect(() => parsePiperStyle("fast-and-unbounded")).toThrow();
+  });
+
+  it("sends the selected voice and prosody parameters to Piper", async () => {
+    const wav = pcm16ToWav(Buffer.alloc(22050 * 2, 5), 22050);
+    const spy = vi.fn().mockResolvedValue(new Response(new Uint8Array(wav), { status: 200 }));
+    vi.stubGlobal("fetch", spy);
+    const provider = new PiperTTSProvider({ voice: "fa_IR-ganji_adabi-medium", style: "warm" });
+    await provider.synthesize("سلام", { format: "pcm" });
+    expect(JSON.parse(spy.mock.calls[0][1].body)).toMatchObject({
+      voice: "fa_IR-ganji_adabi-medium", length_scale: 0.98, noise_scale: 0.70, noise_w_scale: 0.85,
+    });
   });
 
   it("resamples genuine 22.05 kHz Piper PCM16 mono WAV to 24 kHz", () => {
