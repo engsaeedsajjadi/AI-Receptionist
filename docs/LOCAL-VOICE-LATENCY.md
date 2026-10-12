@@ -120,3 +120,23 @@ execution even when STT is fast. Structured log operations
 `agent.total` report timings, counts and sanitized tool names only,
 without caller audio or transcript; compare these with `llm.complete`.
 Avoid reading a 15-second Agent delay as a 15-second STT delay.
+
+
+
+### High-fidelity local STT source A/B test
+
+The 8-kHz browser G.711 audio remains mandatory for the dev-only telephone
+lab's input validation and telephone-output playback. To separate microphone
+quality from Whisper model errors, select **Faster-Whisper** and then choose
+**کیفیت ورودی Faster-Whisper → میکروفون PCM، شانزده کیلوهرتز**.
+The browser sends a same-utterance, locally downsampled 16-kHz PCM16 WAV as
+an additional `sttWav` field; **only this opt-in local STT invocation** uses
+that higher-fidelity input. Production voice, cloud STT, quotas, tenant
+isolation, telephone codec, and output audio are unchanged.
+
+The server strictly checks RIFF size, canonical PCM16 mono 16-kHz WAV
+headers, 0.7–20-second bounds, matching audio duration and the explicit
+Faster-Whisper override. Compare the *same sentence* in manual and live
+modes using telephone versus microphone quality, and note both transcript
+and STT latency. This does not improve genuine PSTN/G.711 call audio: that
+quality is irreversibly constrained at the source.

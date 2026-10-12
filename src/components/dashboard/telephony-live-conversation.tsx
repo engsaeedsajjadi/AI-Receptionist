@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/components/dashboard/auth";
-import { recordedToMulaw, fromBase64 } from "@/lib/voice/browser-telephony";
+import { recordedToMulaw, recordedToSttWav, fromBase64 } from "@/lib/voice/browser-telephony";
 import { VoiceLatencyBreakdown, type VoiceLatencyMs } from "@/components/dashboard/voice-latency-breakdown";
 
 type AiResult = {
@@ -25,6 +25,7 @@ type Props = {
   piperVoice: string;
   piperStyle: "natural" | "warm" | "calm";
   sttEngine: "configured" | "faster-whisper";
+  sttInputMode: "telephony" | "microphone";
 };
 
 type ConversationLine = {
@@ -48,7 +49,7 @@ const MAX_SEGMENT_MS = 16_000;
  * a time over the authenticated DEV-ONLY REST lab. This is NOT a Twilio
  * websocket, not an inbound PSTN call and not full-duplex media streaming.
  */
-export function TelephonyLiveConversation({ agentId, microphoneId, ready, allowUsage, briefReplies, ttsEngine, piperVoice, piperStyle, sttEngine }: Props) {
+export function TelephonyLiveConversation({ agentId, microphoneId, ready, allowUsage, briefReplies, ttsEngine, piperVoice, piperStyle, sttEngine, sttInputMode }: Props) {
   const { api } = useAuth();
   const [phase, setPhase] = useState<Phase>("idle");
   const [detail, setDetail] = useState("شروع گفتگو را بزنید و با منشی صحبت کنید.");
@@ -187,6 +188,11 @@ export function TelephonyLiveConversation({ agentId, microphoneId, ready, allowU
       form.set("piperVoice", piperVoice);
       form.set("piperStyle", piperStyle);
       form.set("sttEngine", sttEngine);
+      if (sttEngine === "faster-whisper" && sttInputMode === "microphone") {
+        // The telephone G.711 bytes are still submitted for validation. Only
+        // the STT provider receives this same-utterance 16-kHz WAV instead.
+        form.append("sttWav", await recordedToSttWav(blob), "microphone-16k.wav");
+      }
       const response = await api(`/api/v1/agents/${agentId}/telephony-local-test`, {
         method: "POST", body: form, signal: r.controller.signal,
       });

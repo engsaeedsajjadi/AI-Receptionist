@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useAuth } from "@/components/dashboard/auth";
 import { TelephonyLiveConversation } from "@/components/dashboard/telephony-live-conversation";
 import { VoiceLatencyBreakdown } from "@/components/dashboard/voice-latency-breakdown";
+import { recordedToSttWav } from "@/lib/voice/browser-telephony";
 
 type Mic = { id: string; label: string };
 type Agent = { id: string; name: string; isActive: boolean };
@@ -120,6 +121,7 @@ export default function TelephonyLabPage() {
   const [sampleBusy, setSampleBusy] = useState(false);
   const [sampleTtsMs, setSampleTtsMs] = useState<number | null>(null);
   const [sttEngine, setSttEngine] = useState<"configured" | "faster-whisper">("configured");
+  const [sttInputMode, setSttInputMode] = useState<"telephony" | "microphone">("telephony");
   const [readiness, setReadiness] = useState<AgentReadiness | null>(null);
   const [readinessError, setReadinessError] = useState("");
   const [stage, setStage] = useState("پس از انتخاب منشی، اتصال آزمایشی بررسی می‌شود.");
@@ -260,7 +262,8 @@ export default function TelephonyLabPage() {
         setState("processing");
         setStage("در حال تبدیل صدای میکروفون به کدک G.711 ...");
         try {
-          const audio = await recordedToMulaw(new Blob(chunks, { type: rec.mimeType }));
+          const recordedBlob = new Blob(chunks, { type: rec.mimeType });
+          const audio = await recordedToMulaw(recordedBlob);
           setMetrics({ durationSeconds: audio.durationSeconds, rms: audio.rms, bytes: audio.bytes.length });
           setInputUrl(URL.createObjectURL(mulawWav(audio.bytes)));
           if (mode === "ai") {
@@ -272,6 +275,9 @@ export default function TelephonyLabPage() {
             form.set("piperVoice", piperVoice);
             form.set("piperStyle", piperStyle);
             form.set("sttEngine", sttEngine);
+            if (sttEngine === "faster-whisper" && sttInputMode === "microphone") {
+              form.append("sttWav", await recordedToSttWav(recordedBlob), "microphone-16k.wav");
+            }
             const response = await api(`/api/v1/agents/${agentId}/telephony-local-test`, { method: "POST", body: form });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(payload?.error?.message || `Local telephone test failed (${response.status})`);
@@ -403,7 +409,16 @@ export default function TelephonyLabPage() {
                 <option value="faster-whisper">Faster-Whisper روی CPU (آزمایشی)</option>
               </select>
             </label>
-            {sttEngine === "faster-whisper" && <p className="text-xs text-amber-700">سرور STT محلی باید روی پورت 5001 روشن باشد؛ ابتدا سرعت و دقت مدل tiny را بسنجید. اشتباه در تشخیص گفتار ممکن است پاسخ منشی را تغییر دهد.</p>}
+            {sttEngine === "faster-whisper" && <div className="space-y-2 rounded-lg bg-slate-50 p-3">
+              <label className="block text-sm">کیفیت ورودی تشخیص گفتار (فقط آزمایش محلی)
+                <select aria-label="کیفیت ورودی Faster-Whisper" className="mr-2 rounded-lg border p-2"
+                  value={sttInputMode} onChange={e => setSttInputMode(e.target.value as "telephony" | "microphone")}>
+                  <option value="telephony">تلفنی G.711، هشت کیلوهرتز (پیش‌فرض)</option>
+                  <option value="microphone">میکروفون PCM، شانزده کیلوهرتز (مقایسه دقت)</option>
+                </select>
+              </label>
+              <p className="text-xs text-amber-700">این انتخاب فقط روی صوت ورودی Faster-Whisper اثر دارد؛ خروجی منشی و شبیه‌سازی تماس همچنان تلفنی هستند. صدای تماس واقعی PSTN از این گزینه بهره‌ای نمی‌برد.</p>
+            </div>}
             <label className="block text-sm"><input type="checkbox" checked={briefReplies} onChange={e => setBriefReplies(e.target.checked)} /> پاسخ صوتی کوتاه (یک یا دو جمله؛ بدون حذف اطلاعات ضروری)</label>
             <label className="block text-sm"><input type="checkbox" checked={allowUsage} onChange={e => setAllowUsage(e.target.checked)} /> تأیید می‌کنم که Gemini/STT/TTS و سهمیه دیتابیس ai_receptionist_test ممکن است مصرف شود؛ تماس واقعی برقرار نمی‌شود.</label>
           </div>
@@ -432,6 +447,7 @@ export default function TelephonyLabPage() {
           piperVoice={piperVoice}
           piperStyle={piperStyle}
           sttEngine={sttEngine}
+          sttInputMode={sttInputMode}
         />
       )}
       {metrics && (

@@ -19,6 +19,34 @@ export function assessLocalTelephonyInput(audio: Buffer) {
   return { durationSeconds, rms, frames20ms: mulawFrames(audio).length };
 }
 
+
+/**
+ * Validate the optional, microphone-quality STT source. The accompanying
+ * G.711 input remains mandatory for telephone-lab framing, duration and
+ * silence checks; this PCM path is NEVER accepted in production routes.
+ */
+export function validateLocalHighQualitySttWav(raw: Buffer, telephoneSeconds: number): Buffer {
+  if (raw.length < 44 + 11_200 * 2 || raw.length > 44 + 320_000 * 2 ||
+      raw.toString("ascii", 0, 4) !== "RIFF" ||
+      raw.readUInt32LE(4) !== raw.length - 8 ||
+      raw.toString("ascii", 8, 12) !== "WAVE" ||
+      raw.toString("ascii", 12, 16) !== "fmt " ||
+      raw.readUInt32LE(16) !== 16 ||
+      raw.readUInt16LE(20) !== 1 ||
+      raw.readUInt16LE(22) !== 1 ||
+      raw.readUInt32LE(24) !== 16_000 ||
+      raw.readUInt32LE(28) !== 32_000 ||
+      raw.readUInt16LE(32) !== 2 ||
+      raw.readUInt16LE(34) !== 16 ||
+      raw.toString("ascii", 36, 40) !== "data" ||
+      raw.readUInt32LE(40) !== raw.length - 44 ||
+      Math.abs((raw.length - 44) / 32_000 - telephoneSeconds) > 0.1) {
+    throw new AppError(400, "INVALID_PAYLOAD",
+      "Local STT microphone audio must be matching 16-kHz mono PCM16 WAV (0.7..20s)");
+  }
+  return raw;
+}
+
 /**
  * TTS egress: strictly raw mono PCM16 (provider promises 24 kHz).
  * No MP3/WAV header may be mistaken for PCM before encoding.

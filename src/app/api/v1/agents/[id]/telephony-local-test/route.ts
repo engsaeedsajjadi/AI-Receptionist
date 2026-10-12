@@ -10,7 +10,7 @@ import { runVoiceTurn } from "@/lib/voice/turn";
 import { PiperTTSProvider, parsePiperVoice, parsePiperStyle } from "@/lib/providers/piper-tts";
 import { pcm16ToWav } from "@/lib/voice/audio";
 import { FasterWhisperSTTProvider } from "@/lib/providers/faster-whisper-stt";
-import { assessLocalTelephonyInput, assessLocalAgentReadiness, encodeLocalTelephonyOutput } from "@/lib/voice/local-telephony";
+import { assessLocalTelephonyInput, assessLocalAgentReadiness, encodeLocalTelephonyOutput, validateLocalHighQualitySttWav } from "@/lib/voice/local-telephony";
 
 /**
  * DEVELOPER LAB ONLY — not Twilio/PSTN, never a production endpoint.
@@ -111,15 +111,25 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     }
     const muLaw = Buffer.from(await file.arrayBuffer());
     const input = assessLocalTelephonyInput(muLaw);
+    const sttWavFile = form.get("sttWav");
+    if (sttWavFile !== null && (sttEngine !== "faster-whisper" ||
+        !(sttWavFile instanceof File) || sttWavFile.type.split(";")[0] !== "audio/wav")) {
+      throw new AppError(400, "INVALID_PAYLOAD",
+        "16-kHz microphone STT is allowed only for the local Faster-Whisper lab");
+    }
+    const highQualityWav = sttWavFile instanceof File
+      ? validateLocalHighQualitySttWav(Buffer.from(await sttWavFile.arrayBuffer()), input.durationSeconds)
+      : null;
 
     // Real AI providers & metering; explicitly opted into from the dev-only UI.
     // No Twilio requests, CallSid, phone calls, call admission or PSTN billing.
     const result = await runVoiceTurn({
       businessId: auth.businessId,
       agentId: agent.id,
-      audio: muLaw,
-      audioCodec: "mulaw",
-      audioSampleRate: 8_000,
+      audio: highQualityWav ?? muLaw,
+      audioCodec: highQualityWav ? undefined : "mulaw",
+      audioMimeType: highQualityWav ? "audio/wav" : undefined,
+      audioSampleRate: highQualityWav ? undefined : 8_000,
       ttsFormat: "pcm",
       requestId,
       actor: auth.userId,
@@ -144,6 +154,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       reply: result.reply,
       spokenText: result.spokenText,
       input,
+      sttInputMode: highQualityWav ? "microphone-16k" : "telephone-8k",
       output: playback ? { mulawBytes: playback.mulawBytes, frames20ms: playback.frames20ms } : null,
       playbackWavBase64: playback ? playback.wav.toString("base64") : null,
       latencyMs: result.latencyMs,
