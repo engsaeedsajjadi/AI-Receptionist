@@ -42,6 +42,16 @@ describe("offline Faster-Whisper lab adapter", () => {
     expect(spy.mock.calls[0][1].redirect).toBe("error");
   });
 
+  it("accepts the optional small model metadata for explicit STT quality experiments", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      text: "برای فردا وقت رزرو می‌خواهم",
+      model: "small", durationSeconds: 1.2, language: "fa",
+    }), { status: 200 })));
+    const result = await new FasterWhisperSTTProvider().transcribe(pcm16ToWav(Buffer.alloc(16000), 8000));
+    expect(result.model).toBe("small");
+    expect(result.text).toContain("رزرو");
+  });
+
   it("rejects non-WAV input and malformed STT data", async () => {
     const provider = new FasterWhisperSTTProvider();
     await expect(provider.transcribe(Buffer.from("bad"))).rejects.toThrow(/PCM WAV/);

@@ -21,12 +21,13 @@ app.config["MAX_CONTENT_LENGTH"] = 800_000
 
 model = None
 model_name = "tiny"
+beam_size = 1
 inference_lock = threading.Lock()
 
 
 @app.get("/health")
 def health():
-    return jsonify({"ok": model is not None, "model": model_name, "compute": "int8", "device": "cpu"})
+    return jsonify({"ok": model is not None, "model": model_name, "compute": "int8", "device": "cpu", "beamSize": beam_size})
 
 
 @app.post("/transcribe")
@@ -50,7 +51,7 @@ def transcribe():
             segments, _ = model.transcribe(
                 samples,
                 language="fa",
-                beam_size=1,
+                beam_size=beam_size,
                 best_of=1,
                 temperature=0,
                 vad_filter=False,  # browser VAD already segmented this utterance
@@ -64,6 +65,7 @@ def transcribe():
             "language": "fa",
             "durationSeconds": duration,
             "model": model_name,
+            "beamSize": beam_size,
             "inferenceSeconds": elapsed,
         })
     except Exception:
@@ -74,16 +76,19 @@ def transcribe():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", choices=["tiny", "base"], default="tiny")
+    parser.add_argument("--model", choices=["tiny", "base", "small"], default="tiny")
     parser.add_argument("--port", type=int, default=5001)
     parser.add_argument("--threads", type=int, default=4)
+    parser.add_argument("--beam-size", type=int, choices=[1, 3, 5], default=1,
+                        help="Beam search quality/speed tradeoff (default 1)")
     args = parser.parse_args()
     if not 1024 <= args.port <= 65535 or not 1 <= args.threads <= 8:
         parser.error("port must be >=1024 and threads between 1 and 8")
     model_name = args.model
+    beam_size = args.beam_size
     model = WhisperModel(
         args.model, device="cpu", compute_type="int8",
         cpu_threads=args.threads, num_workers=1,
     )
-    print(f"Faster-Whisper {model_name} ready on 127.0.0.1:{args.port}")
+    print(f"Faster-Whisper {model_name} (beam {beam_size}) ready on 127.0.0.1:{args.port}")
     app.run(host="127.0.0.1", port=args.port, debug=False, use_reloader=False, threaded=True)

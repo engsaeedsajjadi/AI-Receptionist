@@ -88,3 +88,35 @@ Test the decoder without loading the model or sending audio to Gemini:
 ```
 
 The tests cover 8/16-kHz resampling, WAV truncation, invalid input and stereo rejection.
+
+
+### STT Persian accuracy vs latency comparison
+
+The 8-kHz G.711 local telephone lab deliberately applies lossy PSTN bandwidth
+before decoding. Base can be fast yet miss Persian intent-critical words.
+Do not rewrite uncertain transcripts into confident bookings: the agent should
+ask a clarification before side effects.
+
+Use the same spoken test prompts (reservations, support, pricing) and compare
+the transcript word accuracy *and* total latency after warming up each model:
+
+```powershell
+# Faster baseline: identical to the previous default
+.\.venv-whisper\Scripts\python.exe scripts/local-stt/server.py --model base --beam-size 1 --port 5001 --threads 4
+# Re-start server with Ctrl+C first; then try slightly wider search
+.\.venv-whisper\Scripts\python.exe scripts/local-stt/server.py --model base --beam-size 3 --port 5001 --threads 4
+# Optional quality-focused model, larger CPU/RAM/time and first-run download
+.\.venv-whisper\Scripts\python.exe scripts/local-stt/server.py --model small --beam-size 1 --port 5001 --threads 4
+```
+
+Only one instance can occupy port 5001; verify model and beam size via
+`http://127.0.0.1:5001/health`. Defaults remain unchanged, and these
+settings affect **only the opt-in local STT sidecar**, not cloud STT or the
+deployed environment. Small may be much slower on older CPUs.
+
+Agent delays can be caused by retrieval, multiple LLM iterations or tool
+execution even when STT is fast. Structured log operations
+`agent.retrieval`, `agent.llm.iteration`, `agent.tool`, and
+`agent.total` report timings, counts and sanitized tool names only,
+without caller audio or transcript; compare these with `llm.complete`.
+Avoid reading a 15-second Agent delay as a 15-second STT delay.

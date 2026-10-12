@@ -172,6 +172,7 @@ const ANSWER_MIN_SUPPORT_RATIO = 0.6;
  */
 export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResult> {
   assertTenantScope(input.businessId);
+  const agentStartedAt = Date.now();
   await requireTenantFeature(input.businessId, "agent");
   // Normalize Persian input BEFORE any downstream processing (tool parsing,
   // history persistence, LLM): ي/ي, ک/ك, digits, tashkeel, spacing.
@@ -253,6 +254,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
     // knowledge feature is honoured, reranking applies when configured, and the
     // retrieval is recorded for analytics. A retrieval failure degrades to "no
     // evidence" instead of failing the call.
+    const retrievalStartedAt = Date.now();
     const found = await searchKnowledgeGoverned({
       businessId: input.businessId,
       query: userMessage,
@@ -261,6 +263,15 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
       requestId: input.requestId,
       agentId: agent.id,
       callId: input.callId ?? null,
+    });
+    logInfo("Agent retrieval latency", {
+      requestId: input.requestId,
+      businessId: input.businessId,
+      callId: input.callId,
+      operation: "agent.retrieval",
+      durationMs: Date.now() - retrievalStartedAt,
+      status: found.degraded ? "degraded" : "ok",
+      documents: found.documentIds.length,
     });
     retrieval = { id: found.retrievalId, degraded: found.degraded, documents: found.documentIds.length };
     for (const chunk of found.chunks) {
@@ -277,6 +288,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
   let idempotencySeq = 0;
 
   for (let iteration = 0; iteration < config.maxToolIterations; iteration++) {
+    const llmStageStartedAt = Date.now();
     const result = await meteredCompletion(input.businessId, llm, messages, {
       model: config.model ?? undefined,
       tools,
@@ -297,6 +309,17 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
       metadata: { callId: input.callId, agentId: agent.id },
     });
 
+    logInfo("Agent LLM iteration latency", {
+      requestId: input.requestId,
+      businessId: input.businessId,
+      callId: input.callId,
+      operation: "agent.llm.iteration",
+      durationMs: Date.now() - llmStageStartedAt,
+      status: "ok",
+      iteration: iteration + 1,
+      toolCalls: result.toolCalls.length,
+    });
+
     if (result.toolCalls.length === 0) {
       reply = result.content?.trim() || null;
       break;
@@ -309,6 +332,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
     });
 
     for (const tc of result.toolCalls) {
+      const toolStartedAt = Date.now();
       const toolResult = allowedTools.has(tc.name) ? await executeToolCall({
         businessId: input.businessId,
         callId: input.callId,
@@ -321,6 +345,15 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
       if (tc.name === "search_knowledge" && toolResult.status === "SUCCESS") {
         for (const item of collectRagEvidence(toolResult.data)) evidence.set(`${item.document}:${item.content}`, item);
       }
+      logInfo("Agent tool latency", {
+        requestId: input.requestId,
+        businessId: input.businessId,
+        callId: input.callId,
+        operation: "agent.tool",
+        durationMs: Date.now() - toolStartedAt,
+        status: toolResult.status,
+        tool: tc.name,
+      });
       executed.push({ tool: tc.name, status: toolResult.status });
       messages.push({
         role: "tool",
@@ -427,6 +460,15 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
     try { await summarizeConversation({ businessId: input.businessId, callId: input.callId, requestId: input.requestId, llm, model: config.model ?? undefined }); }
     catch (error) { logWarn("Conversation summary unavailable", { businessId: input.businessId, callId: input.callId, error: error instanceof Error ? error.message : String(error) }); }
   }
+  logInfo("Agent total latency", {
+    requestId: input.requestId,
+    businessId: input.businessId,
+    callId: input.callId,
+    operation: "agent.total",
+    durationMs: Date.now() - agentStartedAt,
+    status: "ok",
+    toolCalls: executed.length,
+  });
   logInfo("Caller intent resolved", {
     requestId: input.requestId,
     businessId: input.businessId,

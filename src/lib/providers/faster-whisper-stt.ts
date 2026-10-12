@@ -65,7 +65,7 @@ export class FasterWhisperSTTProvider implements STTProvider {
       typeof value.durationSeconds !== "number" ||
       !Number.isFinite(value.durationSeconds) ||
       value.durationSeconds <= 0 || value.durationSeconds > 20.5 ||
-      typeof value.model !== "string" || !["tiny", "base"].includes(value.model)) {
+      typeof value.model !== "string" || !["tiny", "base", "small"].includes(value.model)) {
       throw new AppError(502, "STT_ERROR", "Invalid local STT transcription metadata");
     }
     return {
