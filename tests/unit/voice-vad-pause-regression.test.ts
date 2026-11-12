@@ -14,10 +14,15 @@ const FRAME_SAMPLES = (SAMPLE_RATE * FRAME_MS) / 1_000;
 
 function frame(speech: boolean): Buffer {
   if (!speech) return Buffer.alloc(FRAME_SAMPLES, 0xff); // G.711 μ-law silence
+  // Voiced, harmonic signal (200 Hz fundamental + 3 harmonics). A pure 440 Hz
+  // sine is deliberately rejected by the VAD as a telephone signaling tone.
   const output = Buffer.alloc(FRAME_SAMPLES);
   for (let index = 0; index < output.length; index++) {
-    const pcmSample = Math.round(9_000 * Math.sin((2 * Math.PI * 440 * index) / SAMPLE_RATE));
-    output[index] = encodeMulawSample(pcmSample);
+    let value = 0;
+    for (const harmonic of [1, 2, 3, 4]) {
+      value += Math.sin((2 * Math.PI * 200 * harmonic * index) / SAMPLE_RATE);
+    }
+    output[index] = encodeMulawSample(Math.round(4_500 * value));
   }
   return output;
 }
