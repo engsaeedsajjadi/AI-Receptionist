@@ -47,7 +47,57 @@ export type PromptSections = {
   ragContext?: string;
   propertyContext?: string;
   conversationSummary?: string;
+  /**
+   * Wall clock for this turn in the business time zone. Without it the model
+   * cannot resolve relative dates ("فردا ساعت ۱۰") or choose the UTC offset the
+   * appointment tools require, and would have to guess today's date.
+   */
+  currentTime?: { now: Date; timeZone: string };
 };
+
+const WEEKDAYS_FA: Record<string, string> = {
+  Sun: "یکشنبه", Mon: "دوشنبه", Tue: "سه‌شنبه", Wed: "چهارشنبه", Thu: "پنجشنبه", Fri: "جمعه", Sat: "شنبه",
+};
+const WEEKDAYS_EN: Record<string, string> = {
+  Sun: "Sunday", Mon: "Monday", Tue: "Tuesday", Wed: "Wednesday", Thu: "Thursday", Fri: "Friday", Sat: "Saturday",
+};
+
+/**
+ * Current local date/time of the business as unambiguous facts for the model:
+ * Gregorian date, weekday, 24h time, UTC offset and the Jalali date. An unknown
+ * time zone falls back to Asia/Tehran instead of failing the call.
+ */
+export function describeCurrentTime(now: Date, timeZone: string): {
+  timeZone: string; date: string; time: string; offset: string; weekday: string; iso: string; jalali: string;
+} {
+  let zone = timeZone;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: zone });
+  } catch {
+    zone = "Asia/Tehran";
+  }
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit", weekday: "short",
+      hour: "2-digit", minute: "2-digit", hour12: false, timeZoneName: "longOffset",
+    }).formatToParts(now).map((part) => [part.type, part.value]),
+  );
+  const date = `${parts.year}-${parts.month}-${parts.day}`;
+  const time = `${String(Number(parts.hour) % 24).padStart(2, "0")}:${parts.minute}`;
+  const match = /GMT([+-]\d{2}):?(\d{2})?/.exec(parts.timeZoneName ?? "");
+  const offset = match ? `${match[1]}:${match[2] ?? "00"}` : "+00:00";
+  const jalali = new Intl.DateTimeFormat("fa-IR-u-ca-persian-nu-latn", {
+    timeZone: zone, year: "numeric", month: "long", day: "numeric",
+  }).format(now);
+  return { timeZone: zone, date, time, offset, weekday: parts.weekday, iso: `${date}T${time}:00${offset}`, jalali };
+}
+
+function currentTimeSection(language: string, clock: { now: Date; timeZone: string }): string {
+  const t = describeCurrentTime(clock.now, clock.timeZone);
+  return language.startsWith("en")
+    ? `Current date and time at the business (authoritative; never guess the date): ${WEEKDAYS_EN[t.weekday] ?? t.weekday} ${t.date} ${t.time}, time zone ${t.timeZone} (UTC${t.offset}); Jalali date ${t.jalali}. Resolve "today", "tomorrow" and weekdays from this. Every time passed to a tool must be in this time zone with the offset ${t.offset}, e.g. ${t.iso}.`
+    : `تاریخ و ساعت فعلی کسب‌وکار (مرجع قطعی؛ هرگز تاریخ را حدس نزن): ${WEEKDAYS_FA[t.weekday] ?? t.weekday} ${t.jalali} برابر با ${t.date} میلادی، ساعت ${t.time}، منطقه زمانی ${t.timeZone} (UTC${t.offset}). «امروز»، «فردا»، «پس‌فردا» و روزهای هفته را فقط بر همین اساس حساب کن. هر زمانی که به ابزارها می‌دهی باید در همین منطقه زمانی و با اختلاف ${t.offset} باشد، مثل ${t.iso}.`;
+}
 
 /**
  * Build the full system prompt from separated layers. Business instructions
@@ -61,6 +111,8 @@ export function buildSystemPrompt(sections: PromptSections): string {
     ? `You are "${sections.agentName ?? "AI Receptionist"}", the AI receptionist of ${sections.businessName}.`
     : `شما «${sections.agentName ?? "منشی هوشمند"}»، منشی هوشمند تلفنی مجموعه ${sections.businessName} هستید.`;
   parts.push(identity);
+
+  if (sections.currentTime) parts.push(currentTimeSection(sections.language, sections.currentTime));
 
   if (sections.tone) {
     parts.push(sections.language.startsWith("en") ? `Tone: ${sections.tone}` : `لحن پاسخ‌گویی: ${sections.tone}`);
