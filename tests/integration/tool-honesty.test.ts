@@ -4,7 +4,7 @@ import { closeDb, db } from "@/db";
 import { appointments } from "@/db/schema";
 import type { ChatCompletionResult, ChatMessage, LLMProvider } from "@/lib/providers/llm";
 import { ensureDbReady, hasTestDatabase, itDb, truncateAll } from "../helpers/db";
-import { createAgent, createBusiness, createProperty } from "../helpers/fixtures";
+import { createAgent, createBusiness, createProperty, createCustomer } from "../helpers/fixtures";
 
 const runIntegration = hasTestDatabase();
 let reqSeq = 0;
@@ -43,12 +43,14 @@ function toolMessages(seen: ChatMessage[]): Array<{ status: string; error?: stri
 
 describe.skipIf(!runIntegration)("tool honesty: failures surface, never invented (real database)", () => {
   let businessId: string;
+  let customerId: string;
 
   beforeAll(async () => {
     if (!(await ensureDbReady())) return;
     await truncateAll();
     businessId = (await createBusiness("Honesty Biz")).id;
     await createAgent(businessId);
+    customerId = (await createCustomer(businessId)).id;
     // One real row proves the NOT_FOUND cases below ran a genuine lookup.
     await createProperty(businessId, { code: "HONEST-001" });
   });
@@ -85,7 +87,7 @@ describe.skipIf(!runIntegration)("tool honesty: failures surface, never invented
     const first = await executeToolCall({
       businessId,
       tool: "create_appointment",
-      args: { scheduledAt: slot!.start, durationMinutes: 30 },
+      args: { scheduledAt: slot!.start, durationMinutes: 30, customerId },
       requestId: nextReq("book-first"),
       actor: "test",
     });
@@ -94,7 +96,7 @@ describe.skipIf(!runIntegration)("tool honesty: failures surface, never invented
     const clash = await executeToolCall({
       businessId,
       tool: "create_appointment",
-      args: { scheduledAt: slot!.start, durationMinutes: 30 },
+      args: { scheduledAt: slot!.start, durationMinutes: 30, customerId },
       requestId: nextReq("book-clash"),
       actor: "test",
     });
@@ -169,7 +171,7 @@ describe.skipIf(!runIntegration)("tool honesty: failures surface, never invented
     const llm = new CapturingLLM([
       {
         toolCalls: [
-          { id: "tc-2", name: "create_appointment", arguments: { scheduledAt: slot!.start, durationMinutes: 30 } },
+          { id: "tc-2", name: "create_appointment", arguments: { scheduledAt: slot!.start, durationMinutes: 30, customerId } },
         ],
       },
       { content: "متأسفم، این ساعت قبلاً رزرو شده است." },
