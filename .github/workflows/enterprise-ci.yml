@@ -173,6 +173,18 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run db:migrate
+      # The runner's own PostgreSQL client is newer than the pg16 server. A newer
+      # pg_dump writes `SET transaction_timeout`, which pg16 rejects on restore.
+      # Run pg_dump/pg_restore/psql from the server image so client == server.
+      - name: Use PostgreSQL client tools that match the server (pg16)
+        run: |
+          mkdir -p "$RUNNER_TEMP/pg16-bin"
+          for tool in pg_dump pg_restore psql; do
+            printf '#!/usr/bin/env bash\nexec docker run --rm -i --network host -v "$PWD:$PWD" -w "$PWD" pgvector/pgvector:pg16 %s "$@"\n' "$tool" > "$RUNNER_TEMP/pg16-bin/$tool"
+            chmod +x "$RUNNER_TEMP/pg16-bin/$tool"
+          done
+          echo "$RUNNER_TEMP/pg16-bin" >> "$GITHUB_PATH"
+      - run: pg_dump --version && pg_restore --version && psql --version
       # Backup → restore into an isolated database → validate → migrate → health
       - run: bash scripts/ci/restore-drill.sh
       - run: docker build -t ai-receptionist:ci .

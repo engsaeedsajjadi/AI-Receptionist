@@ -226,6 +226,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
     tone: config.tone,
     businessInstructions: [agent.systemPrompt, config.systemInstructions].filter(Boolean).join("\n"),
     businessContext,
+    currentTime: { now: new Date(), timeZone: business.timezone ?? "Asia/Tehran" },
   });
 
   // Opt-in for spoken interactions: the model should produce a short but
