@@ -39,6 +39,11 @@ function clockMs(): number { return Date.now(); }
 
 const VAD_INTERVAL_MS = 50;
 const VAD_START_FRAMES = 3;
+// While the assistant is talking the microphone also hears it (speakers, or
+// imperfect echo cancellation). Interrupting therefore needs clearly louder and
+// longer speech than starting a normal turn, or the assistant interrupts itself.
+const BARGE_IN_START_FRAMES = 7;
+const BARGE_IN_THRESHOLD_FACTOR = 2.2;
 const VAD_SILENCE_MS = 850;
 const VAD_MIN_UTTERANCE_MS = 650;
 const MAX_SEGMENT_MS = 16_000;
@@ -392,17 +397,21 @@ export function TelephonyLiveConversation({ agentId, microphoneId, ready, allowU
     const rms = Math.sqrt(sum / data.length);
     setVolume(Math.min(100, Math.round(rms * 500)));
 
-    const threshold = Math.max(0.016, r.noise * 3);
+    const speakingNow = r.phase === "speaking";
+    const threshold = Math.max(0.016, r.noise * 3) * (speakingNow ? BARGE_IN_THRESHOLD_FACTOR : 1);
+    const startFrames = speakingNow ? BARGE_IN_START_FRAMES : VAD_START_FRAMES;
     const speech = rms > threshold;
     const now = clockMs();
-    if (!speech && r.startedTalking === 0) {
+    // Never learn the assistant's own voice as "room noise": that would leave
+    // the caller's next sentence below the threshold right after playback.
+    if (!speech && r.startedTalking === 0 && !speakingNow) {
       r.noise = 0.94 * r.noise + 0.06 * rms;
     }
     if (speech) {
       r.onsetFrames++;
       r.lastTalking = now;
-      if (r.onsetFrames >= VAD_START_FRAMES && r.startedTalking === 0) {
-        r.startedTalking = now - VAD_INTERVAL_MS * (VAD_START_FRAMES - 1);
+      if (r.onsetFrames >= startFrames && r.startedTalking === 0) {
+        r.startedTalking = now - VAD_INTERVAL_MS * (startFrames - 1);
         if (r.phase === "speaking") {
           releasePlayback();
           setPhaseLive("listening", "صحبت شما پاسخ قبلی را قطع کرد؛ در حال گوش دادن.");

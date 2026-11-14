@@ -12,6 +12,7 @@ import { resolveTurnTtsVoice } from "@/lib/voice/turn-voice";
 import { recordUsage } from "@/lib/services/usage";
 import { addSttSeconds } from "@/lib/services/voice-usage";
 import { toSpokenPersian } from "@/lib/voice/cleaner";
+import { isDegenerateTranscript } from "@/lib/voice/transcript-quality";
 import { normalizeTelephonyAudio, telephonyAudioDurationSeconds, type AudioCodec } from "@/lib/voice/audio";
 
 export type VoiceTurnInput = {
@@ -183,6 +184,19 @@ export async function runVoiceTurn(input: VoiceTurnInput): Promise<VoiceTurnResu
     // call-ended settlement can bill trusted STT usage (never a text heuristic).
     if (input.callId && sttDurationSeconds != null && sttDurationSeconds > 0) {
       await addSttSeconds(input.businessId, input.callId, sttDurationSeconds);
+    }
+    // A recognizer loop («اینجای اینجای اینجای …») is what non-speech audio looks
+    // like after STT. Nobody said it: answer it like silence, never like a request.
+    if (isDegenerateTranscript(transcript)) {
+      logWarn("Discarded a looping transcript as non-speech", {
+        requestId: input.requestId,
+        businessId: input.businessId,
+        callId: input.callId,
+        operation: "voice.turn.stt",
+        status: "degenerate_transcript",
+        characters: transcript.length,
+      });
+      transcript = "";
     }
   } else {
     transcript = (input.transcript as string).trim();
