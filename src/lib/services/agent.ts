@@ -99,6 +99,12 @@ export type AgentTurnInput = {
   llm?: LLMProvider;
   /** Optional speech-first style; never caps tool calls, claims, or written records. */
   briefVoiceReply?: boolean;
+  /**
+   * Earlier turns of a conversation that has no call row (developer lab only).
+   * Ignored when `callId` is set: a call's history always comes from its own
+   * tenant-checked transcript, never from the caller of this function.
+   */
+  priorMessages?: ChatMessage[];
 };
 
 export type AgentTurnResult = {
@@ -203,7 +209,11 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
   // side-effecting request is confirmed before it becomes a side effect.
   const intent = resolveIntent({ utterance: userMessage });
 
-  const history: ChatMessage[] = input.callId ? await loadCallHistory(input.businessId, input.callId) : [];
+  const history: ChatMessage[] = input.callId
+    ? await loadCallHistory(input.businessId, input.callId)
+    : (input.priorMessages ?? [])
+        .filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim())
+        .map((m) => ({ role: m.role, content: normalizePersianText(m.content as string).trim().slice(0, 4000) }));
   history.push({ role: "user", content: userMessage });
 
   // Preload lightweight business context for the prompt (no secrets).

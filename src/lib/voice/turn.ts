@@ -5,7 +5,7 @@ import { logInfo, logWarn } from "@/lib/logger";
 import { getSTTProvider, type STTProvider } from "@/lib/providers/stt";
 import { getTTSProvider, type TTSProvider } from "@/lib/providers/tts";
 import { getStorageProvider, tenantKey } from "@/lib/providers/storage";
-import type { LLMProvider } from "@/lib/providers/llm";
+import type { ChatMessage, LLMProvider } from "@/lib/providers/llm";
 import { redisDel, redisGet, redisSet } from "@/lib/redis";
 import { runAgentTurn } from "@/lib/services/agent";
 import { resolveTurnTtsVoice } from "@/lib/voice/turn-voice";
@@ -43,6 +43,8 @@ export type VoiceTurnInput = {
   actor?: string;
   /** Keep the spoken reply concise without changing agent tools or quotas. */
   briefVoiceReply?: boolean;
+  /** Earlier turns of a call-less developer-lab conversation (ignored with `callId`). */
+  priorMessages?: ChatMessage[];
   /** Provider overrides for tests. */
   stt?: STTProvider;
   tts?: TTSProvider;
@@ -204,6 +206,7 @@ export async function runVoiceTurn(input: VoiceTurnInput): Promise<VoiceTurnResu
     actor: input.actor ?? "voice-turn",
     llm: input.llm,
     briefVoiceReply: input.briefVoiceReply,
+    priorMessages: input.priorMessages,
   });
   latency.agent = Date.now() - t1;
 

@@ -42,6 +42,10 @@ const VAD_START_FRAMES = 3;
 const VAD_SILENCE_MS = 850;
 const VAD_MIN_UTTERANCE_MS = 650;
 const MAX_SEGMENT_MS = 16_000;
+// A caller reads silence as a dropped line. If a turn is still processing after
+// this long, a short fixed "one moment" line is played once for that turn.
+const FILLER_DELAY_MS = 1_200;
+const FILLER_MAX_WAIT_MS = 2_500;
 
 /**
  * Hands-free local conversation. Continuously monitors the actual microphone
@@ -78,11 +82,17 @@ export function TelephonyLiveConversation({ agentId, microphoneId, ready, allowU
     recordingSince: number;
     turning: boolean;
     turnSequence: number;
+    /** Opaque id of the server-side lab conversation memory for this session. */
+    conversationId: string;
+    fillerUrl: string | null;
+    fillerPlayer: HTMLAudioElement | null;
+    fillerTimer: ReturnType<typeof setTimeout> | null;
   }>({
     active: false, epoch: 0, recorder: null, stream: null, context: null,
     analyser: null, source: null, timer: null, controller: null, player: null,
     playbackUrl: null, phase: "idle", noise: 0.002, onsetFrames: 0,
     startedTalking: 0, lastTalking: 0, recordingSince: 0, turning: false, turnSequence: 0,
+    conversationId: "", fillerUrl: null, fillerPlayer: null, fillerTimer: null,
   });
 
   const setPhaseLive = (next: Phase, label: string) => {
@@ -105,10 +115,71 @@ export function TelephonyLiveConversation({ agentId, microphoneId, ready, allowU
     }
   };
 
+  /** Stop a pending or playing "one moment" line (the clip itself is kept for reuse). */
+  const cancelFiller = () => {
+    const r = runtime.current;
+    if (r.fillerTimer) clearTimeout(r.fillerTimer);
+    r.fillerTimer = null;
+    if (r.fillerPlayer) {
+      r.fillerPlayer.onended = null;
+      r.fillerPlayer.onerror = null;
+      r.fillerPlayer.pause();
+      r.fillerPlayer = null;
+    }
+  };
+
+  const releaseFillerClip = () => {
+    const r = runtime.current;
+    cancelFiller();
+    if (r.fillerUrl) URL.revokeObjectURL(r.fillerUrl);
+    r.fillerUrl = null;
+  };
+
+  /** Resolves when the filler line has finished (or immediately when none is playing). */
+  const fillerSettled = () => new Promise<void>(resolve => {
+    const r = runtime.current;
+    if (r.fillerTimer) clearTimeout(r.fillerTimer);
+    r.fillerTimer = null;
+    const playing = r.fillerPlayer;
+    if (!playing || playing.ended || playing.paused) { r.fillerPlayer = null; resolve(); return; }
+    const done = () => {
+      clearTimeout(guard);
+      playing.onended = null;
+      playing.onerror = null;
+      if (r.fillerPlayer === playing) r.fillerPlayer = null;
+      resolve();
+    };
+    const guard = setTimeout(() => { playing.pause(); done(); }, FILLER_MAX_WAIT_MS);
+    playing.onended = done;
+    playing.onerror = done;
+  });
+
+  /** Fetch the fixed server-side filler line once per session (local Piper only: no cloud cost). */
+  const prepareFiller = async (epoch: number) => {
+    const r = runtime.current;
+    releaseFillerClip();
+    if (ttsEngine !== "piper") return;
+    try {
+      const form = new FormData();
+      form.set("voicePreview", "piper");
+      form.set("previewKind", "filler");
+      form.set("piperVoice", piperVoice);
+      form.set("piperStyle", piperStyle);
+      const response = await api(`/api/v1/agents/${agentId}/telephony-local-test`, { method: "POST", body: form });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || typeof payload?.playbackWavBase64 !== "string") return;
+      if (!r.active || r.epoch !== epoch) return;
+      r.fillerUrl = URL.createObjectURL(fromBase64(payload.playbackWavBase64));
+    } catch {
+      // The filler is a nicety; a conversation must never fail because of it.
+    }
+  };
+
   const finish = (message = "مکالمه پایان یافت.") => {
     const r = runtime.current;
     r.active = false;
     r.epoch++;
+    releaseFillerClip();
     if (r.timer) clearInterval(r.timer);
     r.timer = null;
     r.controller?.abort();
@@ -140,6 +211,9 @@ export function TelephonyLiveConversation({ agentId, microphoneId, ready, allowU
     r.epoch++;
     if (r.timer) clearInterval(r.timer);
     r.controller?.abort();
+    if (r.fillerTimer) clearTimeout(r.fillerTimer);
+    if (r.fillerPlayer) { r.fillerPlayer.onended = null; r.fillerPlayer.pause(); }
+    if (r.fillerUrl) URL.revokeObjectURL(r.fillerUrl);
     if (r.player) { r.player.pause(); r.player.onended = null; }
     if (r.playbackUrl) URL.revokeObjectURL(r.playbackUrl);
     if (r.recorder?.state === "recording") {
@@ -181,7 +255,18 @@ export function TelephonyLiveConversation({ agentId, microphoneId, ready, allowU
       const encoded = await recordedToMulaw(blob);
       if (!stillCurrent()) return;
       setPhaseLive("processing", "در حال تشخیص گفتار، پردازش توسط منشی و تولید پاسخ صوتی ...");
+      if (r.fillerUrl) {
+        const clip = r.fillerUrl;
+        r.fillerTimer = setTimeout(() => {
+          r.fillerTimer = null;
+          if (!stillCurrent() || r.phase !== "processing") return;
+          const filler = new Audio(clip);
+          r.fillerPlayer = filler;
+          void filler.play().catch(() => { if (r.fillerPlayer === filler) r.fillerPlayer = null; });
+        }, FILLER_DELAY_MS);
+      }
       const form = new FormData();
+      form.set("conversationId", r.conversationId);
       form.append("audio", new Blob([encoded.bytes.buffer as ArrayBuffer], { type: "audio/basic" }), "live-utterance.ulaw");
       form.set("responseStyle", briefReplies ? "brief" : "normal");
       form.set("ttsEngine", ttsEngine);
@@ -201,6 +286,9 @@ export function TelephonyLiveConversation({ agentId, microphoneId, ready, allowU
       if (!response.ok) {
         throw new Error(payload?.error?.message ?? `درخواست منشی ناموفق بود (HTTP ${response.status})`);
       }
+      // Never talk over the "one moment" line: let it finish, then answer.
+      await fillerSettled();
+      if (!stillCurrent()) return;
       const result = payload as AiResult;
       if (!result.heard || !result.transcript?.trim()) {
         setPhaseLive("listening", "صدای قابل تشخیص دریافت نشد؛ دوباره صحبت کنید.");
@@ -265,6 +353,7 @@ export function TelephonyLiveConversation({ agentId, microphoneId, ready, allowU
         beginSegment();
       }
     } catch (err) {
+      cancelFiller();
       if (!stillCurrent()) return;
       setError(err instanceof Error ? err.message : "پردازش مکالمه ناموفق بود.");
       setPhaseLive("error", "خطای پردازش مکالمه؛ برای جلوگیری از درخواست‌های تکراری، ارسال متوقف شد.");
@@ -279,6 +368,7 @@ export function TelephonyLiveConversation({ agentId, microphoneId, ready, allowU
     if (r.timer) clearInterval(r.timer);
     r.timer = null;
     r.active = false;
+    releaseFillerClip();
     if (r.recorder?.state === "recording") {
       r.recorder.onstop = null;
       r.recorder.stop();
@@ -367,6 +457,9 @@ export function TelephonyLiveConversation({ agentId, microphoneId, ready, allowU
       await context.resume();
       r.active = true;
       r.epoch++;
+      // A new session starts with an empty server-side conversation memory.
+      r.conversationId = crypto.randomUUID();
+      void prepareFiller(r.epoch);
       r.noise = 0.002;
       r.startedTalking = 0;
       r.onsetFrames = 0;
@@ -386,6 +479,10 @@ export function TelephonyLiveConversation({ agentId, microphoneId, ready, allowU
       <p className="text-sm text-slate-700">
         میکروفون را یک‌بار روشن کنید و طبیعی صحبت کنید. بعد از مکث حدود یک ثانیه، جمله به‌صورت خودکار ارسال می‌شود و پاسخ فارسی پخش می‌شود.
         گفتگوی محلی بر اساس نوبت‌های گفتار است؛ این مسیر اتصال تلفنی Twilio یا استریم تمام‌دوطرفه نیست.
+      </p>
+      <p className="text-sm text-slate-700">
+        منشی جمله‌های قبلی همین گفتگو را به یاد دارد (حداکثر ۱۵ دقیقه؛ با «شروع گفتگوی زنده» از نو شروع می‌شود).
+        با صدای Piper، اگر پاسخ بیش از حدود یک ثانیه طول بکشد جملهٔ کوتاه «بله، یک لحظه لطفاً» پخش می‌شود.
       </p>
       <p className="text-xs text-amber-800">
         در این حالت درخواست‌های واقعی Gemini و مصرف سهمیه ممکن‌اند. برای جلوگیری از تکرار صدای منشی، هدفون توصیه می‌شود.
