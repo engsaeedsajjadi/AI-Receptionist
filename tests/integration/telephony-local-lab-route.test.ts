@@ -22,6 +22,7 @@ import { ensureDbReady, hasTestDatabase, itDb, truncateAll } from "../helpers/db
 const seams = vi.hoisted(() => ({
   turn: null as ((input: VoiceTurnInput) => Promise<VoiceTurnResult>) | null,
   piper: [] as Array<{ voice?: string; style?: string }>,
+  spoken: [] as string[],
 }));
 
 vi.mock("@/lib/voice/turn", async (importActual) => {
@@ -40,6 +41,7 @@ vi.mock("@/lib/providers/piper-tts", async (importActual) => {
       seams.piper.push({ voice: options.voice, style: options.style });
     }
     async synthesize(text: string) {
+      seams.spoken.push(text);
       // 0.5 s of 24-kHz PCM16 mono.
       return {
         audio: Buffer.alloc(24_000), mimeType: "audio/pcm", provider: "piper", model: "fake-piper",
@@ -133,6 +135,7 @@ describe.skipIf(!hasTestDatabase())("local telephone lab route", () => {
     await truncateAll();
     seams.turn = null;
     seams.piper.length = 0;
+    seams.spoken.length = 0;
   });
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -352,6 +355,86 @@ describe.skipIf(!hasTestDatabase())("local telephone lab route", () => {
       bad.set("voicePreview", "piper");
       bad.set("piperVoice", "en_US-anything");
       expect((await call("POST", agent.id, a.token, bad)).status).toBe(400);
+    });
+
+    itDb("serves the fixed «یک لحظه لطفاً» filler line and never synthesizes client-chosen text", async () => {
+      enableLab({ LLM_PROVIDER: "dev", STT_PROVIDER: "dev", TTS_PROVIDER: "dev" });
+      const a = await identity();
+      const agent = await createAgent(a.business.id);
+      let turns = 0;
+      seams.turn = async () => { turns += 1; return turnResult(agent.id); };
+
+      const form = new FormData();
+      form.set("voicePreview", "piper");
+      form.set("previewKind", "filler");
+      form.set("text", "متن دلخواه کاربر");
+      const res = await call("POST", agent.id, a.token, form);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ mode: "piper-voice-preview", previewKind: "filler", realPhoneCall: false });
+      expect(seams.spoken).toEqual(["بله، یک لحظه لطفاً."]);
+      expect(turns).toBe(0);
+
+      const bad = new FormData();
+      bad.set("voicePreview", "piper");
+      bad.set("previewKind", "anything-else");
+      expect((await call("POST", agent.id, a.token, bad)).status).toBe(400);
+    });
+
+    itDb("remembers earlier turns of one lab conversation and keeps sessions, users and agents apart", async () => {
+      enableLab();
+      const a = await identity();
+      const agent = await createAgent(a.business.id);
+      const otherAgent = await createAgent(a.business.id);
+      const seen: Array<VoiceTurnInput["priorMessages"]> = [];
+      let n = 0;
+      seams.turn = async (input) => {
+        seen.push(input.priorMessages);
+        n += 1;
+        return turnResult(agent.id, { transcript: `گفته ${n}`, reply: `پاسخ ${n}` });
+      };
+      const session = "0b7d5f0e-3c1a-4c55-9d2e-6a1f0c9b7e11";
+      const otherSession = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
+
+      const first = await call("POST", agent.id, a.token, labForm({ conversationId: session }));
+      expect((await first.json()).conversationTurns).toBe(1);
+      const second = await call("POST", agent.id, a.token, labForm({ conversationId: session }));
+      expect((await second.json()).conversationTurns).toBe(2);
+      expect(seen[0]).toEqual([]);
+      expect(seen[1]).toEqual([
+        { role: "user", content: "گفته 1" },
+        { role: "assistant", content: "پاسخ 1" },
+      ]);
+
+      // A new session id, another agent, another user and no id at all start empty.
+      await call("POST", agent.id, a.token, labForm({ conversationId: otherSession }));
+      await call("POST", otherAgent.id, a.token, labForm({ conversationId: session }));
+      const { user: colleague } = await createUser(a.business.id, "ADMIN");
+      const colleagueToken = (await issueAuthTokens({ userId: colleague.id, businessId: a.business.id, role: "ADMIN" })).accessToken;
+      await call("POST", agent.id, colleagueToken, labForm({ conversationId: session }));
+      const stateless = await call("POST", agent.id, a.token, labForm());
+      expect(seen.slice(2, 5)).toEqual([[], [], []]);
+      expect(seen[5]).toBeUndefined();
+      expect((await stateless.json()).conversationTurns).toBe(0);
+    });
+
+    itDb("rejects a malformed conversation id and does not store a turn nobody heard", async () => {
+      enableLab();
+      const a = await identity();
+      const agent = await createAgent(a.business.id);
+      const seen: Array<VoiceTurnInput["priorMessages"]> = [];
+      seams.turn = async (input) => {
+        seen.push(input.priorMessages);
+        return turnResult(agent.id, { heard: false, transcript: "", reply: "", audio: null, audioMimeType: null });
+      };
+      for (const bad of ["not-a-uuid", "../../etc/passwd", "0b7d5f0e-3c1a-4c55-9d2e-6a1f0c9b7e11:extra"]) {
+        expect((await call("POST", agent.id, a.token, labForm({ conversationId: bad }))).status).toBe(400);
+      }
+      expect(seen).toHaveLength(0);
+
+      const session = "4f1c2d3e-5a6b-4c7d-8e9f-0a1b2c3d4e5f";
+      await call("POST", agent.id, a.token, labForm({ conversationId: session }));
+      await call("POST", agent.id, a.token, labForm({ conversationId: session }));
+      expect(seen).toEqual([[], []]);
     });
   });
 });

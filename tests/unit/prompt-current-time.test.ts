@@ -84,6 +84,16 @@ describe("buildSystemPrompt clock section", () => {
     expect(prompt).toContain("offset +03:30");
   });
 
+  it("keeps tool-only details out of speech and forbids silently moving a past time", () => {
+    const fa = buildSystemPrompt({ language: "fa", businessName: "املاک نمونه", currentTime: { now, timeZone: "Asia/Tehran" } });
+    expect(fa).toContain("فقط برای ابزارهاست");
+    expect(fa).toContain("«معادل به وقت محلی»");
+    expect(fa).toContain("هرگز خودت درخواست را به روز دیگری منتقل نکن");
+    const en = buildSystemPrompt({ language: "en", businessName: "Sample Realty", currentTime: { now, timeZone: "Asia/Tehran" } });
+    expect(en).toContain("for tools only");
+    expect(en).toContain("never move the request to another day on your own");
+  });
+
   it("adds nothing when no clock is supplied", () => {
     const prompt = buildSystemPrompt({ language: "fa", businessName: "آژانس آرنا" });
     expect(prompt).not.toContain("تاریخ و ساعت فعلی");

@@ -30,6 +30,15 @@ def health():
     return jsonify({"ok": model is not None, "model": model_name, "compute": "int8", "device": "cpu", "beamSize": beam_size})
 
 
+def keep_segment(segment) -> bool:
+    """False for Whisper output that is a repetition loop or silence."""
+    if getattr(segment, "compression_ratio", 0.0) > 2.4:
+        return False
+    if getattr(segment, "no_speech_prob", 0.0) > 0.6 and getattr(segment, "avg_logprob", 0.0) < -1.0:
+        return False
+    return True
+
+
 @app.post("/transcribe")
 def transcribe():
     if request.mimetype != "audio/wav":
@@ -58,7 +67,10 @@ def transcribe():
                 condition_on_previous_text=False,
                 without_timestamps=True,
             )
-            text = " ".join(s.text.strip() for s in segments).strip()
+            # With temperature=0 there is no fallback decode, so a looping
+            # hallucination on non-speech audio would be returned as text.
+            # Drop segments the model itself marks as repetitive or non-speech.
+            text = " ".join(s.text.strip() for s in segments if keep_segment(s)).strip()
         elapsed = round(time.perf_counter() - start, 3)
         return jsonify({
             "text": text[:4000],

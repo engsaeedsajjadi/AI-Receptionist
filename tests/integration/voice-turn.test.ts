@@ -357,6 +357,33 @@ describe.skipIf(!hasTestDatabase())("voice turn pipeline (real database, fake pr
     expect(llm.calls).toBe(0);
   });
 
+  itDb("a looping recognizer transcript is treated as non-speech (no agent, no TTS, no transcript rows)", async () => {
+    const { business, agent, call } = await setup("Voice Biz Loop");
+    const tts = new FakeTTS();
+    const llm = new FakeLLM([{ content: "نباید برسد" }]);
+
+    const result = await runVoiceTurn({
+      businessId: business.id,
+      agentId: agent.id,
+      callId: call.id,
+      audio: Buffer.from("line-echo"),
+      eventId: `evt-${Date.now()}-loop`,
+      requestId: `req-${Date.now()}-loop`,
+      // Verbatim shape of what Whisper returned for non-speech audio in the lab.
+      stt: new FakeSTT(Array(45).fill("اینجای").join(" ")),
+      tts,
+      llm,
+    });
+
+    expect(result.heard).toBe(false);
+    expect(result.transcript).toBe("");
+    expect(result.audio).toBeNull();
+    expect(tts.calls).toBe(0);
+    expect(llm.calls).toBe(0);
+    const rows = await db.select().from(callMessages).where(eq(callMessages.callId, call.id));
+    expect(rows).toHaveLength(0);
+  });
+
   itDb("redelivered event returns duplicate without re-running", async () => {
     const { business, agent, call } = await setup("Voice Biz Dup");
     const eventId = `evt-${Date.now()}-dup`;

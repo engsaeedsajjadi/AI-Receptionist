@@ -10,6 +10,7 @@ import { runVoiceTurn } from "@/lib/voice/turn";
 import { PiperTTSProvider, parsePiperVoice, parsePiperStyle } from "@/lib/providers/piper-tts";
 import { pcm16ToWav } from "@/lib/voice/audio";
 import { FasterWhisperSTTProvider } from "@/lib/providers/faster-whisper-stt";
+import { appendLabTurn, loadLabHistory, parseLabSessionId } from "@/lib/voice/lab-conversation";
 import { assessLocalTelephonyInput, assessLocalAgentReadiness, encodeLocalTelephonyOutput, validateLocalHighQualitySttWav } from "@/lib/voice/local-telephony";
 
 /**
@@ -17,6 +18,9 @@ import { assessLocalTelephonyInput, assessLocalAgentReadiness, encodeLocalTeleph
  * The database must be local and explicitly disposable, to prevent a UI test
  * from writing AI usage/transcripts into the operational business database.
  */
+/** Fixed, server-owned wording; the client can never choose synthesized text. */
+const LAB_FILLER_TEXT = "بله، یک لحظه لطفاً.";
+
 function assertIsolatedLab() {
   if (process.env.NODE_ENV !== "development") {
     throw new AppError(404, "NOT_FOUND", "Local telephone lab is disabled");
@@ -61,16 +65,26 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     if (form.get("voicePreview") === "piper") {
       const previewVoice = parsePiperVoice(form.get("piperVoice") ?? "fa_IR-amir-medium");
       const previewStyle = parsePiperStyle(form.get("piperStyle") ?? "natural");
+      // Two fixed server-side phrases only: the speaker sample, and the short
+      // "one moment" line the live lab plays while a slow turn is processing.
+      const previewKind = form.get("previewKind") ?? "sample";
+      if (previewKind !== "sample" && previewKind !== "filler") {
+        throw new AppError(400, "INVALID_PAYLOAD", "previewKind must be sample or filler");
+      }
+      const previewText = previewKind === "filler"
+        ? LAB_FILLER_TEXT
+        : "سلام، وقت شما بخیر. خوشحال می‌شوم راهنمایی‌تان کنم.";
       const started = Date.now();
       const sample = await new PiperTTSProvider({
         voice: previewVoice, style: previewStyle,
-      }).synthesize("سلام، وقت شما بخیر. خوشحال می‌شوم راهنمایی‌تان کنم.", { format: "pcm" });
+      }).synthesize(previewText, { format: "pcm" });
       // Browser speaker comparison must use native 24-kHz PCM quality, not
       // the 8-kHz G.711 telephone codec that intentionally degrades bandwidth.
       // Real lab turns retain their original telephony path unchanged.
       const previewWav = pcm16ToWav(sample.audio, 24_000);
       return ok({
         mode: "piper-voice-preview",
+        previewKind,
         realPhoneCall: false,
         voice: previewVoice,
         style: previewStyle,
@@ -121,6 +135,14 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       ? validateLocalHighQualitySttWav(Buffer.from(await sttWavFile.arrayBuffer()), input.durationSeconds)
       : null;
 
+    // Lab-only conversation memory (no call row exists here). Server-side,
+    // scoped to this tenant, user and agent; the browser sends an opaque id.
+    const sessionId = parseLabSessionId(form.get("conversationId"));
+    const scope = sessionId
+      ? { businessId: auth.businessId, userId: auth.userId, agentId: agent.id, sessionId }
+      : null;
+    const priorMessages = scope ? await loadLabHistory(scope) : undefined;
+
     // Real AI providers & metering; explicitly opted into from the dev-only UI.
     // No Twilio requests, CallSid, phone calls, call admission or PSTN billing.
     const result = await runVoiceTurn({
@@ -134,6 +156,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       requestId,
       actor: auth.userId,
       briefVoiceReply: responseStyle === "brief",
+      priorMessages,
       // Explicit, authenticated and isolated local lab opt-in only.
       // No global provider switching and no Gemini credential exposure.
       tts: ttsEngine === "piper"
@@ -145,11 +168,15 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     const playback = result.audio
       ? encodeLocalTelephonyOutput(result.audio, result.audioMimeType)
       : null;
+    const conversationTurns = scope && result.heard && result.transcript.trim() && result.reply.trim()
+      ? await appendLabTurn(scope, result.transcript, result.reply)
+      : (priorMessages?.length ?? 0) / 2;
 
     return ok({
       mode: "local-telephony-codec",
       realPhoneCall: false,
       heard: result.heard,
+      conversationTurns,
       transcript: result.transcript,
       reply: result.reply,
       spokenText: result.spokenText,

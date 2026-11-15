@@ -5,13 +5,14 @@ import { logInfo, logWarn } from "@/lib/logger";
 import { getSTTProvider, type STTProvider } from "@/lib/providers/stt";
 import { getTTSProvider, type TTSProvider } from "@/lib/providers/tts";
 import { getStorageProvider, tenantKey } from "@/lib/providers/storage";
-import type { LLMProvider } from "@/lib/providers/llm";
+import type { ChatMessage, LLMProvider } from "@/lib/providers/llm";
 import { redisDel, redisGet, redisSet } from "@/lib/redis";
 import { runAgentTurn } from "@/lib/services/agent";
 import { resolveTurnTtsVoice } from "@/lib/voice/turn-voice";
 import { recordUsage } from "@/lib/services/usage";
 import { addSttSeconds } from "@/lib/services/voice-usage";
 import { toSpokenPersian } from "@/lib/voice/cleaner";
+import { isDegenerateTranscript } from "@/lib/voice/transcript-quality";
 import { normalizeTelephonyAudio, telephonyAudioDurationSeconds, type AudioCodec } from "@/lib/voice/audio";
 
 export type VoiceTurnInput = {
@@ -43,6 +44,8 @@ export type VoiceTurnInput = {
   actor?: string;
   /** Keep the spoken reply concise without changing agent tools or quotas. */
   briefVoiceReply?: boolean;
+  /** Earlier turns of a call-less developer-lab conversation (ignored with `callId`). */
+  priorMessages?: ChatMessage[];
   /** Provider overrides for tests. */
   stt?: STTProvider;
   tts?: TTSProvider;
@@ -182,6 +185,19 @@ export async function runVoiceTurn(input: VoiceTurnInput): Promise<VoiceTurnResu
     if (input.callId && sttDurationSeconds != null && sttDurationSeconds > 0) {
       await addSttSeconds(input.businessId, input.callId, sttDurationSeconds);
     }
+    // A recognizer loop («اینجای اینجای اینجای …») is what non-speech audio looks
+    // like after STT. Nobody said it: answer it like silence, never like a request.
+    if (isDegenerateTranscript(transcript)) {
+      logWarn("Discarded a looping transcript as non-speech", {
+        requestId: input.requestId,
+        businessId: input.businessId,
+        callId: input.callId,
+        operation: "voice.turn.stt",
+        status: "degenerate_transcript",
+        characters: transcript.length,
+      });
+      transcript = "";
+    }
   } else {
     transcript = (input.transcript as string).trim();
   }
@@ -204,6 +220,7 @@ export async function runVoiceTurn(input: VoiceTurnInput): Promise<VoiceTurnResu
     actor: input.actor ?? "voice-turn",
     llm: input.llm,
     briefVoiceReply: input.briefVoiceReply,
+    priorMessages: input.priorMessages,
   });
   latency.agent = Date.now() - t1;
 

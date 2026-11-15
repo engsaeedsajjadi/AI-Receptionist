@@ -5,7 +5,7 @@ import { appointments, businesses } from "@/db/schema";
 import { describeCurrentTime } from "@/lib/guardrails";
 import type { ChatCompletionResult, ChatMessage, LLMProvider } from "@/lib/providers/llm";
 import { ensureDbReady, hasTestDatabase, itDb, truncateAll } from "../helpers/db";
-import { createAgent, createBusiness } from "../helpers/fixtures";
+import { createAgent, createBusiness, createCustomer } from "../helpers/fixtures";
 
 /**
  * «فردا ساعت ۱۰» end to end.
@@ -22,6 +22,7 @@ class ClockReadingLLM implements LLMProvider {
   readonly name = "fake-clock-reader";
   seen: ChatMessage[][] = [];
   requested: string | null = null;
+  constructor(private readonly customerId: string) {}
   private turn = 0;
 
   async complete(messages: ChatMessage[]): Promise<ChatCompletionResult> {
@@ -45,7 +46,7 @@ class ClockReadingLLM implements LLMProvider {
     return {
       toolCalls: [{
         id: "call-1", name: "create_appointment",
-        arguments: { scheduledAt: this.requested, durationMinutes: 30 },
+        arguments: { scheduledAt: this.requested, durationMinutes: 30, customerId: this.customerId },
       }],
     };
   }
@@ -60,7 +61,8 @@ async function tenant(timezone: string) {
     .set({ timezone, settings: { scheduling: { timezone, days } }, updatedAt: new Date() })
     .where(eq(businesses.id, business.id));
   const agent = await createAgent(business.id);
-  return { business, agent };
+  const customer = await createCustomer(business.id);
+  return { business, agent, customer };
 }
 
 /** Local calendar date and hour of an instant in a time zone. */
@@ -89,8 +91,8 @@ describe.skipIf(!hasTestDatabase())("assistant resolves relative Persian dates i
 
   for (const timezone of ["Asia/Tehran", "America/Los_Angeles"]) {
     itDb(`books «فردا ساعت ۱۰» at 10:00 on the next local day (${timezone})`, async () => {
-      const { business, agent } = await tenant(timezone);
-      const llm = new ClockReadingLLM();
+      const { business, agent, customer } = await tenant(timezone);
+      const llm = new ClockReadingLLM(customer.id);
       const before = new Date();
       const { runAgentTurn } = await import("@/lib/services/agent");
 
@@ -125,7 +127,7 @@ describe.skipIf(!hasTestDatabase())("assistant resolves relative Persian dates i
     for (const t of [tehran, la]) {
       await runAgentTurn({
         businessId: t.business.id, agentId: t.agent.id, userMessage: "فردا ساعت ۱۰ وقت می‌خواهم",
-        requestId: `rel-date-pair-${t.business.id}`, actor: "test", llm: new ClockReadingLLM(),
+        requestId: `rel-date-pair-${t.business.id}`, actor: "test", llm: new ClockReadingLLM(t.customer.id),
       });
     }
     const [a] = await db.select().from(appointments).where(eq(appointments.businessId, tehran.business.id));
