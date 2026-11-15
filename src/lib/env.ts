@@ -235,6 +235,13 @@ function loadEnv(): AppEnv {
       fail("OPENAI_API_KEY is required when TTS_PROVIDER=openai");
     if (e.EMBEDDING_PROVIDER === "openai" && !e.OPENAI_API_KEY)
       fail("OPENAI_API_KEY is required when EMBEDDING_PROVIDER=openai");
+    // Fail at boot, not on the first caller: these providers share the
+    // compatible endpoint's credentials.
+    if ((e.STT_PROVIDER === "gemini" || e.TTS_PROVIDER === "gemini") && !e.COMPATIBLE_LLM_API_KEY)
+      fail("COMPATIBLE_LLM_API_KEY is required when STT_PROVIDER or TTS_PROVIDER is gemini");
+    if ((e.STT_PROVIDER === "compatible" || e.TTS_PROVIDER === "compatible" || e.EMBEDDING_PROVIDER === "compatible") &&
+        !e.COMPATIBLE_LLM_BASE_URL)
+      fail("COMPATIBLE_LLM_BASE_URL is required when STT, TTS or embeddings use the compatible provider");
     if (e.PAYMENT_PROVIDER !== "disabled" && e.PAYMENT_PROVIDER !== "test" && (!e.PAYMENT_API_BASE_URL || !e.PAYMENT_API_KEY))
       fail("PAYMENT_API_BASE_URL and PAYMENT_API_KEY are required when a payment provider is enabled");
     if (e.RERANK_PROVIDER === "http" && !e.RERANK_BASE_URL)
