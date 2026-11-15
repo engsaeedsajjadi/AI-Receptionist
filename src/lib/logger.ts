@@ -1,3 +1,4 @@
+import { requestContext } from "@/lib/request-context";
 import pino from "pino";
 import { getEnv } from "@/lib/env";
 
@@ -11,6 +12,11 @@ const SECRET_KEYS = new Set([
   "apikey",
   "api-key",
   "password",
+  "mfasecret",
+  "mfarecoveryhashes",
+  "recoverycodes",
+  "identity_encryption_key",
+  "code",
   "passwordhash",
   "passwd",
   "secret",
@@ -98,6 +104,11 @@ function createLogger(): pino.Logger {
         "headers.cookie",
         "headers.Cookie",
         "password",
+  "mfasecret",
+  "mfarecoveryhashes",
+  "recoverycodes",
+  "identity_encryption_key",
+  "code",
         "Password",
         "passwordHash",
         "refreshToken",
@@ -130,17 +141,17 @@ export function logger(): pino.Logger {
 }
 
 export function logInfo(message: string, ctx: LogContext = {}): void {
-  logger().info(redact(ctx) as object, message);
+  logger().info(redact({ ...requestContext.getStore(), ...ctx }) as object, message);
 }
 
 export function logWarn(message: string, ctx: LogContext = {}): void {
-  logger().warn(redact(ctx) as object, message);
+  logger().warn(redact({ ...requestContext.getStore(), ...ctx }) as object, message);
 }
 
 export function logError(message: string, ctx: LogContext & { error?: unknown } = {}): void {
   const { error, ...rest } = ctx;
   const err = error instanceof Error ? { name: error.name, message: error.message, stack: process.env.NODE_ENV === "production" ? undefined : error.stack } : error;
-  logger().error({ ...(redact(rest) as object), error: redact(err) }, message);
+  logger().error({ ...(redact({ ...requestContext.getStore(), ...rest }) as object), error: redact(err) }, message);
 }
 
 export function redactForLog<T>(value: T): T {

@@ -6,6 +6,7 @@ import { Badge, PageHeader, ResourceTable, formatDateTime } from "@/components/d
 
 type Appointment = {
   id: string;
+  title: string;
   status: string;
   scheduledAt: string | null;
   durationMinutes: number;
@@ -40,6 +41,7 @@ function AvailabilityChecker() {
       >
         <input
           type="date"
+          aria-label="تاریخ بررسی ظرفیت"
           value={date}
           onChange={(e) => setDate(e.target.value)}
           className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm"
@@ -84,6 +86,7 @@ export default function AppointmentsPage() {
           },
         ]}
         columns={[
+          { key: "title", label: "عنوان", render: (r) => <span>{r.title || "—"}</span> },
           { key: "scheduledAt", label: "زمان نوبت", render: (r) => <span>{formatDateTime(r.scheduledAt)}</span> },
           { key: "durationMinutes", label: "مدت (دقیقه)", render: (r) => <span>{r.durationMinutes}</span> },
           { key: "status", label: "وضعیت", render: (r) => <Badge tone={r.status === "SCHEDULED" ? "green" : r.status === "CANCELLED" ? "red" : "slate"}>{r.status}</Badge> },

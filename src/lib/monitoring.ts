@@ -22,6 +22,7 @@ export async function initMonitoring(): Promise<void> {
     sentryModule = await import("@sentry/nextjs");
     sentryModule.init({
       dsn,
+      skipOpenTelemetrySetup: Boolean(process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT),
       environment: getEnv().SENTRY_ENVIRONMENT,
       tracesSampleRate: getEnv().SENTRY_TRACES_SAMPLE_RATE,
       beforeSend(event) {

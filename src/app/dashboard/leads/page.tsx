@@ -4,6 +4,42 @@ import { useState } from "react";
 import { useAuth } from "@/components/dashboard/auth";
 import { Badge, PageHeader, ResourceTable, formatDateTime } from "@/components/dashboard/ui";
 
+type ScoreFactor = { factor: string; reason: string; points: number };
+type ScoreRationale = {
+  score: number;
+  baseline: number;
+  factors: ScoreFactor[];
+  explanation: string;
+  rubricVersion: string;
+};
+
+function normalizeScoreRationale(value: unknown): ScoreRationale | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<ScoreRationale>;
+  if (
+    typeof candidate.score !== "number" ||
+    typeof candidate.baseline !== "number" ||
+    !Array.isArray(candidate.factors) ||
+    typeof candidate.explanation !== "string" ||
+    typeof candidate.rubricVersion !== "string"
+  ) {
+    return null;
+  }
+  return {
+    score: candidate.score,
+    baseline: candidate.baseline,
+    factors: candidate.factors.filter(
+      (item): item is ScoreFactor =>
+        Boolean(item) &&
+        typeof item.factor === "string" &&
+        typeof item.reason === "string" &&
+        typeof item.points === "number",
+    ),
+    explanation: candidate.explanation,
+    rubricVersion: candidate.rubricVersion,
+  };
+}
+
 type Lead = {
   id: string;
   status: string;
@@ -14,10 +50,84 @@ type Lead = {
   budgetMax: string | null;
   bedrooms: number | null;
   notes: string | null;
+  score: number;
+  scoreRationale: ScoreRationale | Record<string, unknown> | null;
+  customerName: string | null;
+  customerPhone: string | null;
   createdAt: string;
 };
 
 const LEAD_STATUSES = ["NEW", "CONTACTED", "QUALIFIED", "VISIT_REQUESTED", "VISIT_SCHEDULED", "NEGOTIATION", "WON", "LOST"];
+
+/** Score + the rubric factors behind it, and a deliberate, explained recompute. */
+function LeadScorePanel({ lead, refresh }: { lead: Lead; refresh: () => void }) {
+  const { apiJson } = useAuth();
+  const [rationale, setRationale] = useState<ScoreRationale | null>(() => normalizeScoreRationale(lead.scoreRationale));
+  const [score, setScore] = useState(lead.score ?? 0);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  const rescore = () => {
+    setBusy(true);
+    setMessage(null);
+    apiJson<{ score: number; rationale: ScoreRationale; change: { from: number | null; delta: number | null; changes: Array<{ factor: string }> } }>(
+      `/api/v1/leads/${lead.id}/score`,
+      { method: "POST" },
+    )
+      .then((res) => {
+        setScore(res.score);
+        setRationale(res.rationale);
+        const delta = res.change.delta;
+        setMessage(
+          delta === null
+            ? `امتیاز محاسبه شد: ${res.score}`
+            : `امتیاز از ${res.change.from} به ${res.score} تغییر کرد (${delta > 0 ? "+" : ""}${delta}).`,
+        );
+        refresh();
+      })
+      .catch((err: Error) => setMessage(err.message))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <div className="rounded-lg bg-white p-3 ring-1 ring-slate-200">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="font-medium">
+          امتیاز سرنخ: <span className="text-slate-900" dir="ltr">{score}/100</span>
+        </p>
+        <button
+          disabled={busy}
+          onClick={rescore}
+          className="rounded-lg border border-slate-200 px-3 py-1 text-xs hover:bg-slate-50 disabled:opacity-50"
+        >
+          محاسبه مجدد امتیاز
+        </button>
+      </div>
+      {rationale ? (
+        <>
+          <ul className="mt-2 space-y-1">
+            {rationale.factors.map((f) => (
+              <li key={f.factor} className="flex items-start justify-between gap-2 text-xs">
+                <span className="text-slate-600">{f.reason}</span>
+                <span dir="ltr" className={f.points > 0 ? "text-emerald-700" : "text-rose-700"}>
+                  {f.points > 0 ? "+" : ""}
+                  {f.points}
+                </span>
+              </li>
+            ))}
+            {rationale.factors.length === 0 ? <li className="text-xs text-slate-500">هنوز سیگنالی برای امتیازدهی ثبت نشده است.</li> : null}
+          </ul>
+          <p className="mt-2 text-xs text-slate-500" dir="auto">
+            {rationale.explanation} · {rationale.rubricVersion}
+          </p>
+        </>
+      ) : (
+        <p className="mt-2 text-xs text-slate-500">دلیل امتیاز ثبت نشده است؛ با «محاسبه مجدد» ساخته می‌شود.</p>
+      )}
+      {message ? <p className="mt-2 text-xs text-slate-600">{message}</p> : null}
+    </div>
+  );
+}
 
 function LeadDetail({ lead, refresh }: { lead: Lead; refresh: () => void }) {
   const { apiJson } = useAuth();
@@ -43,6 +153,7 @@ function LeadDetail({ lead, refresh }: { lead: Lead; refresh: () => void }) {
         <p>خواب: <span className="text-slate-600">{lead.bedrooms ?? "—"}</span></p>
         <p>ثبت: <span className="text-slate-600">{formatDateTime(lead.createdAt)}</span></p>
       </div>
+      <LeadScorePanel lead={lead} refresh={refresh} />
       <div className="flex flex-wrap items-center gap-2">
         <select value={status} onChange={(e) => setStatus(e.target.value)} className="rounded-lg border border-slate-200 px-2 py-1.5 text-sm">
           {LEAD_STATUSES.map((s) => (
@@ -129,8 +240,18 @@ export default function LeadsPage() {
           { key: "type", label: "نوع", options: ["BUY", "RENT", "SELL", "OTHER"].map((s) => ({ value: s, label: s })) },
         ]}
         columns={[
+          { key: "customerPhone", label: "تماس", render: (r) => <span dir="ltr">{r.customerPhone ?? "—"}</span> },
           { key: "status", label: "وضعیت", render: (r) => <Badge tone={r.status === "LOST" ? "red" : r.status === "WON" ? "green" : "blue"}>{r.status}</Badge> },
           { key: "type", label: "نوع", render: (r) => <span>{r.type}</span> },
+          {
+            key: "score",
+            label: "امتیاز",
+            render: (r) => (
+              <Badge tone={r.score >= 70 ? "green" : r.score >= 45 ? "blue" : "red"}>
+                <span dir="ltr">{r.score ?? 0}</span>
+              </Badge>
+            ),
+          },
           { key: "location", label: "منطقه", render: (r) => <span>{r.location ?? "—"}</span> },
           { key: "createdAt", label: "ثبت", render: (r) => <span>{formatDateTime(r.createdAt)}</span> },
         ]}

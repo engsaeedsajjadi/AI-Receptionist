@@ -1,0 +1,70 @@
+import { afterAll, beforeAll, describe, expect, vi } from "vitest";
+import { NextRequest } from "next/server";
+import { eq } from "drizzle-orm";
+import { closeDb, db } from "@/db";
+import { automationJobs, crmOpportunities, crmPipelines, users } from "@/db/schema";
+import { issueAuthTokens } from "@/lib/auth";
+import { totp, digestIdentity } from "@/lib/mfa";
+import { POST as crmPost, PATCH as crmPatch } from "@/app/api/v1/crm/[entity]/route";
+import { POST as security } from "@/app/api/v1/auth/security/route";
+import { verifyMfaLogin } from "@/lib/services/identity";
+import { processNextJob } from "@/lib/services/jobs";
+import { createBusiness, createUser } from "../helpers/fixtures";
+import { ensureDbReady, hasTestDatabase, itDb, truncateAll } from "../helpers/db";
+import { emitAutomationEvent } from "@/lib/services/n8n";
+vi.mock("@/lib/services/n8n", () => ({ emitAutomationEvent: vi.fn() }));
+const send = (path: string, token: string, body: unknown, method = "POST") => new NextRequest(`http://localhost${path}`, { method, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+async function identity(role: "ADMIN" | "VIEWER" = "ADMIN") {
+  const business = await createBusiness(); const { user, password } = await createUser(business.id);
+  if (role !== "ADMIN") await db.update(users).set({ role }).where(eq(users.id, user.id));
+  const tokens = await issueAuthTokens({ userId: user.id, businessId: business.id, role });
+  return { business, user, password, token: tokens.accessToken };
+}
+describe.skipIf(!hasTestDatabase())("enterprise modules", () => {
+  beforeAll(async () => { await ensureDbReady(); await truncateAll(); });
+  afterAll(async () => { vi.unstubAllEnvs(); await truncateAll(); await closeDb(); });
+  itDb("CRM rejects foreign pipelines and viewer writes, and persists stage transitions", async () => {
+    const a = await identity(), b = await identity(), viewer = await identity("VIEWER");
+    const [pipeline] = await db.insert(crmPipelines).values({ businessId: a.business.id, name: "Sales", stages: ["New", "Won"] }).returning();
+    const ctx = { params: Promise.resolve({ entity: "opportunities" }) };
+    const values = { title: "Deal", pipelineId: pipeline.id, stage: "New", value: "25.20" };
+    expect((await crmPost(send("/api/v1/crm/opportunities", b.token, values), ctx)).status).toBe(400);
+    expect((await crmPost(send("/api/v1/crm/opportunities", viewer.token, values), ctx)).status).toBe(403);
+    expect((await crmPost(send("/api/v1/crm/opportunities", a.token, values), ctx)).status).toBe(201);
+    const [deal] = await db.select().from(crmOpportunities).where(eq(crmOpportunities.businessId, a.business.id));
+    expect((await crmPatch(send("/api/v1/crm/opportunities", a.token, { id: deal.id, stage: "Won" }, "PATCH"), ctx)).status).toBe(200);
+    expect((await crmPatch(send("/api/v1/crm/opportunities", b.token, { id: deal.id, stage: "Won" }, "PATCH"), ctx)).status).toBe(404);
+    await expect(db.insert(crmOpportunities).values({ ...values, businessId: b.business.id })).rejects.toThrow();
+  });
+  itDb("durable jobs retain failed deliveries, retry, and acknowledge only successful deliveries", async () => {
+    const { business } = await identity();
+    const [job] = await db.insert(automationJobs).values({ businessId: business.id, event: "new-lead", payload: { businessId: business.id }, idempotencyKey: "one" }).returning();
+    vi.mocked(emitAutomationEvent).mockResolvedValueOnce({ ok: false, attempts: 1, error: "unavailable" });
+    expect(await processNextJob()).toBe(true);
+    let [saved] = await db.select().from(automationJobs).where(eq(automationJobs.id, job.id));
+    expect(saved.status).toBe("pending"); expect(saved.attempts).toBe(1); expect(saved.lastError).toBe("unavailable");
+    await db.update(automationJobs).set({ availableAt: new Date(0) }).where(eq(automationJobs.id, job.id));
+    vi.mocked(emitAutomationEvent).mockResolvedValueOnce({ ok: true, attempts: 1 });
+    expect(await processNextJob()).toBe(true);
+    [saved] = await db.select().from(automationJobs).where(eq(automationJobs.id, job.id));
+    expect(saved.status).toBe("completed"); expect(saved.attempts).toBe(2);
+    expect(await processNextJob()).toBe(false);
+    await db.insert(automationJobs).values({ businessId: business.id, event: "new-lead", payload: {}, idempotencyKey: "dead", status: "running", attempts: 8, leaseUntil: new Date(0) });
+    expect(await processNextJob()).toBe(false);
+    const [dead] = await db.select().from(automationJobs).where(eq(automationJobs.idempotencyKey, "dead")); expect(dead.status).toBe("dead");
+  });
+  itDb("MFA enrollment requires password and a fresh code; recovery codes are single-use", async () => {
+    vi.stubEnv("IDENTITY_ENCRYPTION_KEY", "a".repeat(64));
+    const { user, password, token } = await identity();
+    expect((await security(send("/api/v1/auth/security", token, { action: "setup", password: "wrong" }))).status).toBe(401);
+    const setup = await security(send("/api/v1/auth/security", token, { action: "setup", password }));
+    const { secret } = await setup.json();
+    const confirm = await security(send("/api/v1/auth/security", token, { action: "confirm", password, code: totp(secret) }));
+    expect(confirm.status).toBe(200);
+    const { recoveryCodes } = await confirm.json();
+    await verifyMfaLogin(user.id, recoveryCodes[0]);
+    await expect(verifyMfaLogin(user.id, recoveryCodes[0])).rejects.toThrow();
+    const [saved] = await db.select().from(users).where(eq(users.id, user.id));
+    expect(saved.mfaEnabled).toBe(true); expect(saved.mfaRecoveryHashes).not.toContain(digestIdentity(recoveryCodes[0]));
+  });
+});

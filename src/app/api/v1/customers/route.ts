@@ -3,17 +3,18 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/db";
 import { customers } from "@/db/schema";
-import { ok, paginated, parseJsonWith, parsePagination } from "@/lib/api";
+import { ok, parseJsonWith } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
 import { normalizePersianText, normalizePhone } from "@/lib/normalization";
 import { checkGlobalPublicRateLimit, withApiHandling } from "@/lib/server-core";
 import { findOrCreateCustomer } from "@/lib/services/customers";
+import { cursorPage, keysetCondition, keysetOrder, parseListWindow } from "@/lib/pagination";
 
 export async function GET(req: NextRequest) {
   return withApiHandling(async () => {
     await checkGlobalPublicRateLimit(req);
     const auth = await getAuthContext(req);
-    const { page, limit, offset } = parsePagination(req);
+    const window = parseListWindow(req);
 
     const q = req.nextUrl.searchParams.get("q");
     const conditions = [eq(customers.businessId, auth.businessId)];
@@ -22,12 +23,17 @@ export async function GET(req: NextRequest) {
       conditions.push(sql`(${ilike(customers.name, needle)} OR ${ilike(customers.phone, needle)})`);
     }
 
+    if (window.cursor) conditions.push(keysetCondition({ createdAt: customers.createdAt, id: customers.id }, window.cursor));
+
     const [rows, total] = await Promise.all([
-      db.select().from(customers).where(and(...conditions)).orderBy(desc(customers.createdAt)).limit(limit).offset(offset),
+      db.select().from(customers).where(and(...conditions))
+        .orderBy(...keysetOrder({ createdAt: customers.createdAt, id: customers.id }))
+        .limit(window.cursor ? window.limit + 1 : window.limit)
+        .offset(window.cursor ? 0 : window.offset),
       db.select({ count: sql<number>`count(*)::int` }).from(customers).where(and(...conditions)).then((r) => r[0]?.count ?? 0),
     ]);
 
-    return ok(paginated(rows, page, limit, total));
+    return ok(cursorPage({ rows, limit: window.limit, page: window.page, extra: Boolean(window.cursor), total }));
   });
 }
 

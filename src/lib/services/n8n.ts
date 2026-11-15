@@ -1,3 +1,4 @@
+import { requireTenantFeature } from "@/lib/tenant-config";
 import { getEnv } from "@/lib/env";
 import { logError, logInfo, logWarn } from "@/lib/logger";
 
@@ -59,6 +60,7 @@ export async function emitAutomationEvent(
 ): Promise<AutomationResult> {
   const e = getEnv();
   if (!e.N8N_ENABLED) return { ok: true, skipped: true, attempts: 0 };
+  if (typeof payload.businessId === "string") await requireTenantFeature(payload.businessId, "automation");
 
   const maxRetries = Math.max(0, opts.maxRetries ?? e.N8N_MAX_RETRIES);
   const baseDelayMs = Math.max(0, opts.baseDelayMs ?? 500);

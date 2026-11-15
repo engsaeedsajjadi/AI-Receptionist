@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useAuth } from "@/components/dashboard/auth";
 import { Badge, PageHeader, ResourceTable, formatDateTime } from "@/components/dashboard/ui";
-
+import { hasRole, type UserRole } from "@/lib/permissions";
 type User = {
   id: string;
   name: string;
@@ -63,37 +63,148 @@ function CreateUserForm({ onDone }: { onDone: () => void }) {
 export default function UsersPage() {
   const { apiJson, user } = useAuth();
   const [tick, setTick] = useState(0);
-  const isAdmin = user?.role === "ADMIN";
+
+  // تا زمانی که اطلاعات کاربر احراز هویت‌شده لود نشده است
+  if (!user) {
+    return (
+      <div>
+        <PageHeader
+          title="کاربران"
+          desc="مدیریت کاربران کسب‌وکار و نقش‌ها"
+        />
+
+        <div className="rounded-2xl bg-white p-6 text-sm text-slate-500 ring-1 ring-slate-200">
+          در حال بررسی دسترسی…
+        </div>
+      </div>
+    );
+  }
+
+  const role = user.role as UserRole;
+
+  // MANAGER و نقش‌های بالاتر اجازه مشاهده صفحه کاربران را دارند
+  const canManageUsers = hasRole(role, "MANAGER");
+
+  // فقط ADMIN و نقش‌های بالاتر اجازه تغییر وضعیت کاربران را دارند
+  const isAdmin = hasRole(role, "ADMIN");
+
+  if (!canManageUsers) {
+    return (
+      <div>
+        <PageHeader
+          title="کاربران"
+          desc="مدیریت کاربران کسب‌وکار و نقش‌ها"
+        />
+
+        <div
+          role="alert"
+          className="rounded-2xl bg-white p-6 text-sm text-rose-700 ring-1 ring-rose-200"
+        >
+          شما مجوز دسترسی به مدیریت کاربران را ندارید.
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>
-      <PageHeader title="کاربران" desc="مدیریت کاربران کسب‌وکار و نقش‌ها" />
-      <CreateUserForm onDone={() => setTick((t) => t + 1)} />
+      <PageHeader
+        title="کاربران"
+        desc="مدیریت کاربران کسب‌وکار و نقش‌ها"
+      />
+
+      <CreateUserForm
+        onDone={() => setTick((current) => current + 1)}
+      />
+
       <div key={tick}>
         <ResourceTable<User>
           endpoint="/api/v1/users"
           columns={[
-            { key: "name", label: "نام" },
-            { key: "email", label: "ایمیل", render: (r) => <span dir="ltr">{r.email}</span> },
-            { key: "role", label: "نقش", render: (r) => <Badge tone={r.role === "ADMIN" ? "red" : r.role === "MANAGER" ? "amber" : "slate"}>{r.role}</Badge> },
-            { key: "isActive", label: "وضعیت", render: (r) => <Badge tone={r.isActive ? "green" : "slate"}>{r.isActive ? "فعال" : "غیرفعال"}</Badge> },
-            { key: "lastLoginAt", label: "آخرین ورود", render: (r) => <span>{formatDateTime(r.lastLoginAt)}</span> },
+            {
+              key: "name",
+              label: "نام",
+            },
+            {
+              key: "email",
+              label: "ایمیل",
+              render: (row) => (
+                <span dir="ltr">{row.email}</span>
+              ),
+            },
+            {
+              key: "role",
+              label: "نقش",
+              render: (row) => (
+                <Badge
+                  tone={
+                    row.role === "ADMIN"
+                      ? "red"
+                      : row.role === "MANAGER"
+                        ? "amber"
+                        : "slate"
+                  }
+                >
+                  {row.role}
+                </Badge>
+              ),
+            },
+            {
+              key: "isActive",
+              label: "وضعیت",
+              render: (row) => (
+                <Badge tone={row.isActive ? "green" : "slate"}>
+                  {row.isActive ? "فعال" : "غیرفعال"}
+                </Badge>
+              ),
+            },
+            {
+              key: "lastLoginAt",
+              label: "آخرین ورود",
+              render: (row) => (
+                <span>{formatDateTime(row.lastLoginAt)}</span>
+              ),
+            },
           ]}
-          rowActions={isAdmin ? (row, refresh) => (
-            <button
-              onClick={() => {
-                if (!confirm(row.isActive ? "این کاربر غیرفعال شود؟" : "این کاربر فعال شود؟")) return;
-                apiJson(`/api/v1/users/${row.id}`, {
-                  method: "PUT",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ isActive: !row.isActive }),
-                }).then(() => refresh());
-              }}
-              className="rounded-lg border border-slate-200 px-3 py-1 text-xs hover:bg-slate-100"
-            >
-              {row.isActive ? "غیرفعال" : "فعال"}
-            </button>
-          ) : undefined}
+          rowActions={
+            isAdmin
+              ? (row, refresh) => (
+                  <button
+                    onClick={() => {
+                      if (
+                        !confirm(
+                          row.isActive
+                            ? "این کاربر غیرفعال شود؟"
+                            : "این کاربر فعال شود؟",
+                        )
+                      ) {
+                        return;
+                      }
+
+                      apiJson(`/api/v1/users/${row.id}`, {
+                        method: "PUT",
+                        headers: {
+                          "Content-Type": "application/json",
+                        },
+                        body: JSON.stringify({
+                          isActive: !row.isActive,
+                        }),
+                      })
+                        .then(() => refresh())
+                        .catch((error: Error) => {
+                          console.error(
+                            "User status update failed:",
+                            error,
+                          );
+                        });
+                    }}
+                    className="rounded-lg border border-slate-200 px-3 py-1 text-xs hover:bg-slate-100"
+                  >
+                    {row.isActive ? "غیرفعال" : "فعال"}
+                  </button>
+                )
+              : undefined
+          }
           emptyLabel="کاربری وجود ندارد."
         />
       </div>

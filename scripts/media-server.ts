@@ -37,13 +37,54 @@ async function main() {
     defaultSampleRate: e.VOICE_MEDIA_SAMPLE_RATE,
     allowStaticToken: false,
     maxConcurrentSessions: e.VOICE_MAX_CONCURRENT_SESSIONS,
+    ttsPcmSampleRate: 24_000,
+    // Caller pressed 0: look up the tenant's transfer number and ask the
+    // telephony provider to dial it. Failures are logged and never silently
+    // pretend a human was reached.
+    onHandoffRequest: async ({ businessId, callId }) => {
+      const [{ db }, { businesses, calls }, { eq, and }, { getVoiceProvider }] = await Promise.all([
+        import("../src/db"),
+        import("../src/db/schema"),
+        import("drizzle-orm"),
+        import("../src/lib/providers/voice"),
+      ]);
+      const [row] = await db
+        .select({ externalCallId: calls.externalCallId, transferTo: calls.transferTo, settings: businesses.settings })
+        .from(calls)
+        .innerJoin(businesses, eq(businesses.id, calls.businessId))
+        .where(and(eq(calls.id, callId), eq(calls.businessId, businessId)))
+        .limit(1);
+      if (!row?.externalCallId) return undefined;
+      const voiceSettings = (row.settings as { voice?: { transferNumber?: string } }).voice ?? {};
+      const destination = row.transferTo ?? voiceSettings.transferNumber ?? "";
+      if (!destination) {
+        console.warn(`[media] DTMF handoff requested for call ${callId} but no transfer number is configured`);
+        return undefined;
+      }
+      try {
+        await getVoiceProvider().transferCall(row.externalCallId, destination, { requestId: `handoff-${callId}` });
+        await db.update(calls).set({ transferTo: destination, transferRequestedAt: new Date() })
+          .where(and(eq(calls.id, callId), eq(calls.businessId, businessId)));
+        return { destination };
+      } catch (err) {
+        console.error(`[media] handoff transfer failed for call ${callId}:`, err instanceof Error ? err.message : err);
+        return { destination: null };
+      }
+    },
   });
   const sessions = new Set<MediaSession>();
 
   const httpServer = createServer((req, res) => {
     if (req.method === "GET" && (req.url === "/healthz" || req.url === "/health")) {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "ok", sessions: sessions.size, capacity: e.VOICE_MAX_CONCURRENT_SESSIONS }));
+      res.end(JSON.stringify({
+        status: "ok",
+        sessions: sessions.size,
+        capacity: e.VOICE_MAX_CONCURRENT_SESSIONS,
+        provider: e.VOICE_PROVIDER,
+        codec: e.VOICE_MEDIA_CODEC,
+        sampleRate: e.VOICE_MEDIA_SAMPLE_RATE,
+      }));
       return;
     }
     res.writeHead(404, { "Content-Type": "application/json" });

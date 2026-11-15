@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { db } from "@/db";
-import { auditLogs, businesses } from "@/db/schema";
+import { auditLogs, businesses, calls } from "@/db/schema";
 import { AppError } from "@/lib/errors";
 import type { ToolResultStatus } from "@/lib/guardrails";
 import { logError, logInfo } from "@/lib/logger";
@@ -14,15 +14,18 @@ import {
 import { findOrCreateCustomer } from "@/lib/services/customers";
 import { checkAvailability, createAppointment } from "@/lib/services/appointments";
 import { hybridSearch } from "@/lib/services/knowledge";
+import { KnowledgeMetadataFiltersSchema, runtimePrincipal } from "@/lib/rag/access";
 import { notify } from "@/lib/services/notifications";
 import { requestTransfer } from "@/lib/services/calls";
-import { normalizePersianText } from "@/lib/normalization";
+import { normalizePersianText, normalizePhone } from "@/lib/normalization";
 import { and as dbAnd, eq as dbEq } from "drizzle-orm";
 
 export type ToolContext = {
   businessId: string;
   callId?: string;
   userId?: string;
+  /** Agent answering the call, when the tool runs inside the AI runtime. */
+  agentId?: string | null;
   requestId: string;
   /** Who invoked the tool: "voice-webhook" | "agent-runtime" | "api" | user id. */
   actor: string;
@@ -54,11 +57,14 @@ const searchKnowledgeTool: ToolDefinition = {
   schema: z.object({ query: z.string().min(2).max(500), topK: z.number().int().min(1).max(10).default(5) }),
   handler: async (args, ctx) => {
     const { query, topK } = args as { query: string; topK: number };
+    // Runtime principal: TENANT/AGENT/CATEGORY documents are searchable, while
+    // role- or user-restricted documents stay invisible to a caller-facing AI.
     const { chunks, degraded } = await hybridSearch({
       businessId: ctx.businessId,
       query,
       topK,
       requestId: ctx.requestId,
+      scope: { principal: runtimePrincipal({ agentId: ctx.agentId ?? null }), filters: KnowledgeMetadataFiltersSchema.parse({}) },
     });
     if (chunks.length === 0) {
       return { status: "NOT_FOUND", error: "No relevant knowledge found." };
@@ -202,7 +208,7 @@ const checkAvailabilityTool: ToolDefinition = {
 const createAppointmentTool: ToolDefinition = {
   name: "create_appointment",
   description:
-    "Book a visit appointment at an available ISO time. NEVER claim success unless this tool returns SUCCESS.",
+    "Book a visit appointment at an available ISO time for an identified caller. Pass the leadId returned by create_lead (or a customerId); if the caller is not identified yet, first ask their name and phone number and call create_lead. NEVER claim success unless this tool returns SUCCESS.",
   schema: z.object({
     scheduledAt: z.string().datetime({ offset: true }),
     durationMinutes: z.number().int().min(10).max(480).default(30),
@@ -211,8 +217,38 @@ const createAppointmentTool: ToolDefinition = {
     notes: z.string().max(2000).optional(),
   }),
   handler: async (args, ctx) => {
+    // An appointment nobody can be contacted about is worse than no appointment:
+    // a caller who hangs up after "booked" would leave an ownerless slot. Use the
+    // caller already linked to this call, else the number they are calling from,
+    // otherwise require an explicit lead/customer.
+    let leadId = args.leadId as string | undefined;
+    let customerId = args.customerId as string | undefined;
+    if (!leadId && !customerId && ctx.callId) {
+      const [call] = await db
+        .select({ leadId: calls.leadId, customerId: calls.customerId, phoneNumber: calls.phoneNumber })
+        .from(calls)
+        .where(dbAnd(dbEq(calls.id, ctx.callId), dbEq(calls.businessId, ctx.businessId)))
+        .limit(1);
+      leadId = call?.leadId ?? undefined;
+      customerId = call?.customerId ?? undefined;
+      // A withheld or malformed caller ID does not normalize and identifies nobody.
+      if (!leadId && !customerId && call && normalizePhone(call.phoneNumber)) {
+        customerId = (await findOrCreateCustomer({ businessId: ctx.businessId, phone: call.phoneNumber })).id;
+      }
+    }
+    if (!leadId && !customerId) {
+      return {
+        status: "FAILED",
+        error:
+          "Nothing was booked: the caller is not identified. Ask for the caller's name and phone number, call create_lead, then call create_appointment again with the returned leadId.",
+      };
+    }
     try {
-      const created = await createAppointment(ctx.businessId, args, { requestId: ctx.requestId });
+      const created = await createAppointment(
+        ctx.businessId,
+        { ...args, ...(leadId ? { leadId } : {}), ...(customerId ? { customerId } : {}) },
+        { requestId: ctx.requestId },
+      );
       return {
         status: "SUCCESS",
         data: { appointmentId: created.id, scheduledAt: created.scheduledAt, durationMinutes: created.durationMinutes },
@@ -353,6 +389,8 @@ export async function executeToolCall(input: {
   businessId: string;
   callId?: string;
   userId?: string;
+  /** Agent answering the call, when the tool runs inside the AI runtime. */
+  agentId?: string | null;
   tool: string;
   args: Record<string, unknown>;
   requestId: string;
@@ -362,6 +400,7 @@ export async function executeToolCall(input: {
     businessId: input.businessId,
     callId: input.callId,
     userId: input.userId,
+    agentId: input.agentId ?? null,
     requestId: input.requestId,
     actor: input.actor,
   };

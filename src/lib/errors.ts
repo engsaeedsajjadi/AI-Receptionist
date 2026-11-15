@@ -6,6 +6,7 @@
  */
 
 export type ErrorCode =
+  | "QUOTA_EXCEEDED"
   | "BAD_REQUEST"
   | "INVALID_PAYLOAD"
   | "INVALID_JSON"
@@ -30,6 +31,11 @@ export type ErrorCode =
   | "NOTIFICATION_NOT_FOUND"
   | "EMAIL_EXISTS"
   | "SLUG_EXISTS"
+  | "DOMAIN_TAKEN"
+  | "PHONE_TAKEN"
+  | "MALWARE_DETECTED"
+  | "SCANNER_UNAVAILABLE"
+  | "VOICE_CONSENT_REQUIRED"
   | "INVALID_CREDENTIALS"
   | "TOKEN_REVOKED"
   | "TOKEN_REUSE_DETECTED"
@@ -50,7 +56,9 @@ export type ErrorCode =
   | "TRANSFER_UNAVAILABLE"
   | "STORAGE_ERROR"
   | "N8N_ERROR"
+  | "ANSWER_NOT_GROUNDED"
   | "DEPENDENCY_UNAVAILABLE"
+  | "PROVIDER_CIRCUIT_OPEN"
   | "INTERNAL_ERROR";
 
 export class AppError extends Error {

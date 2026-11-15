@@ -1,3 +1,4 @@
+import { assertTenantScope } from "@/lib/request-context";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { db } from "@/db";
 import { appointments, calls, customers, leads } from "@/db/schema";
@@ -18,6 +19,7 @@ export type CustomerInput = {
  * concurrent calls for the same number never create duplicates.
  */
 export async function findOrCreateCustomer(input: CustomerInput) {
+  assertTenantScope(input.businessId);
   const phone = normalizePhone(input.phone);
   if (!phone) throw new AppError(400, "VALIDATION_ERROR", "Invalid phone number");
   const name = input.name ? normalizePersianText(input.name) : "";
@@ -41,10 +43,11 @@ export async function findOrCreateCustomer(input: CustomerInput) {
       needsUpdate = true;
     }
     if (!needsUpdate) return existing;
+    assertTenantScope(input.businessId);
     const [updated] = await db
       .update(customers)
       .set(patch)
-      .where(eq(customers.id, existing.id))
+      .where(and(eq(customers.id, existing.id), eq(customers.businessId, input.businessId)))
       .returning();
     return updated ?? existing;
   }
@@ -74,6 +77,7 @@ export async function findOrCreateCustomer(input: CustomerInput) {
 }
 
 export async function getCustomer(businessId: string, customerId: string) {
+  assertTenantScope(businessId);
   const [row] = await db
     .select()
     .from(customers)
@@ -88,6 +92,7 @@ export async function updateCustomer(
   customerId: string,
   patch: { name?: string; email?: string | null; metadata?: Record<string, unknown> },
 ) {
+  assertTenantScope(businessId);
   const [updated] = await db
     .update(customers)
     .set({

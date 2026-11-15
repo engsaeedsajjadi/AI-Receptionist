@@ -53,7 +53,11 @@ abstract class BaseEmbeddingProvider implements EmbeddingProvider {
     for (let i = 0; i < texts.length; i += MAX_BATCH) {
       const batch = texts.slice(i, i + MAX_BATCH);
       try {
-        const response = await this.client.embeddings.create({ model: this.model, input: batch });
+          const response = await this.client.embeddings.create({
+          model: this.model,
+         input: batch,
+         dimensions: getEnv().EMBEDDING_DIMENSIONS,
+        });
         const perItemTokens =
           response.usage?.total_tokens != null ? Math.ceil(response.usage.total_tokens / batch.length) : undefined;
         for (const item of response.data.sort((a, b) => a.index - b.index)) {

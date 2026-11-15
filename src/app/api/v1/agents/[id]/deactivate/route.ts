@@ -4,7 +4,7 @@ import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { ApiError, ok } from "@/lib/api";
 import { getAuthContext } from "@/lib/auth";
-import { hasRole } from "@/lib/permissions";
+import { hasPermission } from "@/lib/permissions";
 import { checkGlobalPublicRateLimit, withApiHandling } from "@/lib/server-core";
 
 type Ctx = { params: Promise<{ id: string }> };
@@ -13,7 +13,7 @@ export async function POST(req: NextRequest, ctx: Ctx) {
   return withApiHandling(async () => {
     await checkGlobalPublicRateLimit(req);
     const auth = await getAuthContext(req);
-    if (!hasRole(auth.role, "ADMIN")) throw new ApiError(403, "FORBIDDEN", "Insufficient permissions");
+    if (!hasPermission(auth.role, "agents:write")) throw new ApiError(403, "FORBIDDEN", "Insufficient permissions");
 
     const { id } = await ctx.params;
     const [updated] = await db

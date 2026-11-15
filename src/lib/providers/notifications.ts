@@ -3,7 +3,7 @@ import { AppError } from "@/lib/errors";
 import { getEnv, isProduction } from "@/lib/env";
 import { logError, logInfo } from "@/lib/logger";
 
-export type NotificationChannel = "email" | "internal" | "sms" | "telegram";
+export type NotificationChannel = "email" | "internal" | "sms" | "telegram" | "whatsapp";
 
 export type SendNotificationInput = {
   to: string;
@@ -173,6 +173,91 @@ export class TelegramNotificationProvider implements NotificationProvider {
   }
 }
 
+// ---------------------------------------------------------------------------
+// WhatsApp — Meta Cloud API (graph.facebook.com)
+//
+// Sending is a two-step contract: inside the 24h customer service window a plain
+// text message is accepted, outside it the provider MUST send an approved
+// template. When WHATSAPP_TEMPLATE_NAME is configured we always send the
+// template (the safer default for business-initiated notifications); otherwise
+// we send text and surface the provider's own error verbatim instead of
+// pretending delivery succeeded.
+// ---------------------------------------------------------------------------
+
+export class WhatsAppCloudProvider implements NotificationProvider {
+  readonly channel: NotificationChannel = "whatsapp";
+
+  async send(input: SendNotificationInput): Promise<SendNotificationResult> {
+    const token = process.env.WHATSAPP_ACCESS_TOKEN;
+    const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+    if (!token || !phoneNumberId) {
+      return { ok: false, error: "WHATSAPP_ACCESS_TOKEN and WHATSAPP_PHONE_NUMBER_ID are not configured" };
+    }
+    // Meta expects the recipient as digits only (no '+', spaces or punctuation).
+    const to = (input.to ?? "").replace(/[^0-9]/g, "");
+    if (!to) return { ok: false, error: "missing_whatsapp_recipient" };
+
+    const template = process.env.WHATSAPP_TEMPLATE_NAME ?? "";
+    const body: Record<string, unknown> = template
+      ? {
+          messaging_product: "whatsapp",
+          to,
+          type: "template",
+          template: {
+            name: template,
+            language: { code: process.env.WHATSAPP_TEMPLATE_LANGUAGE ?? "fa" },
+            components: [
+              {
+                type: "body",
+                parameters: [
+                  { type: "text", text: input.subject ?? "اعلان" },
+                  { type: "text", text: input.body.slice(0, 900) },
+                ],
+              },
+            ],
+          },
+        }
+      : {
+          messaging_product: "whatsapp",
+          to,
+          type: "text",
+          text: { preview_url: false, body: input.subject ? `${input.subject}\n${input.body}` : input.body },
+        };
+
+    const version = process.env.WHATSAPP_API_VERSION ?? "v21.0";
+    const timeoutMs = Number(process.env.WHATSAPP_TIMEOUT_MS ?? 10_000);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 10_000);
+    try {
+      const res = await fetch(`https://graph.facebook.com/${version}/${encodeURIComponent(phoneNumberId)}/messages`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      const payload = (await res.json().catch(() => ({}))) as {
+        messages?: { id?: string }[];
+        error?: { message?: string; code?: number };
+      };
+      if (!res.ok) {
+        const detail = payload.error?.message ?? `http_${res.status}`;
+        return { ok: false, error: `whatsapp_http_${res.status}: ${detail}` };
+      }
+      const messageId = payload.messages?.[0]?.id;
+      if (!messageId) return { ok: false, error: "whatsapp_response_missing_message_id" };
+      return { ok: true, id: messageId };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : "whatsapp_error" };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
+
+export function whatsAppConfigured(): boolean {
+  return Boolean(process.env.WHATSAPP_ACCESS_TOKEN && process.env.WHATSAPP_PHONE_NUMBER_ID);
+}
+
 /**
  * Console provider — TEST/DEV FIXTURES ONLY.
  * Instantiating in production throws, so it can never be selected accidentally.
@@ -200,5 +285,7 @@ export function getNotificationProvider(channel: NotificationChannel): Notificat
       return new SmsWebhookProvider();
     case "telegram":
       return new TelegramNotificationProvider();
+    case "whatsapp":
+      return new WhatsAppCloudProvider();
   }
 }

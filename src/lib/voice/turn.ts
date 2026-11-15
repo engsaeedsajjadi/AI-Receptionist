@@ -1,14 +1,19 @@
+import { meteredSpeech } from "@/lib/services/metered-ai";
+import { requireTenantFeature } from "@/lib/tenant-config";
 import { AppError } from "@/lib/errors";
 import { logInfo, logWarn } from "@/lib/logger";
 import { getSTTProvider, type STTProvider } from "@/lib/providers/stt";
 import { getTTSProvider, type TTSProvider } from "@/lib/providers/tts";
 import { getStorageProvider, tenantKey } from "@/lib/providers/storage";
-import type { LLMProvider } from "@/lib/providers/llm";
+import type { ChatMessage, LLMProvider } from "@/lib/providers/llm";
 import { redisDel, redisGet, redisSet } from "@/lib/redis";
 import { runAgentTurn } from "@/lib/services/agent";
+import { resolveTurnTtsVoice } from "@/lib/voice/turn-voice";
 import { recordUsage } from "@/lib/services/usage";
+import { addSttSeconds } from "@/lib/services/voice-usage";
 import { toSpokenPersian } from "@/lib/voice/cleaner";
-import { normalizeTelephonyAudio, type AudioCodec } from "@/lib/voice/audio";
+import { isDegenerateTranscript } from "@/lib/voice/transcript-quality";
+import { normalizeTelephonyAudio, telephonyAudioDurationSeconds, type AudioCodec } from "@/lib/voice/audio";
 
 export type VoiceTurnInput = {
   businessId: string;
@@ -29,8 +34,18 @@ export type VoiceTurnInput = {
   language?: string;
   /** TTS voice override. */
   voice?: string;
+  /**
+   * Audio format requested from TTS. Defaults to `mp3` (gateway playback).
+   * Telephony bridges that must encode μ-law request `pcm` so the audio can be
+   * resampled and G.711-encoded without a transcoding dependency.
+   */
+  ttsFormat?: "mp3" | "wav" | "opus" | "pcm";
   requestId: string;
   actor?: string;
+  /** Keep the spoken reply concise without changing agent tools or quotas. */
+  briefVoiceReply?: boolean;
+  /** Earlier turns of a call-less developer-lab conversation (ignored with `callId`). */
+  priorMessages?: ChatMessage[];
   /** Provider overrides for tests. */
   stt?: STTProvider;
   tts?: TTSProvider;
@@ -102,6 +117,7 @@ function emptyResult(overrides: Partial<VoiceTurnResult> & { transcript: string 
  * set only on success; errors propagate and retries re-run.
  */
 export async function runVoiceTurn(input: VoiceTurnInput): Promise<VoiceTurnResult> {
+  await requireTenantFeature(input.businessId, "voice");
   const started = Date.now();
   const latency: VoiceTurnResult["latencyMs"] = { total: 0 };
   const hasAudio = Boolean(input.audio && input.audio.length > 0);
@@ -139,7 +155,16 @@ export async function runVoiceTurn(input: VoiceTurnInput): Promise<VoiceTurnResu
     latency.stt = Date.now() - t0;
     transcript = (sttResult.text ?? "").trim();
     sttLanguage = sttResult.language;
-    sttDurationSeconds = sttResult.durationSeconds;
+    // Prefer the provider's duration when valid. Some Gemini STT responses
+    // report null; for raw telephone codecs the sample count is an auditable
+    // duration source. Never estimate compressed/unknown formats.
+    const providerDuration = sttResult.durationSeconds;
+    sttDurationSeconds =
+      typeof providerDuration === "number" && Number.isFinite(providerDuration) && providerDuration > 0
+        ? providerDuration
+        : input.audioCodec
+          ? telephonyAudioDurationSeconds(input.audio as Buffer, input.audioCodec, input.audioSampleRate ?? 8_000)
+          : null;
     sttMinutes = sttDurationSeconds != null ? sttDurationSeconds / 60 : 0;
     await recordUsage({
       businessId: input.businessId,
@@ -155,6 +180,24 @@ export async function runVoiceTurn(input: VoiceTurnInput): Promise<VoiceTurnResu
         durationSeconds: sttDurationSeconds,
       },
     });
+    // Accumulate provider-reported transcription seconds on the call row so the
+    // call-ended settlement can bill trusted STT usage (never a text heuristic).
+    if (input.callId && sttDurationSeconds != null && sttDurationSeconds > 0) {
+      await addSttSeconds(input.businessId, input.callId, sttDurationSeconds);
+    }
+    // A recognizer loop («اینجای اینجای اینجای …») is what non-speech audio looks
+    // like after STT. Nobody said it: answer it like silence, never like a request.
+    if (isDegenerateTranscript(transcript)) {
+      logWarn("Discarded a looping transcript as non-speech", {
+        requestId: input.requestId,
+        businessId: input.businessId,
+        callId: input.callId,
+        operation: "voice.turn.stt",
+        status: "degenerate_transcript",
+        characters: transcript.length,
+      });
+      transcript = "";
+    }
   } else {
     transcript = (input.transcript as string).trim();
   }
@@ -176,15 +219,27 @@ export async function runVoiceTurn(input: VoiceTurnInput): Promise<VoiceTurnResu
     requestId: input.requestId,
     actor: input.actor ?? "voice-turn",
     llm: input.llm,
+    briefVoiceReply: input.briefVoiceReply,
+    priorMessages: input.priorMessages,
   });
   latency.agent = Date.now() - t1;
 
   // 3. Reply → speakable text → speech.
   const spokenText = toSpokenPersian(agentResult.reply) || agentResult.reply.trim().slice(0, 500);
   const t2 = Date.now();
-  const ttsResult = await tts.synthesize(spokenText, {
-    voice: input.voice,
-    format: "mp3",
+  // Piper selects its own allowlisted Persian voice during provider creation.
+  // Never pass the agent's unrelated cloud-voice ID through the consent guard
+  // when that ID will not be used for synthesis.
+  const voice = await resolveTurnTtsVoice({
+    businessId: input.businessId,
+    providerName: tts.name,
+    requestedVoice: input.voice,
+    agentVoiceId: agentResult.voiceId,
+  });
+  const requestedTtsFormat = input.ttsFormat ?? (tts.name === "piper" ? "wav" : "mp3");
+  const ttsResult = await meteredSpeech(input.businessId, tts, spokenText, {
+    voice,
+    format: requestedTtsFormat,
     requestId: input.requestId,
     businessId: input.businessId,
     callId: input.callId,
@@ -207,12 +262,25 @@ export async function runVoiceTurn(input: VoiceTurnInput): Promise<VoiceTurnResu
   let audioStored = false;
   const t3 = Date.now();
   try {
+    const actualMime = ttsResult.mimeType.split(";")[0].trim().toLowerCase();
+
+    const audioExtension =
+      actualMime === "audio/l16" || actualMime === "audio/pcm"
+        ? "pcm"
+        : ["audio/wav", "audio/x-wav", "audio/wave"].includes(actualMime)
+          ? "wav"
+          : ["audio/mpeg", "audio/mp3"].includes(actualMime)
+            ? "mp3"
+            : actualMime === "audio/ogg"
+              ? "opus"
+              : (input.ttsFormat ?? "mp3");
+
     const key = tenantKey(
       input.businessId,
       "calls",
       input.callId ?? "adhoc",
       "replies",
-      `${input.eventId ?? input.requestId}.mp3`,
+      `${input.eventId ?? input.requestId}.${audioExtension}`,
     );
     await getStorageProvider().upload({ key, data: ttsResult.audio, contentType: ttsResult.mimeType });
     audioUrl = await getStorageProvider().getSignedUrl(key);

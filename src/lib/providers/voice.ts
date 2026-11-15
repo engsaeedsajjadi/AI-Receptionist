@@ -1,7 +1,8 @@
-import { AppError } from "@/lib/errors";
+﻿import { AppError } from "@/lib/errors";
 import { getEnv } from "@/lib/env";
 import { logError, logInfo } from "@/lib/logger";
 import { assertConfigured } from "@/lib/providers/types";
+import { TwilioVoiceProvider } from "@/lib/providers/telephony/twilio";
 
 /**
  * Telephony provider abstraction.
@@ -321,6 +322,10 @@ export function getVoiceProvider(): VoiceProvider {
   switch (getEnv().VOICE_PROVIDER) {
     case "generic":
       return new GenericVoiceProvider();
+    case "twilio":
+      return new TwilioVoiceProvider();
+    case "disabled":
+      return new DevVoiceProvider();
     case "dev":
       return new DevVoiceProvider();
   }

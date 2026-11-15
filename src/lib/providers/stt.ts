@@ -1,5 +1,7 @@
 import OpenAI, { toFile } from "openai";
+import { GoogleGenAI } from "@google/genai";
 import { AppError } from "@/lib/errors";
+
 import { getEnv } from "@/lib/env";
 import { logError, logInfo } from "@/lib/logger";
 import { assertConfigured, mapSdkError, type ProviderUsage } from "@/lib/providers/types";
@@ -105,7 +107,7 @@ abstract class BaseSttProvider implements STTProvider {
           language,
           response_format: "verbose_json",
         },
-        { timeout: options.timeoutMs },
+        options.timeoutMs === undefined ? undefined : { timeout: options.timeoutMs },
       );
       const duration = typeof response.duration === "number" ? response.duration : null;
       logInfo("STT transcription completed", {
@@ -182,6 +184,124 @@ export class CompatibleSTTProvider extends BaseSttProvider {
  * Development STT provider. NEVER returns fake transcripts — it throws a
  * configuration error. Production forbids STT_PROVIDER=dev entirely.
  */
+export class GeminiSTTProvider implements STTProvider {
+  readonly name = "gemini";
+
+  private readonly ai: GoogleGenAI;
+  private readonly model: string;
+
+  constructor() {
+    const e = getEnv();
+
+    assertConfigured(
+      Boolean(e.COMPATIBLE_LLM_API_KEY),
+      "COMPATIBLE_LLM_API_KEY is required for STT_PROVIDER=gemini",
+    );
+
+    this.ai = new GoogleGenAI({
+      apiKey: e.COMPATIBLE_LLM_API_KEY,
+    });
+
+    this.model = e.STT_MODEL;
+  }
+
+  async transcribe(
+    audio: Buffer,
+    options: TranscribeOptions = {},
+  ): Promise<TranscriptionResult> {
+    const start = Date.now();
+
+    if (!audio || audio.length === 0) {
+      throw new AppError(
+        400,
+        "INVALID_PAYLOAD",
+        "Empty audio payload",
+      );
+    }
+
+    if (audio.length > 20 * 1024 * 1024) {
+      throw new AppError(
+        413,
+        "PAYLOAD_TOO_LARGE",
+        "Inline Gemini audio must be smaller than 20 MB",
+      );
+    }
+
+    const mimeType = options.mimeType ?? "audio/wav";
+    const language = (options.language ?? "fa").split("-")[0];
+
+    try {
+      const prompt =
+        language === "fa"
+          ? [
+              "این فایل صوتی را دقیق و کلمه‌به‌کلمه به فارسی رونویسی کن.",
+              "هیچ متن، توضیح، حدس، ترجمه یا جمله‌ای که در صوت گفته نشده اضافه نکن.",
+              "اگر بخشی نامفهوم است همان بخش را حدس نزن.",
+              "فقط متن واقعی گفته‌شده را برگردان.",
+            ].join(" ")
+          : [
+              "Transcribe this audio verbatim.",
+              "Do not add explanations, guesses, translations, or words that were not spoken.",
+              "Return only the actual spoken text.",
+            ].join(" ");
+
+      const interaction = await this.ai.interactions.create({
+        model: this.model,
+        input: [
+          {
+            type: "text",
+            text: prompt,
+          },
+          {
+            type: "audio",
+            data: audio.toString("base64"),
+            mime_type: mimeType,
+          },
+        ],
+      });
+
+      const text = interaction.output_text?.trim() ?? "";
+
+      logInfo("STT transcription completed", {
+        requestId: options.requestId,
+        businessId: options.businessId,
+        callId: options.callId,
+        provider: this.name,
+        operation: "stt.transcribe",
+        durationMs: Date.now() - start,
+        status: "ok",
+      });
+
+      return {
+        text,
+        language,
+        status: "final",
+        confidence: null,
+        durationSeconds: null,
+        usage: {},
+        provider: this.name,
+        model: this.model,
+      };
+    } catch (err) {
+      logError("STT transcription failed", {
+        requestId: options.requestId,
+        businessId: options.businessId,
+        callId: options.callId,
+        provider: this.name,
+        operation: "stt.transcribe",
+        durationMs: Date.now() - start,
+        status: "error",
+        error: err,
+      });
+
+      throw mapSdkError(
+        err,
+        "STT_ERROR",
+        "speech transcription",
+      );
+    }
+  }
+}
 export class DevSTTProvider implements STTProvider {
   readonly name = "dev";
   async transcribe(): Promise<TranscriptionResult> {
@@ -197,13 +317,17 @@ export function getSTTProvider(): STTProvider {
   switch (getEnv().STT_PROVIDER) {
     case "openai":
       return new OpenAISTTProvider();
+
     case "compatible":
       return new CompatibleSTTProvider();
+
+    case "gemini":
+      return new GeminiSTTProvider();
+
     case "dev":
       return new DevSTTProvider();
   }
 }
-
 export function isSupportedAudioMime(mimeType: string | null | undefined): boolean {
   if (!mimeType) return false;
   return SUPPORTED_MIME.has(mimeType.toLowerCase());

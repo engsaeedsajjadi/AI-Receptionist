@@ -31,6 +31,26 @@ export function createMediaSessionToken(
   return `${PREFIX}.${payload}.${sign(payload, secret)}`;
 }
 
+/** Verify a media token's signature and expiry only (scope is read from the claims). */
+export function decodeMediaSessionToken(token: string, secret: string): MediaSessionClaims | null {
+  const parts = token.split(".");
+  if (parts.length !== 3 || parts[0] !== PREFIX) return null;
+  const [, payload, signature] = parts;
+  if (!payload || !signature) return null;
+  const expectedSignature = sign(payload, secret);
+  const a = Buffer.from(signature, "utf8");
+  const b = Buffer.from(expectedSignature, "utf8");
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+  try {
+    const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as MediaSessionClaims;
+    if (!claims || typeof claims.businessId !== "string" || !claims.businessId) return null;
+    if (claims.exp <= Math.floor(Date.now() / 1000)) return null;
+    return claims;
+  } catch {
+    return null;
+  }
+}
+
 /** Verify signature, expiry and call/tenant binding. */
 export function verifyMediaSessionToken(
   token: string,

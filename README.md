@@ -5,7 +5,7 @@ Inbound calls are answered by an LLM agent that speaks Persian, searches the bus
 base (RAG), lists/searches real-estate properties, captures leads, books appointments, and
 hands off to a human when needed — with full tenant isolation, audit trails, and cost tracking.
 
-Stack: **Next.js 15 (TypeScript, API Routes) · PostgreSQL 16 + pgvector · Drizzle ORM ·
+Stack: **Next.js 16 (TypeScript, API Routes) · PostgreSQL 16 + pgvector · Drizzle ORM ·
 Redis · n8n · Docker**. Persan-first RTL dashboard (English + Persian UI).
 
 ## Features
@@ -137,32 +137,56 @@ DATABASE_URL=... ./scripts/restore.sh <dump-file>            # guarded against p
 ```
 
 Schedule `backup.sh` via cron/systemd for production. Migration rollback: forward-only
-migrations — restore from a pre-deploy dump, then `npm run db:migrate`.
+migrations — restore from a pre-deploy dump, then `npm run db:migrate`. Verify any restore
+with the drill before promoting it:
+
+```bash
+DATABASE_URL=... bash scripts/ci/restore-drill.sh   # isolated DB → validate → migrate ×2 → health
+```
+
+See `docs/DISASTER-RECOVERY.md` for objectives (RPO ≤ 24 h, RTO ≤ 60 min) and the failure
+playbooks. Restores are operator-initiated and never automatic.
 
 ## Testing
 
 ```bash
-npm test          # vitest: unit + DB-gated integration + AI eval
+npm test                 # vitest: unit + DB-gated integration + AI eval
+npm run test:coverage    # enforces the 80% thresholds on statements/lines/functions/branches
 npm run lint && npm run typecheck
+npm run test:browser     # Playwright Persian/RTL journeys (needs installed browsers)
 ```
+
+Coverage is currently **90.10% statements/lines, 93.08% functions, 80.31% branches** with 674
+tests and zero skipped; the measurement scope and history are recorded in
+`docs/coverage-baseline.txt`.
 
 - `tests/unit` — normalization, guardrails, RBAC, tool schemas, cost, env, security.
 - `tests/integration` — tenant isolation, leads, appointments, auth, webhooks,
   notifications/usage, knowledge. Need `TEST_DATABASE_URL` (or `DATABASE_URL`); they
   skip automatically when no database is reachable.
-- `tests/ai/eval.test.ts` — deterministic eval cases (Persian understanding, tool
-  contract, guardrail fallbacks) + live-LLM smoke cases gated on
-  `TEST_DATABASE_URL` + a live `LLM_PROVIDER` (they skip otherwise, never fail).
+- `tests/ai/eval.test.ts` contains deterministic evals. Explicit live acceptance uses `npm run test:live:ai`, requires a disposable test database and configured provider, and fails when required configuration is missing. Live tests are not counted as deterministic CI passes.
 - `tests/e2e` — critical journeys: full call lifecycle (started → turns → ended →
   billed + notified) and Redis-backed behavior (locks, rate limits, turn markers)
   against a real server (`REDIS_URL` / `TEST_REDIS_URL`).
 
-CI (`.github/workflows/ci.yml`): lint → typecheck → **migrate-from-zero validation** →
-full suite on real postgres (pgvector) + redis → **execution gate**
-(`scripts/ci/check-test-results.mjs` fails the build if ANY test skips, so green
-means every integration/E2E file ran) → production build → docker build →
-**prod boot smoke** (compose stack up with dummy secrets, `/ready` + nginx `/media`
-WebSocket assertions, always torn down).
+- `tests/live/*.acceptance.ts` — one explicit acceptance suite per provider
+  (`test:live:llm|embedding|stt|tts|smtp|oauth|storage|telephony`). Each requires a
+  disposable database plus real credentials and **fails loudly** when they are missing; a CI
+  gate (`scripts/ci/check-live-suite-fails.mjs`) proves they can never skip-green.
+- `tests/browser/*.spec.ts` — Playwright journeys (login/RBAC, leads, calls, knowledge,
+  config round trips) plus mobile responsiveness and structural WCAG 2.2 AA checks against a
+  seeded tenant: `npm run test:browser`.
+
+CI (`.github/workflows/enterprise-ci.yml`) runs three jobs — validation (lint, types, secret
+scan, migration safety, migrations twice, real PostgreSQL/Redis tests, no-skips check, the
+80% coverage gate, live-suite loud-failure gating, production build, dependency audit),
+browser journeys (Playwright on desktop + mobile) and container/restore (backup → isolated
+restore drill, Docker build, Trivy scan, SBOM).
+
+Operational runbooks: `docs/DISASTER-RECOVERY.md` (RPO/RTO + restore drill),
+`docs/SLO.md`, `docs/TENANT-ISOLATION.md` (isolation evidence and the formal RLS decision).
+Live provider acceptance, PSTN calls and staging soak remain external blockers — see
+`docs/PRODUCTION-READINESS.md`.
 
 ## API surface
 

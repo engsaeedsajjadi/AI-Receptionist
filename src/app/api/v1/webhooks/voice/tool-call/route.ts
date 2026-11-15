@@ -40,6 +40,7 @@ export async function POST(req: NextRequest) {
     await enforceRateLimit(req, "publicWebhook");
     const { payload, idempotencyKey } = await verifyWebhookRequest(req, {
       secret: env.webhookSecret,
+      previousSecrets: env.previousWebhookSecrets,
       scope: "voice:tool-call",
     });
     const body = parseWith(payloadSchema, payload);
@@ -99,6 +100,7 @@ export async function POST(req: NextRequest) {
         await tx
           .insert(callMessages)
           .values({
+            businessId: body.business_id,
             callId: call.id,
             role: "TOOL",
             content: JSON.stringify({ tool: body.tool, status: result.status }),
@@ -136,6 +138,7 @@ export async function POST(req: NextRequest) {
     });
 
     await db.insert(callMessages).values({
+      businessId: body.business_id,
       callId: call.id,
       role: "TOOL",
       content: JSON.stringify({ tool: body.tool, status: result.status }),

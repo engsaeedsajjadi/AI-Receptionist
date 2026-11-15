@@ -1,0 +1,18 @@
+# Secret scanning configuration.
+#
+# The default rule set is kept in full (`useDefault = true`); this file only adds a
+# single, path-scoped allowlist for a value that is provably not a credential.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "All-zero Twilio account-SID placeholder in the voice webhook fixture"
+# The integration suite that exercises the inbound voice webhook needs a non-empty
+# account SID in the environment. The value it used was "AC" + 32 zeroes — a
+# placeholder, never a credential. The current revision of the file uses
+# "AC-test-account-sid-placeholder", but the commit that introduced the all-zero
+# value is still inside pull-request ranges, so the range scan keeps reporting it.
+paths = ['''tests/integration/voice-inbound-webhook\.test\.ts''']
+regexTarget = "match"
+regexes = ['''AC0{32}''']

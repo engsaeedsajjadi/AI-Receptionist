@@ -27,7 +27,7 @@ const createdBusinessIds: string[] = [];
 class FakeSTT implements STTProvider {
   readonly name = "fake";
   calls = 0;
-  constructor(private text: string, private duration = 3) {}
+  constructor(private text: string, private duration: number | null = 3) {}
   async transcribe(): Promise<TranscriptionResult> {
     this.calls++;
     return {
@@ -36,7 +36,7 @@ class FakeSTT implements STTProvider {
       status: "final",
       confidence: 0.99,
       durationSeconds: this.duration,
-      usage: { audioSeconds: this.duration },
+      usage: this.duration == null ? {} : { audioSeconds: this.duration },
       provider: "fake",
       model: "fake-stt",
     };
@@ -200,6 +200,90 @@ describe.skipIf(!hasTestDatabase())("voice turn pipeline (real database, fake pr
     expect(types).toEqual(["llm_input_tokens", "llm_output_tokens", "stt_minutes", "tts_characters"]);
   });
 
+  itDb("archives speech using the actual TTS MIME type", async () => {
+    const cases = [
+      { mimeType: "audio/wav", extension: "wav" },
+      { mimeType: "audio/l16;rate=24000", extension: "pcm" },
+    ];
+
+    for (const testCase of cases) {
+      const { business, agent, call } = await setup("Voice MIME");
+
+      const audio = testCase.extension === "wav"
+        ? Buffer.from("RIFF0000WAVE", "ascii")
+        : Buffer.alloc(480, 0);
+
+      const baseTts = new FakeTTS();
+
+      const tts: TTSProvider = {
+        name: "fake",
+        async synthesize(text: string) {
+          return {
+            ...(await baseTts.synthesize(text)),
+            audio,
+            mimeType: testCase.mimeType,
+          };
+        },
+      };
+
+      const eventId = `mime-${testCase.extension}-${Date.now()}`;
+
+      const result = await runVoiceTurn({
+        businessId: business.id,
+        agentId: agent.id,
+        callId: call.id,
+        transcript: "سلام",
+        eventId,
+        requestId: `req-${eventId}`,
+        actor: "test",
+        tts,
+        llm: new FakeLLM([{ content: "پاسخ آزمایشی" }]),
+      });
+
+      expect(result.audioStored).toBe(true);
+      expect(result.audioMimeType).toBe(testCase.mimeType);
+      expect(result.audioUrl).not.toBeNull();
+
+      const url = new URL(result.audioUrl!);
+      expect(url.pathname.endsWith(`.${testCase.extension}`)).toBe(true);
+
+      const storedPath = path.resolve(
+        "storage",
+        "business",
+        business.id,
+        "calls",
+        call.id,
+        "replies",
+        `${eventId}.${testCase.extension}`,
+      );
+
+      const stored = await fs.readFile(storedPath);
+      expect(stored.equals(audio)).toBe(true);
+    }
+  });
+
+  itDb("accounts for real mulaw seconds when the STT provider reports duration=null", async () => {
+    const { business, agent, call } = await setup("Voice Biz Missing Duration");
+    const result = await runVoiceTurn({
+      businessId: business.id,
+      agentId: agent.id,
+      callId: call.id,
+      audio: Buffer.alloc(8_000, 0xff), // one second at 8 kHz (deterministic test fixture)
+      audioCodec: "mulaw",
+      audioSampleRate: 8_000,
+      eventId: `evt-${Date.now()}-duration-fallback`,
+      requestId: `req-${Date.now()}-duration-fallback`,
+      stt: new FakeSTT("برای فردا ساعت ده وقت ملاقات می‌خواهم", null),
+      tts: new FakeTTS(),
+      llm: new FakeLLM([{ content: "چه نامی برای رزرو ثبت کنم؟" }]),
+    });
+    expect(result.sttDurationSeconds).toBe(1);
+    expect(result.usage.sttMinutes).toBeCloseTo(1 / 60, 8);
+    const sttRecords = await db.select().from(usageRecords)
+      .where(and(eq(usageRecords.businessId, business.id), eq(usageRecords.type, "stt_minutes")));
+    expect(sttRecords).toHaveLength(1);
+  });
+
   itDb("transcript input skips STT but still runs agent + TTS", async () => {
     const { business, agent, call } = await setup("Voice Biz T");
     const stt = new FakeSTT("نباید صدا شود");
@@ -271,6 +355,33 @@ describe.skipIf(!hasTestDatabase())("voice turn pipeline (real database, fake pr
     expect(result.audio).toBeNull();
     expect(tts.calls).toBe(0);
     expect(llm.calls).toBe(0);
+  });
+
+  itDb("a looping recognizer transcript is treated as non-speech (no agent, no TTS, no transcript rows)", async () => {
+    const { business, agent, call } = await setup("Voice Biz Loop");
+    const tts = new FakeTTS();
+    const llm = new FakeLLM([{ content: "نباید برسد" }]);
+
+    const result = await runVoiceTurn({
+      businessId: business.id,
+      agentId: agent.id,
+      callId: call.id,
+      audio: Buffer.from("line-echo"),
+      eventId: `evt-${Date.now()}-loop`,
+      requestId: `req-${Date.now()}-loop`,
+      // Verbatim shape of what Whisper returned for non-speech audio in the lab.
+      stt: new FakeSTT(Array(45).fill("اینجای").join(" ")),
+      tts,
+      llm,
+    });
+
+    expect(result.heard).toBe(false);
+    expect(result.transcript).toBe("");
+    expect(result.audio).toBeNull();
+    expect(tts.calls).toBe(0);
+    expect(llm.calls).toBe(0);
+    const rows = await db.select().from(callMessages).where(eq(callMessages.callId, call.id));
+    expect(rows).toHaveLength(0);
   });
 
   itDb("redelivered event returns duplicate without re-running", async () => {
