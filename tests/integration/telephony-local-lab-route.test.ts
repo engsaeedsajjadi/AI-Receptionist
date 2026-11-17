@@ -23,6 +23,7 @@ const seams = vi.hoisted(() => ({
   turn: null as ((input: VoiceTurnInput) => Promise<VoiceTurnResult>) | null,
   piper: [] as Array<{ voice?: string; style?: string }>,
   spoken: [] as string[],
+  pocket: 0,
 }));
 
 vi.mock("@/lib/voice/turn", async (importActual) => {
@@ -50,6 +51,21 @@ vi.mock("@/lib/providers/piper-tts", async (importActual) => {
     }
   }
   return { ...actual, PiperTTSProvider: FakePiper };
+});
+
+vi.mock("@/lib/providers/pocket-tts", () => {
+  class FakePocket {
+    readonly name = "pocket-tts";
+    constructor() { seams.pocket += 1; }
+    async synthesize(text: string) {
+      seams.spoken.push(text);
+      return {
+        audio: Buffer.alloc(24_000), mimeType: "audio/pcm", provider: "pocket-tts", model: "fake-pocket",
+        voice: "server-fixed", usage: { characters: text.length },
+      };
+    }
+  }
+  return { PocketTTSProvider: FakePocket };
 });
 
 const LAB_DB = "postgresql://ai_test:test-only-ci@127.0.0.1:5432/ai_receptionist_test";
@@ -136,6 +152,7 @@ describe.skipIf(!hasTestDatabase())("local telephone lab route", () => {
     seams.turn = null;
     seams.piper.length = 0;
     seams.spoken.length = 0;
+    seams.pocket = 0;
   });
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -435,6 +452,37 @@ describe.skipIf(!hasTestDatabase())("local telephone lab route", () => {
       await call("POST", agent.id, a.token, labForm({ conversationId: session }));
       await call("POST", agent.id, a.token, labForm({ conversationId: session }));
       expect(seen).toEqual([[], []]);
+    });
+
+    itDb("previews the local Pocket-TTS (Cilla) voice with fixed text and never forwards a voice choice", async () => {
+      enableLab({ LLM_PROVIDER: "dev", STT_PROVIDER: "dev", TTS_PROVIDER: "dev" });
+      const a = await identity();
+      const agent = await createAgent(a.business.id);
+      const form = new FormData();
+      form.set("voicePreview", "pocket");
+      form.set("text", "متن دلخواه کاربر");
+      form.set("piperVoice", "../../etc/passwd");
+      const res = await call("POST", agent.id, a.token, form);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ mode: "pocket-voice-preview", realPhoneCall: false, voice: null });
+      expect(seams.spoken).toEqual(["سلام، وقت شما بخیر. خوشحال می‌شوم راهنمایی‌تان کنم."]);
+      expect(seams.pocket).toBe(1);
+      expect(seams.piper).toEqual([]);
+    });
+
+    itDb("uses Pocket-TTS for a lab turn only when ttsEngine=pocket is chosen", async () => {
+      enableLab();
+      const a = await identity();
+      const agent = await createAgent(a.business.id);
+      const inputs: VoiceTurnInput[] = [];
+      seams.turn = async (input) => { inputs.push(input); return turnResult(agent.id); };
+
+      expect((await call("POST", agent.id, a.token, labForm({ ttsEngine: "pocket" }))).status).toBe(200);
+      expect(inputs[0].tts?.name).toBe("pocket-tts");
+      expect((await call("POST", agent.id, a.token, labForm({ ttsEngine: "configured" }))).status).toBe(200);
+      expect(inputs[1].tts).toBeUndefined();
+      expect((await call("POST", agent.id, a.token, labForm({ ttsEngine: "cilla-remote" }))).status).toBe(400);
+      expect(inputs).toHaveLength(2);
     });
   });
 });

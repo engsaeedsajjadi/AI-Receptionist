@@ -8,6 +8,7 @@ import { getAuthContext } from "@/lib/auth";
 import { withApiHandling } from "@/lib/server-core";
 import { runVoiceTurn } from "@/lib/voice/turn";
 import { PiperTTSProvider, parsePiperVoice, parsePiperStyle } from "@/lib/providers/piper-tts";
+import { PocketTTSProvider } from "@/lib/providers/pocket-tts";
 import { pcm16ToWav } from "@/lib/voice/audio";
 import { FasterWhisperSTTProvider } from "@/lib/providers/faster-whisper-stt";
 import { appendLabTurn, loadLabHistory, parseLabSessionId } from "@/lib/voice/lab-conversation";
@@ -62,9 +63,11 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     const form = await req.formData();
     // Voice-only preview: fixed text, offline Piper, no Gemini STT/LLM calls,
     // no call creation and no arbitrary client text passed to a synthesizer.
-    if (form.get("voicePreview") === "piper") {
-      const previewVoice = parsePiperVoice(form.get("piperVoice") ?? "fa_IR-amir-medium");
-      const previewStyle = parsePiperStyle(form.get("piperStyle") ?? "natural");
+    const voicePreview = form.get("voicePreview");
+    if (voicePreview === "piper" || voicePreview === "pocket") {
+      const isPocket = voicePreview === "pocket";
+      const previewVoice = isPocket ? null : parsePiperVoice(form.get("piperVoice") ?? "fa_IR-amir-medium");
+      const previewStyle = isPocket ? null : parsePiperStyle(form.get("piperStyle") ?? "natural");
       // Two fixed server-side phrases only: the speaker sample, and the short
       // "one moment" line the live lab plays while a slow turn is processing.
       const previewKind = form.get("previewKind") ?? "sample";
@@ -75,15 +78,16 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
         ? LAB_FILLER_TEXT
         : "سلام، وقت شما بخیر. خوشحال می‌شوم راهنمایی‌تان کنم.";
       const started = Date.now();
-      const sample = await new PiperTTSProvider({
-        voice: previewVoice, style: previewStyle,
-      }).synthesize(previewText, { format: "pcm" });
+      const sample = await (isPocket
+        ? new PocketTTSProvider()
+        : new PiperTTSProvider({ voice: previewVoice!, style: previewStyle! })
+      ).synthesize(previewText, { format: "pcm" });
       // Browser speaker comparison must use native 24-kHz PCM quality, not
       // the 8-kHz G.711 telephone codec that intentionally degrades bandwidth.
       // Real lab turns retain their original telephony path unchanged.
       const previewWav = pcm16ToWav(sample.audio, 24_000);
       return ok({
-        mode: "piper-voice-preview",
+        mode: isPocket ? "pocket-voice-preview" : "piper-voice-preview",
         previewKind,
         realPhoneCall: false,
         voice: previewVoice,
@@ -104,8 +108,8 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       throw new AppError(503, "PROVIDER_NOT_CONFIGURED", readiness.reasons.join(" | "));
     }
     const ttsEngine = form.get("ttsEngine");
-    if (ttsEngine !== null && ttsEngine !== "configured" && ttsEngine !== "piper") {
-      throw new AppError(400, "INVALID_PAYLOAD", "ttsEngine must be configured or piper");
+    if (ttsEngine !== null && ttsEngine !== "configured" && ttsEngine !== "piper" && ttsEngine !== "pocket") {
+      throw new AppError(400, "INVALID_PAYLOAD", "ttsEngine must be configured, piper or pocket");
     }
     const sttEngine = form.get("sttEngine");
     if (sttEngine !== null && sttEngine !== "configured" && sttEngine !== "faster-whisper") {
@@ -161,7 +165,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       // No global provider switching and no Gemini credential exposure.
       tts: ttsEngine === "piper"
         ? new PiperTTSProvider({ voice: piperVoice!, style: piperStyle! })
-        : undefined,
+        : ttsEngine === "pocket" ? new PocketTTSProvider() : undefined,
       stt: sttEngine === "faster-whisper" ? new FasterWhisperSTTProvider() : undefined,
     });
 

@@ -21,7 +21,7 @@ type Props = {
   ready: boolean;
   allowUsage: boolean;
   briefReplies: boolean;
-  ttsEngine: "configured" | "piper";
+  ttsEngine: "configured" | "piper" | "pocket";
   piperVoice: string;
   piperStyle: "natural" | "warm" | "calm";
   sttEngine: "configured" | "faster-whisper";
@@ -163,10 +163,10 @@ export function TelephonyLiveConversation({ agentId, microphoneId, ready, allowU
   const prepareFiller = async (epoch: number) => {
     const r = runtime.current;
     releaseFillerClip();
-    if (ttsEngine !== "piper") return;
+    if (ttsEngine !== "piper" && ttsEngine !== "pocket") return;
     try {
       const form = new FormData();
-      form.set("voicePreview", "piper");
+      form.set("voicePreview", ttsEngine);
       form.set("previewKind", "filler");
       form.set("piperVoice", piperVoice);
       form.set("piperStyle", piperStyle);

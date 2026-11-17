@@ -107,6 +107,9 @@ const envSchema = z.object({
   PIPER_TTS_URL: z.string().default("http://127.0.0.1:5000"),
   PIPER_TTS_VOICE: z.string().default("fa_IR-amir-medium"),
   PIPER_TTS_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120000).default(20_000),
+  // Experimental loopback Pocket-TTS server (Cilla models); developer lab only.
+  POCKET_TTS_URL: z.string().default("http://127.0.0.1:5002"),
+  POCKET_TTS_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120000).default(30_000),
 
   STORAGE_PROVIDER: storageEnum.default("local"),
   LOCAL_STORAGE_DIR: z.string().default("./storage"),

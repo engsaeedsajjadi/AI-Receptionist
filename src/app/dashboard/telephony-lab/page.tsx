@@ -114,7 +114,7 @@ export default function TelephonyLabPage() {
   const [allowUsage, setAllowUsage] = useState(false);
   const [conversationMode, setConversationMode] = useState<"manual" | "live">("manual");
   const [briefReplies, setBriefReplies] = useState(true);
-  const [ttsEngine, setTtsEngine] = useState<"configured" | "piper">("configured");
+  const [ttsEngine, setTtsEngine] = useState<"configured" | "piper" | "pocket">("configured");
   const [piperVoice, setPiperVoice] = useState("fa_IR-amir-medium");
   const [piperStyle, setPiperStyle] = useState<"natural" | "warm" | "calm">("natural");
   const [voiceSample, setVoiceSample] = useState<string | null>(null);
@@ -172,7 +172,7 @@ export default function TelephonyLabPage() {
     stream.current?.getTracks().forEach(track => track.stop());
   }, []);
 
-  async function previewPiperVoice() {
+  async function previewPiperVoice(engine: "piper" | "pocket" = "piper") {
     if (sampleBusy || !agentId) return;
     setSampleBusy(true);
     setError("");
@@ -180,9 +180,11 @@ export default function TelephonyLabPage() {
     setSampleTtsMs(null);
     try {
       const form = new FormData();
-      form.set("voicePreview", "piper");
-      form.set("piperVoice", piperVoice);
-      form.set("piperStyle", piperStyle);
+      form.set("voicePreview", engine);
+      if (engine === "piper") {
+        form.set("piperVoice", piperVoice);
+        form.set("piperStyle", piperStyle);
+      }
       const response = await api(`/api/v1/agents/${agentId}/telephony-local-test`, {
         method: "POST", body: form,
       });
@@ -368,11 +370,26 @@ export default function TelephonyLabPage() {
             </fieldset>
             <label className="block text-sm">موتور تولید صدای پاسخ
               <select aria-label="موتور تولید صدای پاسخ" className="mr-2 rounded-lg border p-2"
-                value={ttsEngine} onChange={e => setTtsEngine(e.target.value as "configured" | "piper")}>
+                value={ttsEngine} onChange={e => { setTtsEngine(e.target.value as "configured" | "piper" | "pocket"); setVoiceSample(null); }}>
                 <option value="configured">موتور تنظیم‌شده فعلی (Gemini)</option>
                 <option value="piper">Piper محلی فارسی (آزمایشی، بدون هزینه API صوت)</option>
+                <option value="pocket">Cilla / Pocket-TTS محلی فارسی (آزمایشی، پورت ۵۰۰۲)</option>
               </select>
             </label>
+            {ttsEngine === "pocket" && <div className="space-y-2 rounded-lg bg-slate-50 p-3">
+              <p className="text-sm text-slate-700">
+                صدا از سرور محلی <code dir="ltr">scripts/local-tts/pocket_server.py</code> می‌آید و گوینده همان‌جا
+                با یک فایل صوتی ثابت تعیین می‌شود. فقط صدای کسی را به کار ببرید که رضایت داده است.
+              </p>
+              <button type="button" onClick={() => void previewPiperVoice("pocket")} disabled={sampleBusy || !agentId}
+                className="rounded-lg border border-teal-600 px-3 py-2 text-sm text-teal-800 disabled:opacity-50">
+                {sampleBusy ? "در حال تولید نمونه ..." : "شنیدن نمونه صدا بدون Gemini"}
+              </button>
+              {voiceSample && <div className="space-y-1">
+                <audio controls src={voiceSample} aria-label="پیش‌نمایش صوت Pocket-TTS"/>
+                {sampleTtsMs !== null && <p className="text-xs text-slate-500">زمان تولید نمونه: {(sampleTtsMs / 1000).toFixed(2)} ثانیه</p>}
+              </div>}
+            </div>}
             {ttsEngine === "piper" && <div className="space-y-2 rounded-lg bg-slate-50 p-3">
               <label className="block text-sm">گوینده فارسی
                 <select aria-label="گوینده فارسی Piper" className="mr-2 rounded-lg border p-2"
@@ -392,7 +409,7 @@ export default function TelephonyLabPage() {
                   <option value="calm">آرام و شمرده (آزمایشی)</option>
                 </select>
               </label>
-              <button type="button" onClick={() => void previewPiperVoice()} disabled={sampleBusy || !agentId}
+              <button type="button" onClick={() => void previewPiperVoice("piper")} disabled={sampleBusy || !agentId}
                 className="rounded-lg border border-teal-600 px-3 py-2 text-sm text-teal-800 disabled:opacity-50">
                 {sampleBusy ? "در حال تولید نمونه ..." : "شنیدن نمونه صدا بدون Gemini"}
               </button>
