@@ -10,34 +10,15 @@ import { runVoiceTurn } from "@/lib/voice/turn";
 import { PiperTTSProvider, parsePiperVoice, parsePiperStyle } from "@/lib/providers/piper-tts";
 import { PocketTTSProvider } from "@/lib/providers/pocket-tts";
 import { pcm16ToWav } from "@/lib/voice/audio";
+import { assertIsolatedLab } from "@/lib/voice/lab-guard";
 import { FasterWhisperSTTProvider } from "@/lib/providers/faster-whisper-stt";
 import { appendLabTurn, loadLabHistory, parseLabSessionId } from "@/lib/voice/lab-conversation";
 import { assessLocalTelephonyInput, assessLocalAgentReadiness, encodeLocalTelephonyOutput, validateLocalHighQualitySttWav } from "@/lib/voice/local-telephony";
 
-/**
- * DEVELOPER LAB ONLY — not Twilio/PSTN, never a production endpoint.
- * The database must be local and explicitly disposable, to prevent a UI test
- * from writing AI usage/transcripts into the operational business database.
- */
+// DEVELOPER LAB ONLY — not Twilio/PSTN, never a production endpoint (see lab-guard).
+
 /** Fixed, server-owned wording; the client can never choose synthesized text. */
 const LAB_FILLER_TEXT = "بله، یک لحظه لطفاً.";
-
-function assertIsolatedLab() {
-  if (process.env.NODE_ENV !== "development") {
-    throw new AppError(404, "NOT_FOUND", "Local telephone lab is disabled");
-  }
-  let url: URL;
-  try {
-    url = new URL(process.env.DATABASE_URL ?? "");
-  } catch {
-    throw new AppError(503, "DEPENDENCY_UNAVAILABLE", "Isolated test database is not configured");
-  }
-  if (!["127.0.0.1", "localhost"].includes(url.hostname) ||
-      !url.pathname.endsWith("/ai_receptionist_test") ||
-      (process.env.TEST_DATABASE_URL && process.env.TEST_DATABASE_URL !== url.toString())) {
-    throw new AppError(403, "FORBIDDEN", "Local telephone lab requires localhost/ai_receptionist_test, never the original database");
-  }
-}
 
 export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   return withApiHandling(async () => {

@@ -87,6 +87,65 @@ async function loadCallHistory(businessId: string, callId: string): Promise<Chat
   }));
 }
 
+/**
+ * The tenant's guardrailed system prompt (business context, tone, clock, tool
+ * rules) — the same text a chained turn and a live speech-to-speech session use.
+ */
+function agentBaseSystemPrompt(
+  agent: typeof agents.$inferSelect,
+  business: typeof businesses.$inferSelect,
+  config: AgentConfig,
+): string {
+  const businessContext = [
+    `نام: ${business.name}`,
+    business.phone ? `تلفن: ${business.phone}` : null,
+    business.address ? `نشانی: ${business.address}` : null,
+    config.businessInfo ?? null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return buildSystemPrompt({
+    language: config.language,
+    businessName: business.name,
+    agentName: config.agentName ?? agent.name,
+    greeting: config.greeting,
+    tone: config.tone,
+    businessInstructions: [agent.systemPrompt, config.systemInstructions].filter(Boolean).join("\n"),
+    businessContext,
+    currentTime: { now: new Date(), timeZone: business.timezone ?? "Asia/Tehran" },
+  });
+}
+
+export type AgentLiveInstructions = {
+  agentId: string;
+  /** Guardrailed system prompt plus the spoken-conversation style. */
+  systemPrompt: string;
+  /** Tools this agent may call (already filtered by its allow-list). */
+  tools: Array<{ name: string; description: string; parameters: Record<string, unknown> }>;
+};
+
+/**
+ * Instructions for a live (speech-to-speech) session: the agent's own prompt
+ * and allow-listed tools, built exactly as for a chained turn. Tool execution
+ * still goes through `executeToolCall` with server-side tenant context.
+ */
+export async function buildAgentLiveInstructions(businessId: string, agentId: string): Promise<AgentLiveInstructions> {
+  assertTenantScope(businessId);
+  await requireTenantFeature(businessId, "agent");
+  const [agent, business] = await Promise.all([
+    loadAgent(businessId, agentId),
+    db.select().from(businesses).where(eq(businesses.id, businessId)).limit(1).then((r) => r[0] ?? null),
+  ]);
+  if (!business) throw new AppError(404, "BUSINESS_NOT_FOUND", "Business not found");
+  const config = parseAgentConfig(agent);
+  const english = config.language.startsWith("en");
+  const systemPrompt = agentBaseSystemPrompt(agent, business, config) + (english
+    ? "\nLIVE PHONE CONVERSATION: You are speaking on a phone line. Answer in one or two short, natural spoken sentences. Never say a booking, transfer or record exists until its tool returned SUCCESS. Read phone numbers back digit by digit to confirm them."
+    : "\nمکالمهٔ زندهٔ تلفنی: تو پشت خط تلفن صحبت می‌کنی. فقط فارسی حرف بزن و با یک یا دو جملهٔ کوتاه و طبیعی پاسخ بده. تا ابزار نتیجهٔ SUCCESS نداده، هرگز نگو نوبت ثبت شد، تماس منتقل شد یا اطلاعاتی ذخیره شد. شمارهٔ تلفن را رقم‌به‌رقم تکرار کن تا تأیید شود.");
+  const tools = getToolDefinitions().filter((tool) => !config.allowedTools || config.allowedTools.includes(tool.name));
+  return { agentId: agent.id, systemPrompt, tools };
+}
+
 export type AgentTurnInput = {
   businessId: string;
   agentId?: string;
@@ -216,28 +275,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
         .map((m) => ({ role: m.role, content: normalizePersianText(m.content as string).trim().slice(0, 4000) }));
   history.push({ role: "user", content: userMessage });
 
-  // Preload lightweight business context for the prompt (no secrets).
-  const settings = (business.settings as Record<string, unknown>) ?? {};
-  const businessContext = [
-    `نام: ${business.name}`,
-    business.phone ? `تلفن: ${business.phone}` : null,
-    business.address ? `نشانی: ${business.address}` : null,
-    config.businessInfo ?? null,
-  ]
-    .filter(Boolean)
-    .join("\n");
-  void settings;
-
-  let systemPrompt = buildSystemPrompt({
-    language: config.language,
-    businessName: business.name,
-    agentName: config.agentName ?? agent.name,
-    greeting: config.greeting,
-    tone: config.tone,
-    businessInstructions: [agent.systemPrompt, config.systemInstructions].filter(Boolean).join("\n"),
-    businessContext,
-    currentTime: { now: new Date(), timeZone: business.timezone ?? "Asia/Tehran" },
-  });
+  let systemPrompt = agentBaseSystemPrompt(agent, business, config);
 
   // Opt-in for spoken interactions: the model should produce a short but
   // truthful answer, without removing tenant instructions or skipping tools.

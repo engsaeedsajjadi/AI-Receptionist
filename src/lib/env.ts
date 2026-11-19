@@ -110,6 +110,10 @@ const envSchema = z.object({
   // Experimental loopback Pocket-TTS server (Cilla models); developer lab only.
   POCKET_TTS_URL: z.string().default("http://127.0.0.1:5002"),
   POCKET_TTS_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120000).default(30_000),
+  // Experimental Gemini Live (speech-to-speech) mode of the developer lab; uses COMPATIBLE_LLM_API_KEY.
+  GEMINI_LIVE_MODEL: z.string().regex(/^[a-z0-9][a-z0-9.\-]{2,80}$/).default("gemini-3.8-live"),
+  /** Prebuilt Gemini voice name (e.g. Kore, Puck); empty = the model's default voice. */
+  GEMINI_LIVE_VOICE: z.string().regex(/^[A-Za-z]{0,40}$/).default(""),
 
   STORAGE_PROVIDER: storageEnum.default("local"),
   LOCAL_STORAGE_DIR: z.string().default("./storage"),

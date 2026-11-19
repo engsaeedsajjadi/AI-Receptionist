@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useAuth } from "@/components/dashboard/auth";
 import { TelephonyLiveConversation } from "@/components/dashboard/telephony-live-conversation";
+import { TelephonyGeminiLive } from "@/components/dashboard/telephony-gemini-live";
 import { VoiceLatencyBreakdown } from "@/components/dashboard/voice-latency-breakdown";
 import { recordedToSttWav } from "@/lib/voice/browser-telephony";
 
@@ -112,7 +113,7 @@ export default function TelephonyLabPage() {
   const [micId, setMicId] = useState("");
   const [mode, setMode] = useState<"codec" | "ai">("ai");
   const [allowUsage, setAllowUsage] = useState(false);
-  const [conversationMode, setConversationMode] = useState<"manual" | "live">("manual");
+  const [conversationMode, setConversationMode] = useState<"manual" | "live" | "gemini-live">("manual");
   const [briefReplies, setBriefReplies] = useState(true);
   const [ttsEngine, setTtsEngine] = useState<"configured" | "piper" | "pocket">("configured");
   const [piperVoice, setPiperVoice] = useState("fa_IR-amir-medium");
@@ -367,7 +368,9 @@ export default function TelephonyLabPage() {
               <legend className="text-sm font-semibold">روش گفتگو با منشی</legend>
               <label className="block text-sm"><input type="radio" name="conversationMode" checked={conversationMode === "manual"} disabled={state === "recording" || state === "processing"} onChange={() => setConversationMode("manual")} /> ضبط و ارسال دستی (پایان صحبت با دکمه)</label>
               <label className="block text-sm"><input type="radio" name="conversationMode" checked={conversationMode === "live"} disabled={state === "recording" || state === "processing"} onChange={() => setConversationMode("live")} /> گفتگوی زنده بدون فشردن دکمه پایان صحبت</label>
+              <label className="block text-sm"><input type="radio" name="conversationMode" checked={conversationMode === "gemini-live"} disabled={state === "recording" || state === "processing"} onChange={() => setConversationMode("gemini-live")} /> گفتگوی هم‌زمان با Gemini Live (آزمایشی؛ شنیدن، فهم و صحبت در یک مدل، با تأخیر کمتر)</label>
             </fieldset>
+            {conversationMode !== "gemini-live" && <>
             <label className="block text-sm">موتور تولید صدای پاسخ
               <select aria-label="موتور تولید صدای پاسخ" className="mr-2 rounded-lg border p-2"
                 value={ttsEngine} onChange={e => { setTtsEngine(e.target.value as "configured" | "piper" | "pocket"); setVoiceSample(null); }}>
@@ -437,6 +440,7 @@ export default function TelephonyLabPage() {
               <p className="text-xs text-amber-700">این انتخاب فقط روی صوت ورودی Faster-Whisper اثر دارد؛ خروجی منشی و شبیه‌سازی تماس همچنان تلفنی هستند. صدای تماس واقعی PSTN از این گزینه بهره‌ای نمی‌برد.</p>
             </div>}
             <label className="block text-sm"><input type="checkbox" checked={briefReplies} onChange={e => setBriefReplies(e.target.checked)} /> پاسخ صوتی کوتاه (یک یا دو جمله؛ بدون حذف اطلاعات ضروری)</label>
+            </>}
             <label className="block text-sm"><input type="checkbox" checked={allowUsage} onChange={e => setAllowUsage(e.target.checked)} /> تأیید می‌کنم که Gemini/STT/TTS و سهمیه دیتابیس ai_receptionist_test ممکن است مصرف شود؛ تماس واقعی برقرار نمی‌شود.</label>
           </div>
         )}
@@ -448,6 +452,14 @@ export default function TelephonyLabPage() {
         <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm" aria-label="مرحله پردازش تماس">{stage}</p>
         {error && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}
       </section>
+      {mode === "ai" && conversationMode === "gemini-live" && !allowUsage && (
+        <p role="status" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm">
+          برای فعال‌شدن Gemini Live، تأیید مصرف API را فعال کنید.
+        </p>
+      )}
+      {mode === "ai" && conversationMode === "gemini-live" && allowUsage && agentId && (
+        <TelephonyGeminiLive key={agentId + ":" + micId} agentId={agentId} microphoneId={micId} />
+      )}
       {mode === "ai" && conversationMode === "live" && (!allowUsage || !readiness?.ready) && (
         <p role="status" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm">
           برای فعال‌شدن گفتگوی زنده، اتصال منشی باید آماده باشد و تأیید مصرف API فعال شود.
