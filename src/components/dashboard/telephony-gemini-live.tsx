@@ -15,16 +15,8 @@ const SEND_BLOCK_MS = 100;
 /** Microphone level above which the caller is treated as talking (for the latency readout). */
 const SPEECH_RMS = 0.02;
 
-const CAPTURE_WORKLET = `
-class Capture extends AudioWorkletProcessor {
-  process(inputs) {
-    const channel = inputs[0] && inputs[0][0];
-    if (channel) this.port.postMessage(channel.slice(0));
-    return true;
-  }
-}
-registerProcessor("live-capture", Capture);
-`;
+/** Same-origin module: the CSP (script-src 'self') refuses blob: worklets. */
+const CAPTURE_WORKLET_URL = "/worklets/live-capture.js";
 
 /**
  * Gemini Live (speech-to-speech) mode of the DEVELOPER telephone lab.
@@ -197,8 +189,7 @@ export function TelephonyGeminiLive({ agentId, microphoneId }: { agentId: string
 
       r.playContext = new AudioContext();
       r.micContext = new AudioContext();
-      const workletUrl = URL.createObjectURL(new Blob([CAPTURE_WORKLET], { type: "application/javascript" }));
-      try { await r.micContext.audioWorklet.addModule(workletUrl); } finally { URL.revokeObjectURL(workletUrl); }
+      await r.micContext.audioWorklet.addModule(CAPTURE_WORKLET_URL);
 
       setDetail(`در حال اتصال به ${grant.model} …`);
       // Ephemeral tokens are served on v1beta.
