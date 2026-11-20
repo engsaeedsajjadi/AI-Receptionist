@@ -18,13 +18,15 @@ import { logInfo, logWarn } from "@/lib/logger";
 import { getLLMProvider, type ChatMessage, type LLMProvider } from "@/lib/providers/llm";
 import { normalizePersianText } from "@/lib/normalization";
 import { recordLlmUsage } from "@/lib/services/usage";
-import { executeToolCall, getToolDefinitions } from "@/lib/tools/registry";
+import { executeToolCall, getToolDefinitions, isToolAllowed } from "@/lib/tools/registry";
 
 export const AgentConfigSchema = z.object({
   agentName: z.string().max(150).optional(),
   greeting: z.string().max(1000).optional(),
   tone: z.string().max(500).optional(),
   language: z.string().max(20).default("fa"),
+  /** Languages the receptionist may answer in (ISO 639-1), first = greeting language. */
+  languages: z.array(z.string().regex(/^[a-z]{2}$/)).min(1).max(5).nullable().optional(),
   businessInfo: z.string().max(5000).optional(),
   transferNumber: z.string().max(30).optional(),
   fallbackBehavior: z.string().max(1000).optional(),
@@ -116,10 +118,16 @@ function agentBaseSystemPrompt(
   });
 }
 
+const LANGUAGE_NAMES: Record<string, string> = {
+  fa: "Persian", en: "English", ar: "Arabic", tr: "Turkish", ur: "Urdu", hi: "Hindi", ru: "Russian", fr: "French", de: "German",
+};
+
 export type AgentLiveInstructions = {
   agentId: string;
-  /** BCP-47 language of the agent (e.g. "fa"), a hint for speech recognition. */
+  /** BCP-47 language of the agent (e.g. "fa"). */
   language: string;
+  /** Languages the caller may speak (ISO 639-1), first = greeting; hints for speech recognition. */
+  languages: string[];
   /** Guardrailed system prompt plus the spoken-conversation style. */
   systemPrompt: string;
   /** Tools this agent may call (already filtered by its allow-list). */
@@ -144,8 +152,16 @@ export async function buildAgentLiveInstructions(businessId: string, agentId: st
   const systemPrompt = agentBaseSystemPrompt(agent, business, config) + (english
     ? "\nLIVE PHONE CONVERSATION: You are speaking on a phone line. Answer in one or two short, natural spoken sentences. Never say a booking, transfer or record exists until its tool returned SUCCESS. Before booking or creating a lead, read the name and the phone number (digit by digit) back once and call the tool only after the caller confirms. If you did not hear the name clearly, ask again. For a specific time call check_availability with date and time (local HH:MM) and book with the returned scheduledAt unchanged. If a tool returns FAILED or UNAVAILABLE, tell the caller right away and offer an alternative; never stay silent."
     : "\nمکالمهٔ زندهٔ تلفنی: تو پشت خط تلفن صحبت می‌کنی. فقط فارسی حرف بزن و با یک یا دو جملهٔ کوتاه و طبیعی پاسخ بده. تا ابزار نتیجهٔ SUCCESS نداده، هرگز نگو نوبت ثبت شد، تماس منتقل شد یا اطلاعاتی ذخیره شد. قبل از ثبت نوبت یا سرنخ، نام و شمارهٔ تلفن را یک بار تکرار کن (شماره را رقم‌به‌رقم) و تا تماس‌گیرنده تأیید نکرده، ابزار ثبت را صدا نزن. اگر نام را واضح نشنیدی، دوباره بپرس. برای وقت خاص، check_availability را با date و time (ساعت محلی HH:MM) صدا بزن و برای ثبت همان scheduledAt برگشتی را بدون تغییر بده. اگر ابزاری FAILED یا UNAVAILABLE برگرداند، همان لحظه به تماس‌گیرنده بگو و یکی از گزینه‌های جایگزین را پیشنهاد کن؛ هرگز ساکت نمان.");
-  const tools = getToolDefinitions().filter((tool) => !config.allowedTools || config.allowedTools.includes(tool.name));
-  return { agentId: agent.id, language: config.language, systemPrompt, tools };
+  const tools = getToolDefinitions().filter((tool) => isToolAllowed(tool, config.allowedTools));
+  const languages = config.languages?.length ? config.languages : [config.language.slice(0, 2).toLowerCase() || "fa"];
+  let prompt = systemPrompt;
+  if (languages.length > 1) {
+    const names = languages.map((code) => LANGUAGE_NAMES[code] ?? code).join(", ");
+    prompt += english
+      ? `\nLANGUAGES: Callers may speak ${names}. Greet in ${LANGUAGE_NAMES[languages[0]] ?? languages[0]}, then always reply in the language the caller is using; switch when they switch.`
+      : `\nزبان‌ها: تماس‌گیرنده ممکن است به این زبان‌ها صحبت کند: ${names}. خوشامد را به ${LANGUAGE_NAMES[languages[0]] ?? languages[0]} بگو و بعد همیشه به زبانی جواب بده که تماس‌گیرنده صحبت می‌کند.`;
+  }
+  return { agentId: agent.id, language: config.language, languages, systemPrompt: prompt, tools };
 }
 
 export type AgentTurnInput = {
@@ -293,7 +309,7 @@ export async function runAgentTurn(input: AgentTurnInput): Promise<AgentTurnResu
   if (intentHint) systemPrompt += "\n" + intentHint;
   if (config.memoryEnabled && input.callId) systemPrompt += "\n" + await loadAgentMemory(input.businessId, input.callId);
   const llm = input.llm ?? getLLMProvider();
-  const tools = getToolDefinitions().filter((tool) => !config.allowedTools || config.allowedTools.includes(tool.name));
+  const tools = getToolDefinitions().filter((tool) => isToolAllowed(tool, config.allowedTools));
   const allowedTools = new Set(tools.map((tool) => tool.name));
   const evidence = new Map<string, { document: string; content: string }>();
   /** Chunk id → document id, so evidence actually used can be recorded. */

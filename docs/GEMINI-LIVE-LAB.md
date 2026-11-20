@@ -43,3 +43,17 @@ GEMINI_LIVE_VOICE=                  # e.g. Kore, Puck; empty = model default
 - The grounding gate of chained turns (claim-vs-evidence check) does not apply
   to live speech; knowledge answers rely on the prompt and `search_knowledge`.
 - Use headphones: speaker echo can make the model interrupt itself.
+
+## Hotels and other languages
+
+- Agent settings → «زبان‌هایی که منشی جواب می‌دهد»: e.g. `en, ar, fa`. The first
+  is the greeting language; the receptionist then answers in whatever language
+  the caller speaks, and speech recognition is hinted with all of them. For Gulf
+  hotels set the agent language to English and list `en, ar, fa`.
+- `request_reservation` records a room-reservation **request** (guest, phone
+  with country code, check-in/out, guests, room type, notes) as a lead for the
+  front desk. It never confirms a booking: the app holds no room inventory.
+- Foreign phone numbers (`+971…`, `00968…`) are stored in E.164; Iranian
+  numbers keep their national form.
+- Hotel FAQs (check-in time, parking, airport transfer …) go into the
+  knowledge base, answered through `search_knowledge`.

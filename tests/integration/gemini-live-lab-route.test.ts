@@ -187,6 +187,19 @@ describe.skipIf(!hasTestDatabase())("Gemini Live lab routes", () => {
     expect(minted).toHaveLength(1);
   });
 
+  itDb("a multilingual agent hints every language and answers in the caller's", async () => {
+    const a = await identity();
+    const agent = await createAgent(a.business.id);
+    await db.update(agents).set({ language: "en-US", configuration: { languages: ["en", "ar", "fa"], allowedTools: ["search_knowledge", "get_business_info", "request_reservation", "transfer_call"] } }).where(eq(agents.id, agent.id));
+    enableLab();
+    expect((await session("POST", agent.id, a.token)).status).toBe(200);
+    expect(minted[0].config.inputAudioTranscription).toEqual({ languageCodes: ["en", "ar", "fa"] });
+    const prompt = promptOf(minted[0].config);
+    expect(prompt).toContain("Callers may speak English, Arabic, Persian");
+    expect(prompt).toContain("Greet in English");
+    expect(declarations(minted[0].config).map((f) => f.name)).toContain("request_reservation");
+  });
+
   itDb("only declares the agent's allow-listed tools", async () => {
     const a = await identity();
     const agent = await createAgent(a.business.id);

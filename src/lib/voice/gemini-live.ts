@@ -79,7 +79,7 @@ export function buildLiveConnectConfig(
     responseModalities: [Modality.AUDIO],
     systemInstruction: { parts: [{ text: instructions.systemPrompt + asyncRule }] },
     // Without a hint, short Persian names can be transcribed as another language.
-    inputAudioTranscription: { languageCodes: [instructions.language.split("-")[0] || "fa"] },
+    inputAudioTranscription: { languageCodes: instructions.languages },
     outputAudioTranscription: {},
   };
   if (instructions.tools.length) {

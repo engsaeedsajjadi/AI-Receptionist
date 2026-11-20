@@ -12,6 +12,7 @@ const REQUIRED_TOOLS = [
   "request_callback",
   "transfer_call",
   "send_notification",
+  "request_reservation",
 ];
 
 describe("tool registry", () => {

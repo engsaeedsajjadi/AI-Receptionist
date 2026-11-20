@@ -137,11 +137,18 @@ function agentForm(agent?: Agent) {
     model: String(c.model ?? ""),
     temperature: Number(c.temperature ?? 0.2),
     allowedTools: Array.isArray(c.allowedTools) ? c.allowedTools.join(", ") : "*",
+    languages: Array.isArray(c.languages) ? c.languages.join(", ") : "",
     memoryEnabled: c.memoryEnabled === true,
     retrievalMode: c.retrievalMode === "automatic" ? "automatic" : "tools",
     voiceId: agent?.voiceId ?? "fa-default",
     language: agent?.language ?? "fa-IR",
   };
+}
+
+/** "en, ar, fa" → ["en","ar","fa"]; empty → null (the agent's own language only). */
+function parseLanguages(text: string): string[] | null {
+  const codes = text.split(/[,\s]+/).map((code) => code.trim().toLowerCase()).filter(Boolean);
+  return codes.length ? [...new Set(codes)].slice(0, 5) : null;
 }
 
 function apiErrorMessage(payload: unknown, fallback: string) {
@@ -245,6 +252,7 @@ export default function AgentPage() {
           : form.allowedTools.split(",").map((tool) => tool.trim()).filter(Boolean),
         memoryEnabled: form.memoryEnabled,
         retrievalMode: form.retrievalMode,
+        languages: parseLanguages(form.languages),
       };
       const updated = await apiJson<Agent>(`/api/v1/agents/${selected.id}`, {
         method: "PUT",
@@ -547,6 +555,10 @@ const convertBlobToWav = async (blob: Blob): Promise<Blob> => {
                     <option value="fa-IR">فارسی (fa-IR)</option>
                     <option value="en-US">English (en-US)</option>
                   </select>
+                </label>
+                <label className="block text-sm sm:col-span-2">زبان‌هایی که منشی جواب می‌دهد (کد دوحرفی با ویرگول، اولی برای خوشامد؛ خالی: فقط زبان بالا)
+                  <input dir="ltr" value={form.languages} placeholder="en, ar, fa" onChange={(e) => setForm({ ...form, languages: e.target.value })} className="mt-1 w-full rounded border p-2" />
+                  <span className="mt-1 block text-xs text-slate-500">فعلاً در گفتگوی هم‌زمان Gemini Live اعمال می‌شود. برای هتل‌های حوزهٔ خلیج فارس: زبان بالا را English بگذارید و اینجا «en, ar, fa» بنویسید.</span>
                 </label>
               </div>
               <p className="text-xs text-slate-500">Provider صوتی: <span dir="ltr">{selected.voiceProvider}</span>. صداهای clone فقط با رضایت ثبت‌شده قابل استفاده‌اند.</p>

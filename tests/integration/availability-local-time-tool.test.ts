@@ -4,7 +4,7 @@ import { closeDb, db } from "@/db";
 import { businesses } from "@/db/schema";
 import { createAppointment, localSlotTime } from "@/lib/services/appointments";
 import { executeToolCall } from "@/lib/tools/registry";
-import { createBusiness, createLead } from "../helpers/fixtures";
+import { createBusiness, createCustomer, createLead } from "../helpers/fixtures";
 import { ensureDbReady, hasTestDatabase, itDb, truncateAll } from "../helpers/db";
 
 /**
@@ -66,7 +66,7 @@ describe.skipIf(!hasTestDatabase())("check_availability in local time", () => {
 
   itDb("answers an exact time and books it with the returned scheduledAt", async () => {
     const business = await setup();
-    const lead = await createLead(business.id);
+    const lead = await createLead(business.id, (await createCustomer(business.id)).id);
     const date = daysAhead(3);
     const free = await check(business.id, { date, time: "11:00" });
     expect(free.data).toMatchObject({ requestedTime: "11:00", requestedTimeAvailable: true, scheduledAt: `${date}T11:00:00+03:30` });
@@ -100,7 +100,7 @@ describe.skipIf(!hasTestDatabase())("check_availability in local time", () => {
 
   itDb("is UNAVAILABLE when the day is fully booked", async () => {
     const business = await setup();
-    const lead = await createLead(business.id);
+    const lead = await createLead(business.id, (await createCustomer(business.id)).id);
     const date = daysAhead(4);
     await createAppointment(business.id, { scheduledAt: `${date}T09:00:00+03:30`, durationMinutes: 480, leadId: lead.id });
     await createAppointment(business.id, { scheduledAt: `${date}T17:00:00+03:30`, durationMinutes: 60, leadId: lead.id });

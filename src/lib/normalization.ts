@@ -344,8 +344,16 @@ export function parseBedrooms(input: string | number | null | undefined): number
  */
 export function normalizePhone(input: string | null | undefined): string | null {
   if (input == null) return null;
-  let digits = normalizeDigits(String(input)).replace(/\D/g, "");
+  const typed = normalizeDigits(String(input)).trim();
+  let digits = typed.replace(/\D/g, "");
   if (!digits) return null;
+
+  // Foreign numbers (hotel guests in the Gulf, buyers abroad) keep their E.164
+  // form: "+971 50 123 4567" or "00971501234567" → "+971501234567".
+  const international = typed.startsWith("+") ? digits : digits.startsWith("00") ? digits.slice(2) : null;
+  if (international && !international.startsWith("98")) {
+    return /^[1-9]\d{7,14}$/.test(international) ? `+${international}` : null;
+  }
 
   // International formats → national.
   if (digits.startsWith("0098")) digits = "0" + digits.slice(4);

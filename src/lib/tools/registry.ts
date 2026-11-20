@@ -44,7 +44,14 @@ export type ToolDefinition = {
   description: string;
   schema: z.ZodType<Record<string, unknown>>;
   handler: (args: Record<string, unknown>, ctx: ToolContext) => Promise<ToolResult>;
+  /** Industry-specific: offered only when the agent's allow-list names it. */
+  optIn?: boolean;
 };
+
+/** Whether an agent with this allow-list (null = "all") gets the tool. */
+export function isToolAllowed(tool: { name: string; optIn?: boolean }, allowedTools: string[] | null | undefined): boolean {
+  return allowedTools ? allowedTools.includes(tool.name) : !tool.optIn;
+}
 
 // ---------------------------------------------------------------------------
 // Tool implementations (tenant scope ALWAYS comes from ctx, never from args)
@@ -137,6 +144,68 @@ const createLeadTool: ToolDefinition = {
       callId: ctx.callId,
     });
     return { status: "SUCCESS", data: { leadId: lead.id, customerId: customer.id, outcome, leadStatus: lead.status } };
+  },
+};
+
+/**
+ * Hotels: record a room-reservation REQUEST for staff to confirm. The app has
+ * no room inventory, so this never books a room; it stores the guest and the
+ * stay as a lead that the front desk follows up.
+ */
+const requestReservationTool: ToolDefinition = {
+  name: "request_reservation",
+  optIn: true,
+  description:
+    "Hotels: record a room reservation request (guest name, phone with country code, check-in and check-out dates YYYY-MM-DD, number of guests, optional room type and notes) for the front desk to confirm. It does NOT confirm a booking: tell the caller the hotel will confirm availability and price.",
+  schema: z.object({
+    guestName: z.string().min(1).max(255),
+    phone: z.string().min(5).max(30),
+    checkIn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    checkOut: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    guests: z.number().int().min(1).max(50),
+    roomType: z.string().max(100).optional(),
+    notes: z.string().max(1000).optional(),
+  }),
+  handler: async (args, ctx) => {
+    const checkIn = args.checkIn as string;
+    const checkOut = args.checkOut as string;
+    const today = new Date().toISOString().slice(0, 10);
+    if (checkOut <= checkIn) {
+      return { status: "FAILED", error: "Check-out must be after check-in. Ask the caller to confirm the dates." };
+    }
+    if (checkIn < today) {
+      return { status: "FAILED", error: "Check-in is in the past. Ask the caller to confirm the dates." };
+    }
+    const phone = normalizePhone(String(args.phone));
+    if (!phone) {
+      return { status: "FAILED", error: "Invalid phone number. Ask for the number with its country code." };
+    }
+    const nights = Math.round((Date.parse(checkOut) - Date.parse(checkIn)) / 86_400_000);
+    const summary = [
+      `Room reservation request: ${checkIn} → ${checkOut} (${nights} night${nights === 1 ? "" : "s"}), ${args.guests} guest${args.guests === 1 ? "" : "s"}`,
+      args.roomType ? `Room: ${args.roomType}` : null,
+      args.notes ? `Notes: ${args.notes}` : null,
+      "Status: to be confirmed by the front desk",
+    ].filter(Boolean).join(". ");
+    const customer = await findOrCreateCustomer({ businessId: ctx.businessId, phone, name: args.guestName as string });
+    const { lead } = await createOrUpdateLead({
+      businessId: ctx.businessId,
+      customerId: customer.id,
+      extraction: normalizeLeadExtraction({
+        name: args.guestName,
+        phone,
+        intent: "OTHER",
+        timeframe: `${checkIn}..${checkOut}`,
+        summary,
+      }),
+      source: "call",
+      callId: ctx.callId,
+    });
+    return {
+      status: "SUCCESS",
+      data: { requestId: lead.id, checkIn, checkOut, nights, guests: args.guests, confirmed: false,
+        next: "The front desk will confirm availability and price." },
+    };
   },
 };
 
@@ -370,6 +439,7 @@ const TOOLS: Record<string, ToolDefinition> = {
   create_lead: createLeadTool,
   update_lead: updateLeadTool,
   check_availability: checkAvailabilityTool,
+  request_reservation: requestReservationTool,
   create_appointment: createAppointmentTool,
   request_callback: requestCallbackTool,
   transfer_call: transferCallTool,
@@ -381,9 +451,10 @@ export function listTools(): ToolDefinition[] {
 }
 
 /** JSON-Schema tool definitions for the LLM (derived from the zod schemas). */
-export function getToolDefinitions(): Array<{ name: string; description: string; parameters: Record<string, unknown> }> {
+export function getToolDefinitions(): Array<{ name: string; description: string; parameters: Record<string, unknown>; optIn?: boolean }> {
   return listTools().map((t) => ({
     name: t.name,
+    ...(t.optIn ? { optIn: true } : {}),
     description: t.description,
     parameters: z.toJSONSchema(t.schema as z.ZodType) as unknown as Record<string, unknown>,
   }));

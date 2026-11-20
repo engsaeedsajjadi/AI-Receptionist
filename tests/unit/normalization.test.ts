@@ -168,6 +168,25 @@ describe("parseBedrooms", () => {
   });
 });
 
+describe("normalizePhone: foreign numbers", () => {
+  it("keeps non-Iranian international numbers in E.164", () => {
+    expect(normalizePhone("+971 50 123 4567")).toBe("+971501234567");
+    expect(normalizePhone("00971501234567")).toBe("+971501234567");
+    expect(normalizePhone("+968 9123 4567")).toBe("+96891234567");
+    expect(normalizePhone("+44 20 7946 0958")).toBe("+442079460958");
+    expect(normalizePhone("+۹۷۱۵۰۱۲۳۴۵۶۷")).toBe("+971501234567");
+  });
+  it("still maps Iranian international forms to the national number", () => {
+    expect(normalizePhone("+98 912 345 6789")).toBe("09123456789");
+    expect(normalizePhone("00989123456789")).toBe("09123456789");
+  });
+  it("rejects impossible international numbers", () => {
+    expect(normalizePhone("+12")).toBeNull();
+    expect(normalizePhone("+0123456789")).toBeNull();
+    expect(normalizePhone("+1234567890123456")).toBeNull();
+  });
+});
+
 describe("normalizePhone", () => {
   it("normalizes Iranian mobiles", () => {
     expect(normalizePhone("09123456789")).toBe("09123456789");
