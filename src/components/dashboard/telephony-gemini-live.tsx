@@ -1,11 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { GoogleGenAI, type LiveConnectConfig, type LiveServerMessage, type Session } from "@google/genai";
+import { FunctionResponseScheduling, GoogleGenAI, type LiveConnectConfig, type LiveServerMessage, type Session } from "@google/genai";
 import { useAuth } from "@/components/dashboard/auth";
 import { liveOutputToPlayback, micToLiveInput, rms } from "@/lib/voice/live-audio";
 
-type Grant = { sessionId: string; model: string; token: string; expiresAt: string; config: LiveConnectConfig; tools: string[] };
+type ToolMode = "blocking" | "async";
+type Grant = { sessionId: string; model: string; token: string; expiresAt: string; config: LiveConnectConfig; tools: string[]; toolMode: ToolMode };
+/** One answered turn: caller silence → Google saw speech end → first reply audio. */
+type TurnTiming = { totalMs: number; endDetectMs: number | null; replyMs: number | null; toolMs: number };
 type Readiness = { ready: boolean; reasons: string[] };
 type Line = { id: number; who: "caller" | "agent" | "tool"; text: string };
 type Phase = "idle" | "connecting" | "live" | "closed" | "error";
@@ -35,7 +38,8 @@ export function TelephonyGeminiLive({ agentId, microphoneId }: { agentId: string
   const [lines, setLines] = useState<Line[]>([]);
   const [telephone, setTelephone] = useState(true);
   const [typed, setTyped] = useState("");
-  const [latencies, setLatencies] = useState<number[]>([]);
+  const [latencies, setLatencies] = useState<TurnTiming[]>([]);
+  const [toolMode, setToolMode] = useState<ToolMode>("async");
   const [volume, setVolume] = useState(0);
   const runtime = useRef({
     session: null as Session | null,
@@ -49,6 +53,9 @@ export function TelephonyGeminiLive({ agentId, microphoneId }: { agentId: string
     pendingSamples: 0,
     lastSpeechAt: 0,
     awaitingReply: false,
+    serverEndAt: 0,
+    toolMs: 0,
+    toolMode: "async" as ToolMode,
     lineSeq: 0,
     telephone: true,
     epoch: 0,
@@ -92,10 +99,18 @@ export function TelephonyGeminiLive({ agentId, microphoneId }: { agentId: string
     const { samples, sampleRate } = liveOutputToPlayback(base64, r.telephone);
     if (!samples.length) return;
     if (r.awaitingReply && r.lastSpeechAt) {
-      const waited = Date.now() - r.lastSpeechAt;
-      setLatencies(previous => [...previous.slice(-9), waited]);
+      const now = Date.now();
+      const serverEnd = r.serverEndAt >= r.lastSpeechAt ? r.serverEndAt : 0;
+      const timing: TurnTiming = {
+        totalMs: now - r.lastSpeechAt,
+        endDetectMs: serverEnd ? serverEnd - r.lastSpeechAt : null,
+        replyMs: serverEnd ? now - serverEnd : null,
+        toolMs: r.toolMs,
+      };
+      setLatencies(previous => [...previous.slice(-9), timing]);
     }
     r.awaitingReply = false;
+    r.toolMs = 0;
     const buffer = ctx.createBuffer(1, samples.length, sampleRate);
     buffer.copyToChannel(samples as Float32Array<ArrayBuffer>, 0);
     const source = ctx.createBufferSource();
@@ -112,6 +127,7 @@ export function TelephonyGeminiLive({ agentId, microphoneId }: { agentId: string
     const r = runtime.current;
     const calls = message.toolCall?.functionCalls ?? [];
     const functionResponses = [];
+    const startedAt = Date.now();
     for (const call of calls) {
       if (!call.name) continue;
       appendLine("tool", `ابزار ${call.name} اجرا شد …`);
@@ -126,8 +142,15 @@ export function TelephonyGeminiLive({ agentId, microphoneId }: { agentId: string
         response = { status: "FAILED", error: err instanceof Error ? err.message : "Tool call failed" };
       }
       appendLine("tool", ` ${String(response.status)}`);
-      functionResponses.push({ id: call.id, name: call.name, response });
+      functionResponses.push({
+        id: call.id,
+        name: call.name,
+        response,
+        // Async tools: speak the result once the current sentence is finished.
+        ...(r.toolMode === "async" ? { scheduling: FunctionResponseScheduling.WHEN_IDLE } : {}),
+      });
     }
+    r.toolMs += Date.now() - startedAt;
     if (r.epoch !== epoch || !r.session || !functionResponses.length) return;
     r.session.sendToolResponse({ functionResponses });
   };
@@ -137,6 +160,7 @@ export function TelephonyGeminiLive({ agentId, microphoneId }: { agentId: string
     if (r.epoch !== epoch) return;
     const content = message.serverContent;
     if (content?.interrupted) stopPlayback();
+    if (message.voiceActivity?.voiceActivityType === "ACTIVITY_END") r.serverEndAt = Date.now();
     for (const part of content?.modelTurn?.parts ?? []) {
       if (part.inlineData?.data) play(part.inlineData.data);
     }
@@ -167,6 +191,9 @@ export function TelephonyGeminiLive({ agentId, microphoneId }: { agentId: string
     const r = runtime.current;
     const epoch = ++r.epoch;
     r.telephone = telephone;
+    r.toolMode = toolMode;
+    r.serverEndAt = 0;
+    r.toolMs = 0;
     setError("");
     setLines([]);
     setLatencies([]);
@@ -187,7 +214,11 @@ export function TelephonyGeminiLive({ agentId, microphoneId }: { agentId: string
         },
       });
       r.stream = stream;
-      const response = await api(`/api/v1/agents/${agentId}/live-session`, { method: "POST" });
+      const response = await api(`/api/v1/agents/${agentId}/live-session`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ toolMode }),
+      });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload?.error?.message ?? `HTTP ${response.status}`);
       const grant = payload as Grant;
@@ -288,7 +319,9 @@ export function TelephonyGeminiLive({ agentId, microphoneId }: { agentId: string
     setTyped("");
   }
 
-  const averageLatency = latencies.length ? latencies.reduce((a, b) => a + b, 0) / latencies.length : null;
+  const averageLatency = latencies.length ? latencies.reduce((a, b) => a + b.totalMs, 0) / latencies.length : null;
+  const lastTiming = latencies[latencies.length - 1];
+  const seconds = (ms: number | null) => ms === null ? "؟" : (ms / 1000).toFixed(1);
 
   return (
     <section className="space-y-4 rounded-xl border border-violet-200 bg-white p-5" aria-label="گفتگوی هم‌زمان Gemini Live">
@@ -306,6 +339,13 @@ export function TelephonyGeminiLive({ agentId, microphoneId }: { agentId: string
         <input type="checkbox" checked={telephone} disabled={phase === "connecting" || phase === "live"}
           onChange={e => setTelephone(e.target.checked)} /> شبیه‌سازی کیفیت خط تلفن (۸ کیلوهرتز G.711) در هر دو جهت
       </label>
+      <label className="block text-sm">نحوهٔ اجرای ابزارها (ثبت نوبت، بررسی وقت خالی …)
+        <select value={toolMode} disabled={phase === "connecting" || phase === "live"} onChange={e => setToolMode(e.target.value as ToolMode)}
+          className="mt-1 block w-full rounded-lg border p-2">
+          <option value="async">هم‌زمان: منشی می‌گوید «یک لحظه» و در همان حال ابزار اجرا می‌شود (تأخیر کمتر)</option>
+          <option value="blocking">منتظر: منشی تا نتیجهٔ ابزار ساکت می‌ماند</option>
+        </select>
+      </label>
       <div className="flex flex-wrap items-center gap-3">
         <button type="button" onClick={() => void start()} disabled={!readiness?.ready || phase === "connecting" || phase === "live"}
           className="rounded-lg bg-violet-700 px-4 py-2 font-medium text-white disabled:opacity-50">شروع تماس Gemini Live</button>
@@ -322,8 +362,10 @@ export function TelephonyGeminiLive({ agentId, microphoneId }: { agentId: string
       </form>
       {averageLatency !== null && (
         <p className="text-sm" aria-label="تأخیر پاسخ Gemini Live">
-          تأخیر از پایان صحبت تا شروع پاسخ: آخرین {(latencies[latencies.length - 1] / 1000).toFixed(2)} ثانیه،
-          میانگین {(averageLatency / 1000).toFixed(2)} ثانیه ({latencies.length} نوبت)
+          تأخیر از پایان صحبت تا شروع پاسخ: آخرین {seconds(lastTiming.totalMs)} ثانیه،
+          میانگین {seconds(averageLatency)} ثانیه ({latencies.length} نوبت).
+          جزئیات آخرین نوبت: تشخیص پایان صحبت توسط Google {seconds(lastTiming.endDetectMs)} ثانیه،
+          ساخت پاسخ {seconds(lastTiming.replyMs)} ثانیه، اجرای ابزارها در برنامه {seconds(lastTiming.toolMs)} ثانیه
         </p>
       )}
       {lines.length > 0 && (

@@ -28,6 +28,14 @@ const TOOL_NAME = /^[a-z][a-z0-9_]{1,63}$/;
 
 export type LiveScope = { businessId: string; userId: string; agentId: string };
 
+/**
+ * How the model waits for tools. "blocking": silent until each result arrives.
+ * "async": the model keeps talking ("one moment, I'm booking that") while the
+ * tool runs, and speaks the result when it arrives — lower perceived latency.
+ */
+export type LiveToolMode = "blocking" | "async";
+export const LIVE_TOOL_MODES: readonly LiveToolMode[] = ["blocking", "async"];
+
 export type LiveSessionGrant = {
   sessionId: string;
   model: string;
@@ -36,6 +44,7 @@ export type LiveSessionGrant = {
   expiresAt: string;
   config: LiveConnectConfig;
   tools: string[];
+  toolMode: LiveToolMode;
 };
 
 type StoredSession = { tools: string[] };
@@ -45,27 +54,36 @@ function sessionKey(scope: LiveScope, sessionId: string): string {
 }
 
 /** Gemini accepts JSON Schema directly; the draft marker is noise to it. */
-function toFunctionDeclaration(tool: AgentLiveInstructions["tools"][number]): FunctionDeclaration {
+function toFunctionDeclaration(tool: AgentLiveInstructions["tools"][number], toolMode: LiveToolMode): FunctionDeclaration {
   const { $schema: _ignored, ...schema } = tool.parameters as Record<string, unknown> & { $schema?: unknown };
   return {
     name: tool.name,
     description: tool.description,
-    // Booking, lead and transfer results must exist before the model talks
-    // about them, so the conversation waits for each tool result.
-    behavior: Behavior.BLOCKING,
+    behavior: toolMode === "async" ? Behavior.NON_BLOCKING : Behavior.BLOCKING,
     parametersJsonSchema: schema,
   };
 }
 
-export function buildLiveConnectConfig(instructions: AgentLiveInstructions, voiceName: string): LiveConnectConfig {
+const ASYNC_TOOL_RULE_FA = "\nابزارها در پس‌زمینه اجرا می‌شوند: هنگام فراخوانی ابزار فقط یک جملهٔ کوتاه مثل «یک لحظه، در حال بررسی است» بگو و منتظر نتیجه بمان؛ نتیجه را فقط بعد از رسیدن پاسخ ابزار اعلام کن.";
+const ASYNC_TOOL_RULE_EN = "\nTools run in the background: when you call one, say only a short filler such as \"One moment, checking\" and announce the outcome only after its result arrives.";
+
+export function buildLiveConnectConfig(
+  instructions: AgentLiveInstructions,
+  voiceName: string,
+  toolMode: LiveToolMode = "blocking",
+): LiveConnectConfig {
+  const asyncRule = toolMode === "async" && instructions.tools.length
+    ? (instructions.language.startsWith("en") ? ASYNC_TOOL_RULE_EN : ASYNC_TOOL_RULE_FA)
+    : "";
   const config: LiveConnectConfig = {
     responseModalities: [Modality.AUDIO],
-    systemInstruction: { parts: [{ text: instructions.systemPrompt }] },
-    inputAudioTranscription: {},
+    systemInstruction: { parts: [{ text: instructions.systemPrompt + asyncRule }] },
+    // Without a hint, short Persian names can be transcribed as another language.
+    inputAudioTranscription: { languageCodes: [instructions.language.split("-")[0] || "fa"] },
     outputAudioTranscription: {},
   };
   if (instructions.tools.length) {
-    config.tools = [{ functionDeclarations: instructions.tools.map(toFunctionDeclaration) }];
+    config.tools = [{ functionDeclarations: instructions.tools.map((tool) => toFunctionDeclaration(tool, toolMode)) }];
   }
   if (voiceName) {
     config.speechConfig = { voiceConfig: { prebuiltVoiceConfig: { voiceName } } };
@@ -109,13 +127,13 @@ export function liveReadiness(apiKey = getEnv().COMPATIBLE_LLM_API_KEY): { ready
     : { ready: false, reasons: ["COMPATIBLE_LLM_API_KEY (Gemini API key) is required for Gemini Live"] };
 }
 
-export async function createLiveSession(scope: LiveScope, requestId: string): Promise<LiveSessionGrant> {
+export async function createLiveSession(scope: LiveScope, requestId: string, toolMode: LiveToolMode = "blocking"): Promise<LiveSessionGrant> {
   const env = getEnv();
   if (!env.COMPATIBLE_LLM_API_KEY) {
     throw new AppError(503, "PROVIDER_NOT_CONFIGURED", "COMPATIBLE_LLM_API_KEY (Gemini API key) is required for Gemini Live");
   }
   const instructions = await buildAgentLiveInstructions(scope.businessId, scope.agentId);
-  const config = buildLiveConnectConfig(instructions, env.GEMINI_LIVE_VOICE);
+  const config = buildLiveConnectConfig(instructions, env.GEMINI_LIVE_VOICE, toolMode);
   const now = Date.now();
   const expiresAt = new Date(now + TOKEN_LIFETIME_MS).toISOString();
   let token: string;
@@ -142,8 +160,9 @@ export async function createLiveSession(scope: LiveScope, requestId: string): Pr
     status: "ok",
     model: env.GEMINI_LIVE_MODEL,
     tools: tools.length,
+    toolMode,
   });
-  return { sessionId, model: env.GEMINI_LIVE_MODEL, token, expiresAt, config, tools };
+  return { sessionId, model: env.GEMINI_LIVE_MODEL, token, expiresAt, config, tools, toolMode };
 }
 
 export type LiveToolCallInput = { sessionId: unknown; name: unknown; args: unknown };

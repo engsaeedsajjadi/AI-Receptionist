@@ -118,6 +118,8 @@ function agentBaseSystemPrompt(
 
 export type AgentLiveInstructions = {
   agentId: string;
+  /** BCP-47 language of the agent (e.g. "fa"), a hint for speech recognition. */
+  language: string;
   /** Guardrailed system prompt plus the spoken-conversation style. */
   systemPrompt: string;
   /** Tools this agent may call (already filtered by its allow-list). */
@@ -140,10 +142,10 @@ export async function buildAgentLiveInstructions(businessId: string, agentId: st
   const config = parseAgentConfig(agent);
   const english = config.language.startsWith("en");
   const systemPrompt = agentBaseSystemPrompt(agent, business, config) + (english
-    ? "\nLIVE PHONE CONVERSATION: You are speaking on a phone line. Answer in one or two short, natural spoken sentences. Never say a booking, transfer or record exists until its tool returned SUCCESS. Read phone numbers back digit by digit to confirm them."
-    : "\nمکالمهٔ زندهٔ تلفنی: تو پشت خط تلفن صحبت می‌کنی. فقط فارسی حرف بزن و با یک یا دو جملهٔ کوتاه و طبیعی پاسخ بده. تا ابزار نتیجهٔ SUCCESS نداده، هرگز نگو نوبت ثبت شد، تماس منتقل شد یا اطلاعاتی ذخیره شد. شمارهٔ تلفن را رقم‌به‌رقم تکرار کن تا تأیید شود.");
+    ? "\nLIVE PHONE CONVERSATION: You are speaking on a phone line. Answer in one or two short, natural spoken sentences. Never say a booking, transfer or record exists until its tool returned SUCCESS. Before booking or creating a lead, read the name and the phone number (digit by digit) back once and call the tool only after the caller confirms. If you did not hear the name clearly, ask again."
+    : "\nمکالمهٔ زندهٔ تلفنی: تو پشت خط تلفن صحبت می‌کنی. فقط فارسی حرف بزن و با یک یا دو جملهٔ کوتاه و طبیعی پاسخ بده. تا ابزار نتیجهٔ SUCCESS نداده، هرگز نگو نوبت ثبت شد، تماس منتقل شد یا اطلاعاتی ذخیره شد. قبل از ثبت نوبت یا سرنخ، نام و شمارهٔ تلفن را یک بار تکرار کن (شماره را رقم‌به‌رقم) و تا تماس‌گیرنده تأیید نکرده، ابزار ثبت را صدا نزن. اگر نام را واضح نشنیدی، دوباره بپرس.");
   const tools = getToolDefinitions().filter((tool) => !config.allowedTools || config.allowedTools.includes(tool.name));
-  return { agentId: agent.id, systemPrompt, tools };
+  return { agentId: agent.id, language: config.language, systemPrompt, tools };
 }
 
 export type AgentTurnInput = {

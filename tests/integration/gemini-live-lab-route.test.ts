@@ -42,11 +42,12 @@ async function identity() {
   return { business, user, token: accessToken };
 }
 
-async function session(method: "GET" | "POST", agentId: string, token?: string) {
+async function session(method: "GET" | "POST", agentId: string, token?: string, body?: unknown) {
   const route = await import("@/app/api/v1/agents/[id]/live-session/route");
   const req = new NextRequest(`http://localhost/api/v1/agents/${agentId}/live-session`, {
     method,
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body ? { "Content-Type": "application/json" } : {}) },
+    ...(body ? { body: JSON.stringify(body) } : {}),
   });
   return route[method](req, { params: Promise.resolve({ id: agentId }) });
 }
@@ -157,7 +158,9 @@ describe.skipIf(!hasTestDatabase())("Gemini Live lab routes", () => {
     // The locked config is the tenant's guardrailed prompt plus the live phone style.
     expect(promptOf(params.config)).toContain(a.business.name);
     expect(promptOf(params.config)).toContain("مکالمهٔ زندهٔ تلفنی");
-    expect(params.config.inputAudioTranscription).toEqual({});
+    // Persian hint: short names were transcribed in another script without it.
+    expect(params.config.inputAudioTranscription).toEqual({ languageCodes: ["fa"] });
+    expect(grant.toolMode).toBe("blocking");
     expect(params.config.outputAudioTranscription).toEqual({});
     expect(params.config.speechConfig?.voiceConfig?.prebuiltVoiceConfig?.voiceName).toBe("Kore");
     const fns = declarations(params.config);
@@ -168,6 +171,20 @@ describe.skipIf(!hasTestDatabase())("Gemini Live lab routes", () => {
       expect(fn.parametersJsonSchema).not.toHaveProperty("$schema");
     }
     expect(grant.tools).toEqual(fns.map((f) => f.name));
+  });
+
+  itDb("async tool mode declares NON_BLOCKING tools and tells the model to wait for results", async () => {
+    const a = await identity();
+    const agent = await createAgent(a.business.id);
+    enableLab();
+    const grant = await (await session("POST", agent.id, a.token, { toolMode: "async" })).json();
+    expect(grant.toolMode).toBe("async");
+    const fns = declarations(minted[0].config);
+    expect(fns.length).toBeGreaterThan(0);
+    for (const fn of fns) expect(fn.behavior).toBe(Behavior.NON_BLOCKING);
+    expect(promptOf(minted[0].config)).toContain("ابزارها در پس‌زمینه اجرا می‌شوند");
+    expect((await session("POST", agent.id, a.token, { toolMode: "eager" })).status).toBe(400);
+    expect(minted).toHaveLength(1);
   });
 
   itDb("only declares the agent's allow-listed tools", async () => {
