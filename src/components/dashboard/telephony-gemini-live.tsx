@@ -172,6 +172,13 @@ export function TelephonyGeminiLive({ agentId, microphoneId }: { agentId: string
     setLatencies([]);
     setPhase("connecting");
     setDetail("در حال گرفتن مجوز کوتاه‌مدت از سرور برنامه …");
+    // Create and resume both audio contexts inside the click itself: Chrome's
+    // autoplay policy leaves a context created after the awaits below
+    // "suspended", and a suspended capture graph never delivers microphone audio.
+    r.playContext = new AudioContext();
+    r.micContext = new AudioContext();
+    void r.playContext.resume().catch(() => undefined);
+    void r.micContext.resume().catch(() => undefined);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -187,9 +194,14 @@ export function TelephonyGeminiLive({ agentId, microphoneId }: { agentId: string
       r.grant = grant;
       if (r.epoch !== epoch) return;
 
-      r.playContext = new AudioContext();
-      r.micContext = new AudioContext();
-      await r.micContext.audioWorklet.addModule(CAPTURE_WORKLET_URL);
+      const micContext = r.micContext;
+      const playContext = r.playContext;
+      if (!micContext || !playContext) return;
+      await micContext.audioWorklet.addModule(CAPTURE_WORKLET_URL);
+      await Promise.all([micContext.resume(), playContext.resume()]);
+      if (micContext.state !== "running") {
+        throw new Error("مرورگر پردازش صدا را متوقف نگه داشته است؛ یک بار روی صفحه کلیک کنید و دوباره «شروع تماس» را بزنید.");
+      }
 
       setDetail(`در حال اتصال به ${grant.model} …`);
       // Ephemeral tokens are served on v1beta.
@@ -215,15 +227,19 @@ export function TelephonyGeminiLive({ agentId, microphoneId }: { agentId: string
       if (r.epoch !== epoch) { session.close(); return; }
       r.session = session;
 
-      const source = r.micContext.createMediaStreamSource(stream);
-      const capture = new AudioWorkletNode(r.micContext, "live-capture");
-      const blockSamples = Math.round((r.micContext.sampleRate * SEND_BLOCK_MS) / 1000);
+      const source = micContext.createMediaStreamSource(stream);
+      const capture = new AudioWorkletNode(micContext, "live-capture");
+      const blockSamples = Math.round((micContext.sampleRate * SEND_BLOCK_MS) / 1000);
       capture.port.onmessage = (event: MessageEvent<Float32Array>) => {
         r.pending.push(event.data);
         r.pendingSamples += event.data.length;
         if (r.pendingSamples >= blockSamples) sendBlock();
       };
       source.connect(capture);
+      // A muted path to the output keeps every browser pulling the capture node.
+      const mute = micContext.createGain();
+      mute.gain.value = 0;
+      capture.connect(mute).connect(micContext.destination);
       setPhase("live");
       setDetail("تماس برقرار است؛ صحبت کنید. می‌توانید وسط حرف منشی صحبت کنید. هدفون پیشنهاد می‌شود.");
       // The receptionist answers the phone first, as on a real call.
