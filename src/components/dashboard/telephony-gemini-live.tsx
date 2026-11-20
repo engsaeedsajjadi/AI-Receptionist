@@ -8,13 +8,18 @@ import { liveOutputToPlayback, micToLiveInput, rms } from "@/lib/voice/live-audi
 type ToolMode = "blocking" | "async";
 type Grant = { sessionId: string; model: string; token: string; expiresAt: string; config: LiveConnectConfig; tools: string[]; toolMode: ToolMode };
 /** One answered turn: caller silence → Google saw speech end → first reply audio. */
-type TurnTiming = { totalMs: number; endDetectMs: number | null; replyMs: number | null; toolMs: number };
+type TurnTiming = { totalMs: number; endDetectMs: number | null; replyMs: number | null };
 type Readiness = { ready: boolean; reasons: string[] };
 type Line = { id: number; who: "caller" | "agent" | "tool"; text: string };
 type Phase = "idle" | "connecting" | "live" | "closed" | "error";
 
 /** ~100 ms of microphone audio per message: small enough for fast turn-taking. */
 const SEND_BLOCK_MS = 100;
+/**
+ * If the model has said nothing this long after receiving tool results, nudge
+ * it: a caller must never be left in silence after a failed booking.
+ */
+const TOOL_RESULT_SILENCE_MS = 4_000;
 /** Microphone level above which the caller is treated as talking (for the latency readout). */
 const SPEECH_RMS = 0.02;
 
@@ -54,7 +59,8 @@ export function TelephonyGeminiLive({ agentId, microphoneId }: { agentId: string
     lastSpeechAt: 0,
     awaitingReply: false,
     serverEndAt: 0,
-    toolMs: 0,
+    lastModelAudioAt: 0,
+    toolNudge: null as ReturnType<typeof setTimeout> | null,
     toolMode: "async" as ToolMode,
     lineSeq: 0,
     telephone: true,
@@ -105,12 +111,11 @@ export function TelephonyGeminiLive({ agentId, microphoneId }: { agentId: string
         totalMs: now - r.lastSpeechAt,
         endDetectMs: serverEnd ? serverEnd - r.lastSpeechAt : null,
         replyMs: serverEnd ? now - serverEnd : null,
-        toolMs: r.toolMs,
       };
       setLatencies(previous => [...previous.slice(-9), timing]);
     }
     r.awaitingReply = false;
-    r.toolMs = 0;
+    r.lastModelAudioAt = Date.now();
     const buffer = ctx.createBuffer(1, samples.length, sampleRate);
     buffer.copyToChannel(samples as Float32Array<ArrayBuffer>, 0);
     const source = ctx.createBufferSource();
@@ -127,9 +132,9 @@ export function TelephonyGeminiLive({ agentId, microphoneId }: { agentId: string
     const r = runtime.current;
     const calls = message.toolCall?.functionCalls ?? [];
     const functionResponses = [];
-    const startedAt = Date.now();
     for (const call of calls) {
       if (!call.name) continue;
+      const startedAt = Date.now();
       appendLine("tool", `ابزار ${call.name} اجرا شد …`);
       let response: Record<string, unknown>;
       try {
@@ -141,7 +146,7 @@ export function TelephonyGeminiLive({ agentId, microphoneId }: { agentId: string
       } catch (err) {
         response = { status: "FAILED", error: err instanceof Error ? err.message : "Tool call failed" };
       }
-      appendLine("tool", ` ${String(response.status)}`);
+      appendLine("tool", ` ${String(response.status)} (${((Date.now() - startedAt) / 1000).toFixed(1)} ثانیه در برنامه)`);
       functionResponses.push({
         id: call.id,
         name: call.name,
@@ -150,9 +155,18 @@ export function TelephonyGeminiLive({ agentId, microphoneId }: { agentId: string
         ...(r.toolMode === "async" ? { scheduling: FunctionResponseScheduling.WHEN_IDLE } : {}),
       });
     }
-    r.toolMs += Date.now() - startedAt;
     if (r.epoch !== epoch || !r.session || !functionResponses.length) return;
     r.session.sendToolResponse({ functionResponses });
+    // Watchdog: the model sometimes takes a result without speaking. Never
+    // leave the caller in silence — ask it once to tell them the outcome.
+    const sentAt = Date.now();
+    if (r.toolNudge) clearTimeout(r.toolNudge);
+    r.toolNudge = setTimeout(() => {
+      r.toolNudge = null;
+      if (r.epoch !== epoch || !r.session || r.lastModelAudioAt >= sentAt) return;
+      appendLine("tool", "منشی بعد از نتیجهٔ ابزار ساکت ماند؛ از مدل خواسته شد نتیجه را بگوید.");
+      r.session.sendRealtimeInput({ text: "[نتیجهٔ ابزار رسید. همین حالا آن را در یک جملهٔ کوتاه به تماس‌گیرنده بگو؛ اگر ناموفق بود، گزینهٔ دیگری پیشنهاد کن.]" });
+    }, TOOL_RESULT_SILENCE_MS);
   };
 
   const onMessage = (message: LiveServerMessage, epoch: number) => {
@@ -160,7 +174,9 @@ export function TelephonyGeminiLive({ agentId, microphoneId }: { agentId: string
     if (r.epoch !== epoch) return;
     const content = message.serverContent;
     if (content?.interrupted) stopPlayback();
-    if (message.voiceActivity?.voiceActivityType === "ACTIVITY_END") r.serverEndAt = Date.now();
+    // Google marks the end of the caller's speech (field spelling varies by model version).
+    const activity = String(message.voiceActivity?.voiceActivityType ?? "");
+    if (activity.endsWith("END")) r.serverEndAt = Date.now();
     for (const part of content?.modelTurn?.parts ?? []) {
       if (part.inlineData?.data) play(part.inlineData.data);
     }
@@ -193,7 +209,7 @@ export function TelephonyGeminiLive({ agentId, microphoneId }: { agentId: string
     r.telephone = telephone;
     r.toolMode = toolMode;
     r.serverEndAt = 0;
-    r.toolMs = 0;
+    r.lastModelAudioAt = 0;
     setError("");
     setLines([]);
     setLatencies([]);
@@ -285,6 +301,7 @@ export function TelephonyGeminiLive({ agentId, microphoneId }: { agentId: string
 
   async function teardown() {
     const r = runtime.current;
+    if (r.toolNudge) { clearTimeout(r.toolNudge); r.toolNudge = null; }
     stopPlayback();
     r.stream?.getTracks().forEach(track => track.stop());
     r.stream = null;
@@ -365,7 +382,8 @@ export function TelephonyGeminiLive({ agentId, microphoneId }: { agentId: string
           تأخیر از پایان صحبت تا شروع پاسخ: آخرین {seconds(lastTiming.totalMs)} ثانیه،
           میانگین {seconds(averageLatency)} ثانیه ({latencies.length} نوبت).
           جزئیات آخرین نوبت: تشخیص پایان صحبت توسط Google {seconds(lastTiming.endDetectMs)} ثانیه،
-          ساخت پاسخ {seconds(lastTiming.replyMs)} ثانیه، اجرای ابزارها در برنامه {seconds(lastTiming.toolMs)} ثانیه
+          ساخت پاسخ {seconds(lastTiming.replyMs)} ثانیه
+          {lastTiming.endDetectMs === null && " (Google علامت پایان صحبت نفرستاد؛ فقط زمان کل معتبر است)"}
         </p>
       )}
       {lines.length > 0 && (

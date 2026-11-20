@@ -201,6 +201,25 @@ function zonedTimeToUtc(dateKey: string, minutes: number, timeZone: string): Dat
   return new Date(guess.getTime() + offsetMs);
 }
 
+/**
+ * A slot as a caller hears it: local wall-clock "HH:MM" plus the exact
+ * `scheduledAt` (ISO with the zone's UTC offset) to pass to booking, so a model
+ * never has to convert time zones itself.
+ */
+export function localSlotTime(startIso: string, timeZone: string): { time: string; scheduledAt: string } {
+  const start = new Date(startIso);
+  const p = zonedParts(start, timeZone);
+  const hh = String(Math.floor(p.minutes / 60)).padStart(2, "0");
+  const mm = String(p.minutes % 60).padStart(2, "0");
+  const localAsUtc = Date.UTC(p.y, p.m - 1, p.d, Math.floor(p.minutes / 60), p.minutes % 60);
+  const offsetMinutes = Math.round((localAsUtc - start.getTime()) / 60_000);
+  const sign = offsetMinutes < 0 ? "-" : "+";
+  const abs = Math.abs(offsetMinutes);
+  const offset = `${sign}${String(Math.floor(abs / 60)).padStart(2, "0")}:${String(abs % 60).padStart(2, "0")}`;
+  const date = `${p.y}-${String(p.m).padStart(2, "0")}-${String(p.d).padStart(2, "0")}`;
+  return { time: `${hh}:${mm}`, scheduledAt: `${date}T${hh}:${mm}:00${offset}` };
+}
+
 // ---------------------------------------------------------------------------
 // Booking (race-safe via distributed lock + transaction + overlap check)
 // ---------------------------------------------------------------------------

@@ -12,7 +12,7 @@ import {
   normalizeLeadExtraction,
 } from "@/lib/services/leads";
 import { findOrCreateCustomer } from "@/lib/services/customers";
-import { checkAvailability, createAppointment } from "@/lib/services/appointments";
+import { checkAvailability, createAppointment, localSlotTime } from "@/lib/services/appointments";
 import { hybridSearch } from "@/lib/services/knowledge";
 import { KnowledgeMetadataFiltersSchema, runtimePrincipal } from "@/lib/rag/access";
 import { notify } from "@/lib/services/notifications";
@@ -186,9 +186,11 @@ const updateLeadTool: ToolDefinition = {
 
 const checkAvailabilityTool: ToolDefinition = {
   name: "check_availability",
-  description: "Check visit-appointment availability for a date (YYYY-MM-DD, business timezone).",
+  description:
+    "Check visit-appointment availability for a date (YYYY-MM-DD, business timezone). Pass `time` (HH:MM, local) when the caller asked for a specific time: the result says whether exactly that time is free and gives the nearest free alternatives. Times are local; book with the returned `scheduledAt` unchanged.",
   schema: z.object({
     date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(),
     durationMinutes: z.number().int().min(10).max(480).optional(),
   }),
   handler: async (args, ctx) => {
@@ -197,18 +199,43 @@ const checkAvailabilityTool: ToolDefinition = {
       date: args.date as string,
       durationMinutes: args.durationMinutes as number | undefined,
     });
-    const free = result.slots.filter((s) => s.available);
+    const local = result.slots.map((slot) => ({ ...localSlotTime(slot.start, result.timezone), available: slot.available }));
+    const free = local.filter((s) => s.available).map(({ time, scheduledAt }) => ({ time, scheduledAt }));
+    const requested = args.time as string | undefined;
+    if (requested) {
+      const match = local.find((s) => s.time === requested);
+      const minutes = (hhmm: string) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3));
+      const alternatives = [...free]
+        .sort((a, b) => Math.abs(minutes(a.time) - minutes(requested)) - Math.abs(minutes(b.time) - minutes(requested)))
+        .slice(0, 3)
+        .sort((a, b) => minutes(a.time) - minutes(b.time));
+      if (match?.available) {
+        return {
+          status: "SUCCESS",
+          data: { date: result.date, timezone: result.timezone, requestedTime: requested, requestedTimeAvailable: true,
+            scheduledAt: match.scheduledAt },
+        };
+      }
+      if (alternatives.length === 0) {
+        return { status: "UNAVAILABLE", error: `No availability on ${result.date}.` };
+      }
+      return {
+        status: "SUCCESS",
+        data: { date: result.date, timezone: result.timezone, requestedTime: requested, requestedTimeAvailable: false,
+          reason: match ? "already booked" : "outside working hours", alternatives },
+      };
+    }
     if (free.length === 0) {
       return { status: "UNAVAILABLE", error: `No availability on ${result.date}.` };
     }
-    return { status: "SUCCESS", data: { date: result.date, timezone: result.timezone, slots: free.slice(0, 12) } };
+    return { status: "SUCCESS", data: { date: result.date, timezone: result.timezone, slots: free.slice(0, 16) } };
   },
 };
 
 const createAppointmentTool: ToolDefinition = {
   name: "create_appointment",
   description:
-    "Book a visit appointment at an available ISO time for an identified caller. Pass the leadId returned by create_lead (or a customerId); if the caller is not identified yet, first ask their name and phone number and call create_lead. NEVER claim success unless this tool returns SUCCESS.",
+    "Book a visit appointment for an identified caller at a `scheduledAt` returned by check_availability (pass it unchanged). Pass the leadId returned by create_lead (or a customerId); if the caller is not identified yet, first ask their name and phone number and call create_lead. NEVER claim success unless this tool returns SUCCESS.",
   schema: z.object({
     scheduledAt: z.string().datetime({ offset: true }),
     durationMinutes: z.number().int().min(10).max(480).default(30),
